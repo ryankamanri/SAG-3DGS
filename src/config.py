@@ -10,7 +10,7 @@ from .loss import LossCfgWrapper
 from .model.decoder import DecoderCfg
 from .model.encoder import EncoderCfg
 from .model.model_wrapper import OptimizerCfg, TestCfg, TrainCfg
-
+from .model.mvsnet import MVSNetCfg
 
 @dataclass
 class CheckpointingCfg:
@@ -25,6 +25,7 @@ class CheckpointingCfg:
 class ModelCfg:
     decoder: DecoderCfg
     encoder: EncoderCfg
+    mvsnet: MVSNetCfg
 
 
 @dataclass

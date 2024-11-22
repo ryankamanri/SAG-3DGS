@@ -1,0 +1,7 @@
+# mvsnet
+# model: mvsnet # `mvsnet` or `cas_mvsnet`
+# ckpt_path: pretrained/model_000014.ckpt
+
+# cascade mvsnet
+model: cas_mvsnet # `mvsnet` or `cas_mvsnet`
+ckpt_path: pretrained/casmvsnet.ckpt

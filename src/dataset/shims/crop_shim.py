@@ -41,6 +41,9 @@ def center_crop(
     images = images[..., :, row : row + h_out, col : col + w_out]
 
     # Adjust the intrinsics to account for the cropping.
+    # IMPORTANT NOTE: In general, the cropped image should only adjust the central coordinates of the internal reference, 
+    # but here the internal reference has been normalized to a square of equal length and width.
+    # At this point, the central coordinate is always equal to 0.5, and the focal length must be adjusted in proportion.
     intrinsics = intrinsics.clone()
     intrinsics[..., 0, 0] *= w_in / w_out  # fx
     intrinsics[..., 1, 1] *= h_in / h_out  # fy

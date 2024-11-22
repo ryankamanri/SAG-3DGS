@@ -2,6 +2,7 @@
                 https://github.com/donydchen/matchnerf/blob/main/datasets/dtu.py 
     DTU Acquired instruction: https://github.com/donydchen/matchnerf?tab=readme-ov-file#dtu-for-both-training-and-testing'''
 
+from io import BytesIO
 import subprocess
 from pathlib import Path
 from typing import Literal, TypedDict
@@ -15,6 +16,8 @@ from tqdm import tqdm
 import json
 
 import os
+
+from PIL import Image
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--input_dir", type=str, help="input dtu raw directory")
@@ -39,6 +42,7 @@ def build_camera_info(id_list, root_dir):
             root_dir, f"Cameras/train/{vid:08d}_cam.txt")
         intrinsic, extrinsic, near_far = read_cam_file(proj_mat_filename)
 
+        # Note: I think any rescaling operation of intrinsics here is useless because it will be normalized when training
         intrinsic[:2] *= 4
         intrinsic[:2] = intrinsic[:2] * downSample
         intrinsics[vid] = intrinsic
@@ -125,7 +129,7 @@ class Example(Metadata):
     images: list[UInt8[Tensor, "..."]]
 
 
-def load_metadata(intrinsics, world2cams) -> Metadata:
+def load_metadata(intrinsics, world2cams, images) -> Metadata:
     timestamps = []
     cameras = []
     url = ""
@@ -138,12 +142,13 @@ def load_metadata(intrinsics, world2cams) -> Metadata:
         fy = intr[1, 1]
         cx = intr[0, 2]
         cy = intr[1, 2]
-        w = 2.0 * cx
-        h = 2.0 * cy
+        # w = 2.0 * cx
+        # h = 2.0 * cy
+        w, h = Image.open(BytesIO(images[vid].numpy().tobytes())).size
         saved_fx = fx / w
         saved_fy = fy / h
-        saved_cx = 0.5
-        saved_cy = 0.5
+        saved_cx = cx / w
+        saved_cy = cy / h
         camera = [saved_fx, saved_fy, saved_cx, saved_cy, 0.0, 0.0]
 
         w2c = world2cams[vid]
@@ -197,7 +202,7 @@ if __name__ == "__main__":
 
             # Read images and metadata.
             images = load_images(image_dir)
-            example = load_metadata(intrinsics, world2cams)
+            example = load_metadata(intrinsics, world2cams, images)
 
             # Merge the images into the example.
             example["images"] = [

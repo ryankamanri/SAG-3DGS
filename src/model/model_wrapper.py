@@ -40,7 +40,7 @@ from ..visualization.validation_in_3d import render_cameras, render_projections
 from .decoder.decoder import Decoder, DepthRenderingMode
 from .encoder import Encoder
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
-
+from .mvsnet import PCDGenerator
 
 @dataclass
 class OptimizerCfg:
@@ -64,6 +64,7 @@ class TrainCfg:
     extended_visualization: bool
     print_log_every_n_steps: int
 
+    
 
 @runtime_checkable
 class TrajectoryFn(Protocol):
@@ -79,6 +80,7 @@ class TrajectoryFn(Protocol):
 
 class ModelWrapper(LightningModule):
     logger: Optional[WandbLogger]
+    pcd_generator: PCDGenerator
     encoder: nn.Module
     encoder_visualizer: Optional[EncoderVisualizer]
     decoder: Decoder
@@ -93,6 +95,7 @@ class ModelWrapper(LightningModule):
         optimizer_cfg: OptimizerCfg,
         test_cfg: TestCfg,
         train_cfg: TrainCfg,
+        pcd_generator: PCDGenerator, 
         encoder: Encoder,
         encoder_visualizer: Optional[EncoderVisualizer],
         decoder: Decoder,
@@ -106,6 +109,9 @@ class ModelWrapper(LightningModule):
         self.step_tracker = step_tracker
 
         # Set up the model.
+        
+        # initialize pretrained mvsnet
+        self.pcd_generator = pcd_generator
         self.encoder = encoder
         self.encoder_visualizer = encoder_visualizer
         self.decoder = decoder
@@ -124,6 +130,18 @@ class ModelWrapper(LightningModule):
         batch: BatchedExample = self.data_shim(batch)
         _, _, _, h, w = batch["target"]["image"].shape
 
+        vertices_per_batch = self.pcd_generator(batch)
+        
+        print(
+            f"train step {self.global_step}; "
+            f"scene = {[x[:20] for x in batch['scene']]}; "
+            f"context = {batch['context']['index'].tolist()}; "
+            f"bound = [{batch['context']['near'].detach().cpu().numpy().mean()} "
+            f"{batch['context']['far'].detach().cpu().numpy().mean()}]; "
+        )
+        
+        if True:
+            return torch.tensor(0.0, requires_grad=True, device=self.device)
         # Run the model.
         gaussians = self.encoder(
             batch["context"], self.global_step, False, scene_names=batch["scene"]

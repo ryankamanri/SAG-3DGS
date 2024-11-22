@@ -183,6 +183,8 @@ class DatasetRE10k(IterableDataset):
                     "context": {
                         "extrinsics": extrinsics[context_indices],
                         "intrinsics": intrinsics[context_indices],
+                        "origin_image": context_images, # add origin image for pcd generation
+                        "origin_intrinsics": intrinsics[context_indices],
                         "image": context_images,
                         "near": self.get_bound("near", len(context_indices)) / nf_scale,
                         "far": self.get_bound("far", len(context_indices)) / nf_scale,
