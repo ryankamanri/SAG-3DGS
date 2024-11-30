@@ -1,0 +1,3 @@
+name: cascade
+
+cas_mvsnet_ckpt_path: pretrained/casmvsnet_model_000015.ckpt

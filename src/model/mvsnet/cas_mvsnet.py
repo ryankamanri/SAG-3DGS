@@ -6,7 +6,8 @@ from .cas_module import *
 Align_Corners_Range = False
 
 class DepthNet(nn.Module):
-    def __init__(self):
+    def __init__(self, is_used_on_nvs = False):
+        self.is_used_on_nvs = is_used_on_nvs
         super(DepthNet, self).__init__()
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None):
@@ -55,6 +56,9 @@ class DepthNet(nn.Module):
 
         prob_volume = F.softmax(prob_volume_pre, dim=1)
         depth = depth_regression(prob_volume, depth_values=depth_values)
+        
+        if self.is_used_on_nvs:
+            return {"depth": depth, "prob_volume": prob_volume}
 
         with torch.no_grad():
             # photometric confidence
@@ -68,7 +72,7 @@ class DepthNet(nn.Module):
 
 class CascadeMVSNet(nn.Module):
     def __init__(self, refine=False, ndepths=[48, 32, 8], depth_interals_ratio=[4, 2, 1], share_cr=False,
-                 grad_method="detach", arch_mode="fpn", cr_base_chs=[8, 8, 8]):
+                 grad_method="detach", arch_mode="fpn", cr_base_chs=[8, 8, 8], is_used_on_nvs=False):
         super(CascadeMVSNet, self).__init__()
         self.refine = refine
         self.share_cr = share_cr
@@ -77,9 +81,8 @@ class CascadeMVSNet(nn.Module):
         self.grad_method = grad_method
         self.arch_mode = arch_mode
         self.cr_base_chs = cr_base_chs
+        self.is_used_on_nvs = is_used_on_nvs
         self.num_stage = len(ndepths)
-        print("**********netphs:{}, depth_intervals_ratio:{},  grad:{}, chs:{}************".format(ndepths,
-              depth_interals_ratio, self.grad_method, self.cr_base_chs))
 
         assert len(ndepths) == len(depth_interals_ratio)
 
@@ -104,7 +107,7 @@ class CascadeMVSNet(nn.Module):
                                                       for i in range(self.num_stage)])
         if self.refine:
             self.refine_network = RefineNet()
-        self.DepthNet = DepthNet()
+        self.DepthNet = DepthNet(is_used_on_nvs)
 
     def forward(self, imgs, proj_matrices, depth_values):
         depth_min = float(depth_values[0, 0].cpu().numpy())

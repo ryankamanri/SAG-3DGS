@@ -94,6 +94,90 @@ def check_geometric_consistency(depth_ref, intrinsics_ref, extrinsics_ref, depth
     return mask, depth_reprojected, x2d_src, y2d_src
 
 
+def generate_point_cloud_from_depth_maps(imgs: torch.Tensor, extrinsics, intrinsics, depths_est, photometric_confidences):
+    b, v, c, h, w = imgs.shape
+    # the final point cloud list (per batch)
+    vertices = [[] for _ in range(b)]
+    vertices_color = [[] for _ in range(b)]
+    # for every reference image and source image, compute the photometric mask and geometric mask
+    # and generate point cloud
+    for ref_idx in range(v):
+        all_srcview_depth_ests = []
+        all_srcview_x = []
+        all_srcview_y = []
+        all_srcview_geomask = []
+        
+        ref_img, ref_depth_est, ref_intrinsics, ref_extrinsics = imgs[:, ref_idx, :, :, :], depths_est[ref_idx], intrinsics[:, ref_idx, :, :], extrinsics[:, ref_idx, :, :]
+        geo_mask_sum = torch.zeros_like(ref_depth_est, dtype=int)
+        
+        for src_idx in range(v):
+            if src_idx == ref_idx: continue
+            
+            geo_mask, depth_reprojected, x2d_src, y2d_src = check_geometric_consistency(
+                ref_depth_est, ref_intrinsics, ref_extrinsics,
+                depths_est[src_idx], intrinsics[:, src_idx, :, :], extrinsics[:, src_idx, :, :])
+            
+            geo_mask_sum += geo_mask
+            all_srcview_depth_ests.append(depth_reprojected)
+            all_srcview_x.append(x2d_src)
+            all_srcview_y.append(y2d_src)
+            all_srcview_geomask.append(geo_mask)
+            pass
+        
+        depth_est_averaged = (sum(all_srcview_depth_ests) + depths_est[ref_idx]) / (geo_mask_sum + 1)
+        # at least half of source views matched
+        geo_mask = geo_mask_sum >= v // 2
+        photo_mask = photometric_confidences[ref_idx] > 0.8
+        final_mask = torch.logical_and(photo_mask, geo_mask)
+        
+        if False:
+            import cv2
+            far = 10
+            def interp_to_show(img):
+                return F.interpolate(img.unsqueeze(0).unsqueeze(0), size=(h, w), mode='bilinear').squeeze(0).squeeze(0)
+            # convert image color channel: rgb -> bgr
+            ref_img_bgr = torch.stack((ref_img[:, 2], ref_img[:, 1], ref_img[:, 0]), dim=1)
+            cv2.imshow('ref_img', np.array(ref_img_bgr[0].transpose(0, 1).transpose(1, 2).detach().cpu()))
+            cv2.imshow('ref_depth', np.array(interp_to_show(ref_depth_est[0]).detach().cpu()) / far)
+            cv2.imshow('ref_depth * photo_mask', np.array(interp_to_show(ref_depth_est[0] * photo_mask[0]).detach().cpu()) / far)
+            cv2.imshow('ref_depth * geo_mask', np.array(interp_to_show(ref_depth_est[0] * geo_mask[0]).detach().cpu()) / far)
+            cv2.imshow('ref_depth * mask', np.array(interp_to_show(ref_depth_est[0] * final_mask[0]).detach().cpu()) / far)
+            # cv2.waitKey(0)
+        
+        # project valid depth to 3d points
+        # Note that we filter the valid point at last to facilitate batch parallel processing
+        height, width = depth_est_averaged.shape[1:3]
+        x, y = torch.meshgrid(torch.arange(0, width), torch.arange(0, height), indexing='xy')
+        x, y = x.cuda().unsqueeze(0).repeat(b, 1, 1), y.cuda().unsqueeze(0).repeat(b, 1, 1)
+        # print("valid_points", valid_points.sum())
+        # x, y, depth = x[valid_points], y[valid_points], depth_est_averaged[valid_points]
+        uvd_ref = (torch.stack((x, y, torch.ones_like(x)), dim=0) * depth_est_averaged).view(b, 3, -1)
+        xyz_ref = torch.matmul(torch.linalg.inv(ref_intrinsics), uvd_ref)
+        xyz_world = torch.matmul(torch.linalg.inv(ref_extrinsics),
+                            torch.cat((xyz_ref, torch.ones_like(x.view(b, 1, -1))), dim=1))[:3] # (B, 4, H*W)
+        colors = ref_img.view(b, c, -1) # (B, C=3, H*W)
+        
+        valid_points = final_mask.reshape(b, -1) # (B, H*W)
+        for b_idx in range(b):
+            vertices[b_idx].append(xyz_world.transpose(1, 2)[b_idx][valid_points[b_idx]])
+            vertices_color[b_idx].append(colors.transpose(1, 2)[b_idx][valid_points[b_idx]])
+        
+    # concat all vertices for every scene/batch
+    # every item in vertices (n_points, 4)
+    for b_idx in range(b):
+        vertices[b_idx] = torch.cat(vertices[b_idx], dim=0)
+        vertices_color[b_idx] = torch.cat(vertices_color[b_idx], dim=0)
+        
+    if False:
+        import open3d
+        pcd = open3d.geometry.PointCloud()
+        pcd.points = open3d.utility.Vector3dVector(vertices[0][:, :3].detach().cpu())
+        pcd.colors = open3d.utility.Vector3dVector(vertices_color[0].detach().cpu())
+        open3d.visualization.draw_geometries([pcd])
+        
+    return {"vertices": vertices, "vertices_color": vertices_color} # [(n_points, 4) * B], [(n_points, 3) * B]
+
+
 
 class PCDGenerator(nn.Module):
     mvsnet: MVSNet
@@ -122,8 +206,6 @@ class PCDGenerator(nn.Module):
         normalized_intrinsics : torch.Tensor = batch["context"]["origin_intrinsics"] # (B, V, 3, 3)
         nears, fars = batch["context"]["near"], batch["context"]["far"] # (B, V)
         b, v, c, h, w = imgs.shape
-        # convert image color channel: rgb -> bgr
-        imgs = torch.stack((imgs[..., 2, :, :], imgs[..., 1, :, :], imgs[..., 0, :, :]), dim=2)
         # crop image to adapt to mvsnet (h and w can be devided by 16)
         if h % 16 != 0:
             imgs = imgs[..., :-(h % 16), :]
@@ -159,6 +241,9 @@ class PCDGenerator(nn.Module):
                 "stage2": stage2_pjmats,
                 "stage3": stage3_pjmats
             }
+            
+            # the intrinsics adapts depth map (w, h), not (w / 4, h / 4)
+            intrinsics[..., :2, :] *= 4
         
         # prepare depth bound (inverse depth) [v*b, d]
         min_depth = (1.0 / fars).view(b*v, 1)
@@ -191,81 +276,8 @@ class PCDGenerator(nn.Module):
             elif self.use_cas_mvsnet:
                 for stage in proj_mat:
                     proj_mat[stage] = proj_mat[stage].roll(dims=1, shifts=-1)
-            
-        # the final point cloud list (per batch)
-        vertices = [[] for _ in range(b)]
-        # for every reference image and source image, compute the photometric mask and geometric mask
-        # and generate point cloud
-        for ref_idx in range(v):
-            all_srcview_depth_ests = []
-            all_srcview_x = []
-            all_srcview_y = []
-            all_srcview_geomask = []
-            geo_mask_sum = 0
-            
-            ref_depth_est, ref_intrinsics, ref_extrinsics = depths_est[ref_idx], intrinsics[:, ref_idx, :, :], extrinsics[:, ref_idx, :, :]
-            
-            for src_idx in range(v):
-                if src_idx == ref_idx: continue
-                
-                geo_mask, depth_reprojected, x2d_src, y2d_src = check_geometric_consistency(
-                    ref_depth_est, ref_intrinsics, ref_extrinsics,
-                    depths_est[src_idx], intrinsics[:, src_idx, :, :], extrinsics[:, src_idx, :, :])
-                
-                geo_mask_sum += geo_mask
-                all_srcview_depth_ests.append(depth_reprojected)
-                all_srcview_x.append(x2d_src)
-                all_srcview_y.append(y2d_src)
-                all_srcview_geomask.append(geo_mask)
-                pass
-            
-            depth_est_averaged = (sum(all_srcview_depth_ests) + depths_est[ref_idx]) / (geo_mask_sum + 1)
-            # at least half of source views matched
-            geo_mask = geo_mask_sum >= v // 2
-            photo_mask = photometric_confidences[ref_idx] > 0.8
-            final_mask = torch.logical_and(photo_mask, geo_mask)
-            
-            if False:
-                import cv2
-                ref_img = imgs[:, ref_idx, :, :]
-                ref_depth_est = depths_est[ref_idx]
-                def interp_to_show(img):
-                    return F.interpolate(img.unsqueeze(0).unsqueeze(0), size=(256, 256), mode='bilinear').squeeze(0).squeeze(0)
-                cv2.imshow('ref_img', np.array(ref_img[0].transpose(0, 1).transpose(1, 2).cpu()))
-                cv2.imshow('ref_depth', np.array(interp_to_show(ref_depth_est[0]).cpu()) / 5)
-                cv2.imshow('ref_depth * photo_mask', np.array(interp_to_show(ref_depth_est[0] * photo_mask[0]).cpu()) / 5)
-                cv2.imshow('ref_depth * geo_mask', np.array(interp_to_show(ref_depth_est[0] * geo_mask[0]).cpu()) / 5)
-                cv2.imshow('ref_depth * mask', np.array(interp_to_show(ref_depth_est[0] * final_mask[0]).cpu()) / 5)
-                cv2.waitKey(0)
-            
-            # project valid depth to 3d points
-            # Note that we filter the valid point at last to facilitate batch parallel processing
-            height, width = depth_est_averaged.shape[1:3]
-            x, y = torch.meshgrid(torch.arange(0, width), torch.arange(0, height), indexing='xy')
-            x, y = x.cuda().unsqueeze(0).repeat(b, 1, 1), y.cuda().unsqueeze(0).repeat(b, 1, 1)
-            # print("valid_points", valid_points.sum())
-            # x, y, depth = x[valid_points], y[valid_points], depth_est_averaged[valid_points]
-            uvd_ref = (torch.stack((x, y, torch.ones_like(x)), dim=0) * depth_est_averaged).view(b, 3, -1)
-            xyz_ref = torch.matmul(torch.linalg.inv(ref_intrinsics), uvd_ref)
-            xyz_world = torch.matmul(torch.linalg.inv(ref_extrinsics),
-                                torch.cat((xyz_ref, torch.ones_like(x.view(b, 1, -1))), dim=1))[:3] # (B, 4, H*W)
-            
-            valid_points = final_mask.reshape(b, -1) # (B, H*W)
-            for b_idx in range(b):
-                vertices[b_idx].append(xyz_world.transpose(1, 2)[b_idx][valid_points[b_idx]])
-            
-        # concat all vertices for every scene/batch
-        # every item in vertices (n_points, 4)
-        for b_idx in range(b):
-            vertices[b_idx] = torch.cat(vertices[b_idx], dim=0)
-            
-        if False:
-            import open3d
-            pcd = open3d.geometry.PointCloud()
-            pcd.points = open3d.utility.Vector3dVector(vertices[0][:, :3].cpu())
-            open3d.visualization.draw_geometries([pcd])
-            
-        
-        return vertices # [(n_points, 4) * B]
-    
+                    
+        pcd = generate_point_cloud_from_depth_maps(imgs, extrinsics, intrinsics, depths_est, photometric_confidences)
+        return pcd
     pass
+    

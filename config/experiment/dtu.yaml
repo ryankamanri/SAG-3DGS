@@ -2,7 +2,7 @@
 
 defaults:
   - override /dataset: re10k
-  - override /model/encoder: costvolume
+  - override /model/encoder: cascade
   - override /loss: [mse, lpips]
 
 wandb:
@@ -11,7 +11,7 @@ wandb:
 
 data_loader:
   train:
-    batch_size: 14
+    batch_size: 1
 
 trainer:
   max_steps: 300_001

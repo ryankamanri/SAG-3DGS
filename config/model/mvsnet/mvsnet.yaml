@@ -1,7 +1,15 @@
-# mvsnet
+# mvsnet pretrained 
 # model: mvsnet # `mvsnet` or `cas_mvsnet`
-# ckpt_path: pretrained/model_000014.ckpt
+# ckpt_path: pretrained/model_origin_000014.ckpt
+
+# mvsnet retrain (arbitrary view sample) (better)
+# model: mvsnet # `mvsnet` or `cas_mvsnet`
+# ckpt_path: pretrained/model_000015.ckpt
 
 # cascade mvsnet
+# model: cas_mvsnet # `mvsnet` or `cas_mvsnet`
+# ckpt_path: pretrained/casmvsnet.ckpt
+
+# cascade mvsnet retrained (arbitrary view sample) (better)
 model: cas_mvsnet # `mvsnet` or `cas_mvsnet`
-ckpt_path: pretrained/casmvsnet.ckpt
+ckpt_path: pretrained/casmvsnet_model_000015.ckpt
