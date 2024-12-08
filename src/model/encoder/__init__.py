@@ -11,7 +11,7 @@ ENCODERS = {
     "cascade": (EncoderCascade, None)
 }
 
-EncoderCfg = EncoderCascadeCfg # Note that this cfg should be changed manually.
+EncoderCfg = EncoderCascadeCfg | EncoderCostVolumeCfg # Note that this cfg should be changed manually.
 
 
 def get_encoder(cfg: EncoderCfg) -> tuple[Encoder, Optional[EncoderVisualizer]]:

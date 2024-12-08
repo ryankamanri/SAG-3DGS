@@ -34,3 +34,27 @@ class PositionalEncoding(nn.Module):
 
     def d_out(self, dimensionality: int):
         return self.frequencies.numel() * dimensionality
+
+
+
+def camera_positional_encoding(extrinsics: torch.Tensor, intrinsics: torch.Tensor, num_frequencies=5):
+    """
+    input:
+        `extrinsics`: (B, V, 4, 4)
+        `intrinsics`: (B, V, 3, 3)
+    
+    output: (B, V, num_frequencies * 32)
+    """
+    R = extrinsics[..., :3, :3].flatten(2, 3) # (B, V, 9)
+    t = extrinsics[..., :3, 3] # (B, V, 3)
+    fx = intrinsics[..., 0, 0].unsqueeze(-1) # (B, V, 1)
+    fy = intrinsics[..., 1, 1].unsqueeze(-1) # (B, V, 1)
+    c = intrinsics[..., :2, 2] # (B, V, 2)
+    
+    pos = torch.cat((R, t, fx, fy, c), dim=2).unsqueeze(-1) # (B, V, 16, 1)
+    
+    frequencies = 2 ** torch.arange(num_frequencies, device=extrinsics.device)
+    
+    encoded = torch.cat((torch.sin(frequencies * pos), torch.cos(frequencies * pos)), dim=-1) # (B, V, 16, 2 * num_frequencies)
+    
+    return encoded.flatten(2, 3)

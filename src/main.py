@@ -30,7 +30,7 @@ with install_import_hook(
     from src.model.decoder import get_decoder
     from src.model.encoder import get_encoder
     from src.model.model_wrapper import ModelWrapper
-    from src.model.mvsnet import PCDGenerator
+    from src.model.encoder.mvsnet import PCDGenerator
 
 
 def cyan(text: str) -> str:

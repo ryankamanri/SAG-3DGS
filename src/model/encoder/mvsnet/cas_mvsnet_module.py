@@ -7,6 +7,7 @@ from ..mvsnet import CascadeMVSNet, generate_point_cloud_from_depth_maps
 
 @dataclass
 class ReferenceViewResult:
+    img: torch.Tensor # (B, C, H, W)
     pretrained: dict[str, object]
     backbone: dict[str, object]
 
@@ -19,7 +20,7 @@ class CasMVSNetModule(nn.Module):
     pretrained_cas_mvsnet: CascadeMVSNet
     backbone_cas_mvsnet: CascadeMVSNet
 
-    def __init__(self, cas_mvsnet_ckpt_path) -> None:
+    def __init__(self, cas_mvsnet_ckpt_path, load_to_backbone=False) -> None:
         super().__init__()
         print(f"loading checkpoint from {cas_mvsnet_ckpt_path}...")
         # initialize pretrained mvsnet
@@ -29,11 +30,13 @@ class CasMVSNetModule(nn.Module):
         self.pretrained_cas_mvsnet.eval()
         
         self.backbone_cas_mvsnet = CascadeMVSNet(refine=False, is_used_on_nvs=True)
+        if load_to_backbone:
+            self.pretrained_cas_mvsnet.load_state_dict(state_dict["model"])
         
     def preprocess(self, context, ndepths = 192):
-        imgs : torch.Tensor = context["origin_image"] # (B, V, C, H, W)
+        imgs : torch.Tensor = context["image"] # (B, V, C, H, W), or get the origin size image by context["origin_image"]
         c2w_extrinsics : torch.Tensor = context["extrinsics"] # (B, V, 4, 4)
-        normalized_intrinsics : torch.Tensor = context["origin_intrinsics"] # (B, V, 3, 3)
+        normalized_intrinsics : torch.Tensor = context["intrinsics"] # (B, V, 3, 3), or get the origin size image by context["origin_intrinsics"]
         nears, fars = context["near"], context["far"] # (B, V)
         b, v, c, h, w = imgs.shape
         # crop image to adapt to mvsnet (h and w can be devided by 16)
@@ -78,6 +81,7 @@ class CasMVSNetModule(nn.Module):
         )
         depth_values = 1 / depth_candi_curr # (B*V, ndepths)
         depth_values = depth_values.reshape(b, v, ndepths) # (B, V, ndepths)
+        depth_values = depth_values.flip(dims=(2,)) # start from near to far.
         return imgs, extrinsics, intrinsics, proj_mat, depth_values
         
     def forward(self, context, ndepths=128):
@@ -96,14 +100,15 @@ class CasMVSNetModule(nn.Module):
             pretrained_photometric_confidences.append(pretrained_outputs["photometric_confidence"])
             
             backbone_outputs = self.backbone_cas_mvsnet(imgs, proj_mat, depth_values[:, vi, :])
-            result.ref_view_result_list.append(ReferenceViewResult(pretrained_outputs, backbone_outputs))
+            result.ref_view_result_list.append(ReferenceViewResult(imgs[:, vi], pretrained_outputs, backbone_outputs))
             
             # switch to next image
             imgs = imgs.roll(dims=1, shifts=-1)
             for stage in proj_mat:
                 proj_mat[stage] = proj_mat[stage].roll(dims=1, shifts=-1)
-                    
-        pcd = generate_point_cloud_from_depth_maps(imgs, extrinsics, intrinsics, pretrained_depths_est, pretrained_photometric_confidences)
+        
+        with torch.no_grad():            
+            pcd = generate_point_cloud_from_depth_maps(imgs, extrinsics, intrinsics, pretrained_depths_est, pretrained_photometric_confidences)
         result.registed_pcd = pcd
         
         return result

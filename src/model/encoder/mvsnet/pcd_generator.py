@@ -4,6 +4,7 @@ import open3d.visualization
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import open3d as o3d
 from dataclasses import dataclass
 from .mvsnet import MVSNet
 from .cas_mvsnet import CascadeMVSNet
@@ -88,13 +89,81 @@ def check_geometric_consistency(depth_ref, intrinsics_ref, extrinsics_ref, depth
     depth_diff = torch.abs(depth_reprojected - depth_ref)
     relative_depth_diff = depth_diff / depth_ref
 
-    mask = torch.logical_and(dist < 1, relative_depth_diff < 0.01)
+    # mask = torch.logical_and(dist < 1, relative_depth_diff < 0.01)
+    mask = torch.logical_and(dist < 5, relative_depth_diff < 0.05)
     depth_reprojected[~mask] = 0
 
     return mask, depth_reprojected, x2d_src, y2d_src
 
 
-def generate_point_cloud_from_depth_maps(imgs: torch.Tensor, extrinsics, intrinsics, depths_est, photometric_confidences):
+def colored_icp_registration(
+    source: o3d.geometry.PointCloud, 
+    target: o3d.geometry.PointCloud, 
+    voxel_radius = [0.04, 0.02, 0.01], 
+    max_iter = [50, 30, 14]
+    ):
+    current_transformation = np.identity(4)
+    
+    for scale in range(len(voxel_radius)):
+        iter = max_iter[scale]
+        radius = voxel_radius[scale]
+        # print([iter, radius, scale])
+    
+        # print("3-1. 下采样的点云的体素大小： %.2f" % radius)
+        source_down = source.voxel_down_sample(radius)
+        target_down = target.voxel_down_sample(radius)
+    
+        # print("3-2. 法向量估计.")
+        source_down.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius * 2, max_nn=30))
+        target_down.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius * 2, max_nn=30))
+    
+        # print("3-3. 应用彩色点云配准")
+        try:        
+            result_icp = o3d.pipelines.registration.registration_colored_icp(
+                source_down, target_down, radius, current_transformation,
+                o3d.pipelines.registration.TransformationEstimationForColoredICP(),
+                o3d.pipelines.registration.ICPConvergenceCriteria(relative_fitness=1e-6,
+                                                                relative_rmse=1e-6,
+                                                                max_iteration=iter))
+        except RuntimeError as e:
+            pass
+            
+        current_transformation = result_icp.transformation
+        # print(result_icp)
+
+    return result_icp
+
+
+def global_point_cloud_registration(vertices: list[list[torch.Tensor]], vertices_color: list[list[torch.Tensor]], b, v):
+    """
+    from J. Park, Q.-Y. Zhou, V. Koltun, Colored Point Cloud Registration Revisited, ICCV 2017
+    
+    input:
+        `vertices`: `[[(npoints, 4) * V] * B]`
+        `vertices_color`: `[[(npoints, 3) * V] * B]`
+        `b`: batch size
+        `v`: num of view >=2
+        
+    output: `[(npoints_sum, 4) * B], [(npoints_sum, 3) * B]`
+    """
+    
+    for batch_idx in range(b):
+        # build open3d point cloud class list(per view).
+        pcd_list = []
+        for view_idx in range(v):
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = open3d.utility.Vector3dVector(vertices[batch_idx][view_idx][:, :3].detach().cpu())
+            pcd.colors = open3d.utility.Vector3dVector(vertices_color[batch_idx][view_idx].detach().cpu())
+            pcd_list.append(pcd)
+            
+        for source_idx in range(v-1):
+            for target_idx in range(source_idx+1, v):
+                if source_idx == target_idx: continue
+                result_icp = colored_icp_registration(pcd_list[source_idx], pcd_list[target_idx])
+    pass
+
+
+def generate_point_cloud_from_depth_maps(imgs: torch.Tensor, extrinsics, intrinsics, depths_est, photometric_confidences, use_point_registration=False):
     b, v, c, h, w = imgs.shape
     # the final point cloud list (per batch)
     vertices = [[] for _ in range(b)]
@@ -156,12 +225,18 @@ def generate_point_cloud_from_depth_maps(imgs: torch.Tensor, extrinsics, intrins
         xyz_world = torch.matmul(torch.linalg.inv(ref_extrinsics),
                             torch.cat((xyz_ref, torch.ones_like(x.view(b, 1, -1))), dim=1))[:3] # (B, 4, H*W)
         colors = ref_img.view(b, c, -1) # (B, C=3, H*W)
+        # colors = torch.rand(c).view(1, c, 1).repeat(b, 1, h*w).cuda() # show point from multi-view
         
         valid_points = final_mask.reshape(b, -1) # (B, H*W)
         for b_idx in range(b):
             vertices[b_idx].append(xyz_world.transpose(1, 2)[b_idx][valid_points[b_idx]])
             vertices_color[b_idx].append(colors.transpose(1, 2)[b_idx][valid_points[b_idx]])
+    
+    # TODO: change to voxel downsample (after voxel segmentation).
+    if use_point_registration:
+        global_point_cloud_registration(vertices, vertices_color, b, v)
         
+    
     # concat all vertices for every scene/batch
     # every item in vertices (n_points, 4)
     for b_idx in range(b):

@@ -78,14 +78,14 @@ class Deconv2d(nn.Module):
 
        """
 
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, output_padding=0,
                  relu=True, bn=True, bn_momentum=0.1, init_method="xavier", **kwargs):
         super(Deconv2d, self).__init__()
         self.out_channels = out_channels
         assert stride in [1, 2]
         self.stride = stride
 
-        self.conv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride=stride,
+        self.conv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride=stride, padding=padding, output_padding=output_padding, 
                                        bias=(not bn), **kwargs)
         self.bn = nn.BatchNorm2d(out_channels, momentum=bn_momentum) if bn else None
         self.relu = relu
@@ -453,7 +453,14 @@ class FeatureNet(nn.Module):
 class CostRegNet(nn.Module):
     def __init__(self, in_channels, base_channels):
         super(CostRegNet, self).__init__()
-        self.conv0 = Conv3d(in_channels, base_channels, padding=1)
+        self.share_cr = False
+        if type(in_channels) == list:
+            self.share_cr = True
+            self.conv0 = []
+            for c in in_channels:
+                self.conv0.append(Conv3d(c, base_channels, padding=1))
+            self.conv0 = nn.ModuleList(self.conv0)
+        else: self.conv0 = Conv3d(in_channels, base_channels, padding=1)
 
         self.conv1 = Conv3d(base_channels, base_channels * 2, stride=2, padding=1)
         self.conv2 = Conv3d(base_channels * 2, base_channels * 2, padding=1)
@@ -472,8 +479,8 @@ class CostRegNet(nn.Module):
 
         self.prob = nn.Conv3d(base_channels, 1, 3, stride=1, padding=1, bias=False)
 
-    def forward(self, x):
-        conv0 = self.conv0(x)
+    def forward(self, x, stage=0):
+        conv0 = self.conv0[stage](x) if self.share_cr else self.conv0(x)
         conv2 = self.conv2(self.conv1(conv0))
         conv4 = self.conv4(self.conv3(conv2))
         x = self.conv6(self.conv5(conv4))
@@ -528,46 +535,30 @@ def cas_mvsnet_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
     return total_loss, depth_loss
 
 
-def get_cur_depth_range_samples(cur_depth, ndepth, depth_inteval_pixel, shape, max_depth=192.0, min_depth=0.0):
-    #shape, (B, H, W)
-    #cur_depth: (B, H, W)
-    #return depth_range_values: (B, D, H, W)
-    cur_depth_min = (cur_depth - ndepth / 2 * depth_inteval_pixel)  # (B, H, W)
-    cur_depth_max = (cur_depth + ndepth / 2 * depth_inteval_pixel)
-    # cur_depth_min = (cur_depth - ndepth / 2 * depth_inteval_pixel).clamp(min=0.0)   #(B, H, W)
-    # cur_depth_max = (cur_depth_min + (ndepth - 1) * depth_inteval_pixel).clamp(max=max_depth)
 
-    assert cur_depth.shape == torch.Size(shape), "cur_depth:{}, input shape:{}".format(cur_depth.shape, shape)
-    new_interval = (cur_depth_max - cur_depth_min) / (ndepth - 1)  # (B, H, W)
-
-    depth_range_samples = cur_depth_min.unsqueeze(1) + (torch.arange(0, ndepth, device=cur_depth.device,
-                                                                  dtype=cur_depth.dtype,
-                                                                  requires_grad=False).reshape(1, -1, 1,
-                                                                                               1) * new_interval.unsqueeze(1))
-
-    return depth_range_samples
-
-
-def get_depth_range_samples(cur_depth, ndepth, depth_inteval_pixel, device, dtype, shape,
-                           max_depth=192.0, min_depth=0.0):
+def get_depth_range_samples(cur_depth, cur_period, ndepth, device, shape):
     #shape: (B, H, W)
     #cur_depth: (B, H, W) or (B, D)
     #return depth_range_samples: (B, D, H, W)
     if cur_depth.dim() == 2:
-        cur_depth_min = cur_depth[:, 0]  # (B,)
-        cur_depth_max = cur_depth[:, -1]
-        new_interval = (cur_depth_max - cur_depth_min) / (ndepth - 1)  # (B, )
+        b, d = cur_depth.shape
+        cur_depth_inv_min = (1.0 / cur_depth[:, -1]).unsqueeze(-1)  # (B, 1)
+        cur_depth_inv_max = (1.0 / cur_depth[:, 0]).unsqueeze(-1)
+        cur_period = 1.0 / ndepth
 
-        depth_range_samples = cur_depth_min.unsqueeze(1) + (torch.arange(0, ndepth, device=device, dtype=dtype,
-                                                                       requires_grad=False).reshape(1, -1) * new_interval.unsqueeze(1)) #(B, D)
-
+        # depth_range_samples = cur_depth_min.unsqueeze(1) + (torch.arange(0, ndepth, device=device, dtype=dtype, requires_grad=False).reshape(1, -1) * new_interval.unsqueeze(1)) #(B, D)
+        depth_range_samples = 1.0 / (cur_depth_inv_min + (cur_depth_inv_max - cur_depth_inv_min) * (1 - cur_period * torch.arange(0, ndepth, device=device).reshape(1, -1).repeat(b, 1)))  #(B, D)
         depth_range_samples = depth_range_samples.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, shape[1], shape[2]) #(B, D, H, W)
 
     else:
+        b, h, w = cur_depth.shape
+        cur_depth_inv_min = (1.0 / cur_depth - cur_period / 2).unsqueeze(1) # (B, 1, H, W)
+        cur_depth_inv_max = (1.0 / cur_depth + cur_period / 2).unsqueeze(1)
+        cur_period *= 1.0 / ndepth
+        
+        depth_range_samples = 1.0 / (cur_depth_inv_min + (cur_depth_inv_max - cur_depth_inv_min) * (1 - cur_period * torch.arange(0, ndepth, device=device).reshape(1, -1, 1, 1).repeat(b, 1, h, w)))  #(B, D, H, W)
 
-        depth_range_samples = get_cur_depth_range_samples(cur_depth, ndepth, depth_inteval_pixel, shape, max_depth, min_depth)
-
-    return depth_range_samples
+    return depth_range_samples, cur_period
 
 
 

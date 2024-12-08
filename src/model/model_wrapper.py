@@ -130,7 +130,10 @@ class ModelWrapper(LightningModule):
         batch: BatchedExample = self.data_shim(batch)
         _, _, _, h, w = batch["target"]["image"].shape
 
-        vertices_per_batch = self.pcd_generator(batch)
+        # Run the model.
+        gaussians = self.encoder(
+            batch["context"], self.global_step, False, scene_names=batch["scene"]
+        )
         
         print(
             f"train step {self.global_step}; "
@@ -142,10 +145,7 @@ class ModelWrapper(LightningModule):
         
         if True:
             return torch.tensor(0.0, requires_grad=True, device=self.device)
-        # Run the model.
-        gaussians = self.encoder(
-            batch["context"], self.global_step, False, scene_names=batch["scene"]
-        )
+
         output = self.decoder.forward(
             gaussians,
             batch["target"]["extrinsics"],

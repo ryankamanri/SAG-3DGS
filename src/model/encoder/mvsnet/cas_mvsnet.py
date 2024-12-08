@@ -10,7 +10,7 @@ class DepthNet(nn.Module):
         self.is_used_on_nvs = is_used_on_nvs
         super(DepthNet, self).__init__()
 
-    def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None):
+    def forward(self, stage_idx, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None):
         proj_matrices = torch.unbind(proj_matrices, 1)
         assert len(features) == len(proj_matrices), "Different number of images and projection matrices"
         assert depth_values.shape[1] == num_depth, "depth_values.shape[1]:{}  num_depth:{}".format(depth_values.shapep[1], num_depth)
@@ -47,7 +47,7 @@ class DepthNet(nn.Module):
         volume_variance = volume_sq_sum.div_(num_views).sub_(volume_sum.div_(num_views).pow_(2))
 
         # step 3. cost volume regularization
-        cost_reg = cost_regularization(volume_variance)
+        cost_reg = cost_regularization(volume_variance, stage_idx)
         # cost_reg = F.upsample(cost_reg, [num_depth * 4, img_height, img_width], mode='trilinear')
         prob_volume_pre = cost_reg.squeeze(1)
 
@@ -110,9 +110,6 @@ class CascadeMVSNet(nn.Module):
         self.DepthNet = DepthNet(is_used_on_nvs)
 
     def forward(self, imgs, proj_matrices, depth_values):
-        depth_min = float(depth_values[0, 0].cpu().numpy())
-        depth_max = float(depth_values[0, -1].cpu().numpy())
-        depth_interval = (depth_max - depth_min) / depth_values.size(1)
 
         # step 1. feature extraction
         features = []
@@ -122,6 +119,7 @@ class CascadeMVSNet(nn.Module):
 
         outputs = {}
         depth, cur_depth = None, None
+        cur_period = 1
         for stage_idx in range(self.num_stage):
             # print("*********************stage{}*********************".format(stage_idx + 1))
             #stage feature, proj_mats, scales
@@ -139,16 +137,13 @@ class CascadeMVSNet(nn.Module):
                                                 align_corners=Align_Corners_Range).squeeze(1)
             else:
                 cur_depth = depth_values
-            depth_range_samples = get_depth_range_samples(cur_depth=cur_depth,
+            depth_range_samples, cur_period = get_depth_range_samples(cur_depth=cur_depth,
+                                                          cur_period=cur_period, 
                                                         ndepth=self.ndepths[stage_idx],
-                                                        depth_inteval_pixel=self.depth_interals_ratio[stage_idx] * depth_interval,
-                                                        dtype=img[0].dtype,
                                                         device=img[0].device,
-                                                        shape=[img.shape[0], img.shape[2], img.shape[3]],
-                                                        max_depth=depth_max,
-                                                        min_depth=depth_min)
+                                                        shape=[img.shape[0], img.shape[2], img.shape[3]])
 
-            outputs_stage = self.DepthNet(features_stage, proj_matrices_stage,
+            outputs_stage = self.DepthNet(stage_idx, features_stage, proj_matrices_stage,
                                           depth_values=F.interpolate(depth_range_samples.unsqueeze(1),
                                                                      [self.ndepths[stage_idx], img.shape[2]//int(stage_scale), img.shape[3]//int(stage_scale)], mode='trilinear',
                                                                      align_corners=Align_Corners_Range).squeeze(1),

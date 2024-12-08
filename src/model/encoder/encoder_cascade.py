@@ -17,7 +17,10 @@ from .backbone import (
 )
 from .common.gaussian_adapter import GaussianAdapter, GaussianAdapterCfg
 from .encoder import Encoder
-from .cas_mvsnet_module import CasMVSNetModule, CasMVSNetModuleResult
+from .mvsnet.cas_mvsnet_module import CasMVSNetModule, CasMVSNetModuleResult
+from ..encodings.positional_encoding import camera_positional_encoding
+from .backbone.multi_costvolume_transformer_module import MultiCostVolumeTransformerModule
+from .backbone.hash_table_voxelized_gaussian_adapter_module import HashTableVoxelizedGaussianAdapterModule
 
 
 # @dataclass
@@ -57,10 +60,24 @@ class EncoderCascadeCfg:
 
 class EncoderCascade(Encoder[EncoderCascadeCfg]):
     cas_mvsnet_module: CasMVSNetModule
+    multi_costvolume_transformer_module: MultiCostVolumeTransformerModule
+    gaussian_adapter_module: HashTableVoxelizedGaussianAdapterModule
     
     def __init__(self, cfg: EncoderCascadeCfg) -> None:
         super().__init__(cfg)
         self.cas_mvsnet_module = CasMVSNetModule(cfg.cas_mvsnet_ckpt_path)
+        self.multi_costvolume_transformer_module = MultiCostVolumeTransformerModule(
+            num_transformer_layers=2 * 2, # need to be 2n
+            input_channels=75,
+            out_channels=14, # 3(means)+7(quaternion+scale)+3*1(shs)+1(opacity)
+            num_head=1, # TODO: fix abnormal code of multi-head attention.
+            ffn_dim_expansion=4,
+            no_cross_attn=False
+        )
+        
+        self.multiview_trans_attn_split = 16
+        
+        self.gaussian_adapter_module = HashTableVoxelizedGaussianAdapterModule([32, 128, 512])
 
     def forward(
         self,
@@ -72,10 +89,11 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         ndepths = 192
     ) -> Gaussians:
         cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(context)
+        cam_poses = camera_positional_encoding(context["extrinsics"], context["intrinsics"], num_frequencies=2)
+        hash_tables = self.multi_costvolume_transformer_module(cas_module_result, cam_poses, self.multiview_trans_attn_split)
+        gaussians = self.gaussian_adapter_module(hash_tables, context["extrinsics"], context["far"])
         
-        print(True)
-        
-        return Gaussians(torch.zeros(0, 0, 0), torch.zeros(0, 0, 0, 0), torch.zeros(0, 0, 3, 0), torch.zeros(0, 0))
+        return gaussians
 
     @property
     def sampler(self):
