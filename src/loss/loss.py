@@ -7,7 +7,7 @@ from torch import Tensor, nn
 
 from ..dataset.types import BatchedExample
 from ..model.decoder.decoder import DecoderOutput
-from ..model.types import Gaussians
+from ..model.types import EncoderOutput
 
 T_cfg = TypeVar("T_cfg")
 T_wrapper = TypeVar("T_wrapper")
@@ -30,7 +30,7 @@ class Loss(nn.Module, ABC, Generic[T_cfg, T_wrapper]):
         self,
         prediction: DecoderOutput,
         batch: BatchedExample,
-        gaussians: Gaussians,
+        gaussians: EncoderOutput,
         global_step: int,
     ) -> Float[Tensor, ""]:
         pass

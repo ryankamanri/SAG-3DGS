@@ -6,7 +6,7 @@ from jaxtyping import Float
 from torch import Tensor, nn
 
 from ...dataset import DatasetCfg
-from ..types import Gaussians
+from ..types import EncoderOutput
 
 DepthRenderingMode = Literal[
     "depth",
@@ -37,7 +37,7 @@ class Decoder(nn.Module, ABC, Generic[T]):
     @abstractmethod
     def forward(
         self,
-        gaussians: Gaussians,
+        gaussians: EncoderOutput,
         extrinsics: Float[Tensor, "batch view 4 4"],
         intrinsics: Float[Tensor, "batch view 3 3"],
         near: Float[Tensor, "batch view"],

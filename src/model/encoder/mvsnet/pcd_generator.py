@@ -250,7 +250,7 @@ def generate_point_cloud_from_depth_maps(imgs: torch.Tensor, extrinsics, intrins
         pcd.colors = open3d.utility.Vector3dVector(vertices_color[0].detach().cpu())
         open3d.visualization.draw_geometries([pcd])
         
-    return {"vertices": vertices, "vertices_color": vertices_color} # [(n_points, 4) * B], [(n_points, 3) * B]
+    return vertices, vertices_color # [(n_points, 4) * B], [(n_points, 3) * B]
 
 
 

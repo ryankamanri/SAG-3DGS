@@ -5,7 +5,7 @@ from torch import Tensor
 
 from ..dataset.types import BatchedExample
 from ..model.decoder.decoder import DecoderOutput
-from ..model.types import Gaussians
+from ..model.types import EncoderOutput
 from .loss import Loss
 
 
@@ -24,7 +24,7 @@ class LossMse(Loss[LossMseCfg, LossMseCfgWrapper]):
         self,
         prediction: DecoderOutput,
         batch: BatchedExample,
-        gaussians: Gaussians,
+        gaussians: EncoderOutput,
         global_step: int,
     ) -> Float[Tensor, ""]:
         delta = prediction.color - batch["target"]["image"]

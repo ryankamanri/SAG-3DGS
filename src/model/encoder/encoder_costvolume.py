@@ -11,7 +11,7 @@ from ...dataset.shims.bounds_shim import apply_bounds_shim
 from ...dataset.shims.patch_shim import apply_patch_shim
 from ...dataset.types import BatchedExample, DataShim
 from ...geometry.projection import sample_image_grid
-from ..types import Gaussians
+from ..types import EncoderOutput
 from .backbone import (
     BackboneMultiview,
 )
@@ -146,7 +146,7 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
         deterministic: bool = False,
         visualization_dump: Optional[dict] = None,
         scene_names: Optional[list] = None,
-    ) -> Gaussians:
+    ) -> EncoderOutput:
         device = context["image"].device
         b, v, _, h, w = context["image"].shape
 
@@ -227,7 +227,7 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
         # Optionally apply a per-pixel opacity.
         opacity_multiplier = 1
 
-        return Gaussians(
+        return EncoderOutput(
             rearrange(
                 gaussians.means,
                 "b v r srf spp xyz -> b (v r srf spp) xyz",

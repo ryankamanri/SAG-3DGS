@@ -9,7 +9,7 @@ from torch import Tensor
 from ..dataset.types import BatchedExample
 from ..misc.nn_module_tools import convert_to_buffer
 from ..model.decoder.decoder import DecoderOutput
-from ..model.types import Gaussians
+from ..model.types import EncoderOutput
 from .loss import Loss
 
 
@@ -37,7 +37,7 @@ class LossLpips(Loss[LossLpipsCfg, LossLpipsCfgWrapper]):
         self,
         prediction: DecoderOutput,
         batch: BatchedExample,
-        gaussians: Gaussians,
+        gaussians: EncoderOutput,
         global_step: int,
     ) -> Float[Tensor, ""]:
         image = batch["target"]["image"]

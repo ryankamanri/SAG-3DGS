@@ -3,7 +3,7 @@ from jaxtyping import Float, Shaped
 from torch import Tensor
 
 from ..model.decoder.cuda_splatting import render_cuda_orthographic
-from ..model.types import Gaussians
+from ..model.types import EncoderOutput
 from ..visualization.annotation import add_label
 from ..visualization.drawing.cameras import draw_cameras
 from .drawing.cameras import compute_equal_aabb_with_margin
@@ -23,7 +23,7 @@ def pad(images: list[Shaped[Tensor, "..."]]) -> list[Shaped[Tensor, "..."]]:
 
 
 def render_projections(
-    gaussians: Gaussians,
+    gaussians: EncoderOutput,
     resolution: int,
     margin: float = 0.1,
     draw_label: bool = True,

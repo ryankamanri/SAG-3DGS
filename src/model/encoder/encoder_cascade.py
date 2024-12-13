@@ -11,10 +11,11 @@ from ...dataset.shims.bounds_shim import apply_bounds_shim
 from ...dataset.shims.patch_shim import apply_patch_shim
 from ...dataset.types import BatchedExample, DataShim
 from ...geometry.projection import sample_image_grid
-from ..types import Gaussians
+from ..types import EncoderOutput
 from .backbone import (
     BackboneMultiview,
 )
+from ..types import EncoderOutput
 from .common.gaussian_adapter import GaussianAdapter, GaussianAdapterCfg
 from .encoder import Encoder
 from .mvsnet.cas_mvsnet_module import CasMVSNetModule, CasMVSNetModuleResult
@@ -23,39 +24,12 @@ from .backbone.multi_costvolume_transformer_module import MultiCostVolumeTransfo
 from .backbone.hash_table_voxelized_gaussian_adapter_module import HashTableVoxelizedGaussianAdapterModule
 
 
-# @dataclass
-# class OpacityMappingCfg:
-#     initial: float
-#     final: float
-#     warm_up: int
 
 
 @dataclass
 class EncoderCascadeCfg:
     name: Literal["cascade"]
     cas_mvsnet_ckpt_path: str
-    # d_feature: int
-    # num_depth_candidates: int
-    # num_surfaces: int
-    # visualizer: EncoderVisualizerCostVolumeCfg
-    # gaussian_adapter: GaussianAdapterCfg
-    # opacity_mapping: OpacityMappingCfg
-    # gaussians_per_pixel: int
-    # unimatch_weights_path: str | None
-    # downscale_factor: int
-    # shim_patch_size: int
-    # multiview_trans_attn_split: int
-    # costvolume_unet_feat_dim: int
-    # costvolume_unet_channel_mult: List[int]
-    # costvolume_unet_attn_res: List[int]
-    # depth_unet_feat_dim: int
-    # depth_unet_attn_res: List[int]
-    # depth_unet_channel_mult: List[int]
-    # wo_depth_refine: bool
-    # wo_cost_volume: bool
-    # wo_backbone_cross_attn: bool
-    # wo_cost_volume_refine: bool
-    # use_epipolar_trans: bool
 
 
 class EncoderCascade(Encoder[EncoderCascadeCfg]):
@@ -65,7 +39,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     
     def __init__(self, cfg: EncoderCascadeCfg) -> None:
         super().__init__(cfg)
-        self.cas_mvsnet_module = CasMVSNetModule(cfg.cas_mvsnet_ckpt_path)
+        self.cas_mvsnet_module = CasMVSNetModule(cfg.cas_mvsnet_ckpt_path, use_backbone=True, load_to_backbone=False)
         self.multi_costvolume_transformer_module = MultiCostVolumeTransformerModule(
             num_transformer_layers=2 * 2, # need to be 2n
             input_channels=75,
@@ -78,6 +52,29 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         self.multiview_trans_attn_split = 16
         
         self.gaussian_adapter_module = HashTableVoxelizedGaussianAdapterModule([32, 128, 512])
+        
+    def preprocess(self, context):
+        imgs : torch.Tensor = context["image"] # (B, V, C, H, W), or get the origin size image by context["origin_image"]
+        c2w_extrinsics : torch.Tensor = context["extrinsics"] # (B, V, 4, 4)
+        normalized_intrinsics : torch.Tensor = context["intrinsics"] # (B, V, 3, 3), or get the origin size image by context["origin_intrinsics"]
+        nears, fars = context["near"], context["far"] # (B, V)
+        b, v, c, h, w = imgs.shape
+        # crop image to adapt to mvsnet and swin transformer (h and w can be devided by 16)
+        if h % 16 != 0:
+            imgs = imgs[..., :-(h % 16), :]
+        if w % 16 != 0:
+            imgs = imgs[..., :-(w % 16)]
+        b, v, c, h, w = imgs.shape # update h and w
+        
+        # convert extrinsics c2w -> w2c
+        extrinsics = c2w_extrinsics.inverse()
+        
+        # intrinsics adapt to img size
+        intrinsics = normalized_intrinsics.clone()
+        intrinsics[..., 0, :] *= w
+        intrinsics[..., 1, :] *= h
+        
+        return imgs, extrinsics, intrinsics, nears, fars
 
     def forward(
         self,
@@ -87,12 +84,15 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         visualization_dump: Optional[dict] = None,
         scene_names: Optional[list] = None,
         ndepths = 192
-    ) -> Gaussians:
-        cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(context)
-        cam_poses = camera_positional_encoding(context["extrinsics"], context["intrinsics"], num_frequencies=2)
-        hash_tables = self.multi_costvolume_transformer_module(cas_module_result, cam_poses, self.multiview_trans_attn_split)
-        gaussians = self.gaussian_adapter_module(hash_tables, context["extrinsics"], context["far"])
+    ) -> EncoderOutput:
+        imgs, extrinsics, intrinsics, nears, fars = self.preprocess(context)
         
+        cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, extrinsics, intrinsics, nears, fars)
+        cam_poses = camera_positional_encoding(extrinsics, intrinsics, num_frequencies=2)
+        hash_tables = self.multi_costvolume_transformer_module(cas_module_result, cam_poses, self.multiview_trans_attn_split)
+        gaussians: EncoderOutput = self.gaussian_adapter_module(hash_tables, cas_module_result, extrinsics, fars)
+        
+        gaussians.others["cas_module_result"] = cas_module_result
         return gaussians
 
     @property

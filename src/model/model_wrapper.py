@@ -40,7 +40,8 @@ from ..visualization.validation_in_3d import render_cameras, render_projections
 from .decoder.decoder import Decoder, DepthRenderingMode
 from .encoder import Encoder
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
-from .mvsnet import PCDGenerator
+from .encoder.mvsnet import PCDGenerator
+from .types import EncoderOutput
 
 @dataclass
 class OptimizerCfg:
@@ -131,20 +132,9 @@ class ModelWrapper(LightningModule):
         _, _, _, h, w = batch["target"]["image"].shape
 
         # Run the model.
-        gaussians = self.encoder(
+        gaussians: EncoderOutput = self.encoder(
             batch["context"], self.global_step, False, scene_names=batch["scene"]
         )
-        
-        print(
-            f"train step {self.global_step}; "
-            f"scene = {[x[:20] for x in batch['scene']]}; "
-            f"context = {batch['context']['index'].tolist()}; "
-            f"bound = [{batch['context']['near'].detach().cpu().numpy().mean()} "
-            f"{batch['context']['far'].detach().cpu().numpy().mean()}]; "
-        )
-        
-        if True:
-            return torch.tensor(0.0, requires_grad=True, device=self.device)
 
         output = self.decoder.forward(
             gaussians,
@@ -182,6 +172,7 @@ class ModelWrapper(LightningModule):
                 f"context = {batch['context']['index'].tolist()}; "
                 f"bound = [{batch['context']['near'].detach().cpu().numpy().mean()} "
                 f"{batch['context']['far'].detach().cpu().numpy().mean()}]; "
+                f"gaussians = {gaussians.opacities.shape[1]}; "
                 f"loss = {total_loss:.6f}"
             )
         self.log("info/near", batch["context"]["near"].detach().cpu().numpy().mean())
@@ -308,11 +299,14 @@ class ModelWrapper(LightningModule):
         # Render Gaussians.
         b, _, _, h, w = batch["target"]["image"].shape
         assert b == 1
-        gaussians_softmax = self.encoder(
+        gaussians_softmax: EncoderOutput = self.encoder(
             batch["context"],
             self.global_step,
             deterministic=False,
         )
+        
+        if gaussians_softmax.means.shape[1] == 0: return # no gaussian
+        
         output_softmax = self.decoder.forward(
             gaussians_softmax,
             batch["target"]["extrinsics"],
