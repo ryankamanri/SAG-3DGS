@@ -26,7 +26,7 @@ class CasMVSNetModuleResult:
 
 class CasMVSNetModule(nn.Module):
 
-    def __init__(self, cas_mvsnet_ckpt_path, use_backbone=True, load_to_backbone=False) -> None:
+    def __init__(self, cas_mvsnet_ckpt_path, ndepths=[48, 32, 8], use_backbone=True, load_to_backbone=False) -> None:
         super().__init__()
         self.use_backbone = use_backbone
         print(f"loading checkpoint from {cas_mvsnet_ckpt_path}...")
@@ -34,10 +34,10 @@ class CasMVSNetModule(nn.Module):
         state_dict = torch.load(cas_mvsnet_ckpt_path)
         
         if use_backbone:
-            self.pretrained_cas_mvsnet = CascadeMVSNet(return_photometric_confidence=True)
-            self.backbone_cas_mvsnet = CascadeMVSNet(return_prob_volume=True)
+            self.pretrained_cas_mvsnet = CascadeMVSNet(ndepths=ndepths, return_photometric_confidence=True)
+            self.backbone_cas_mvsnet = CascadeMVSNet(ndepths=ndepths, return_prob_volume=True)
         else:
-            self.pretrained_cas_mvsnet = CascadeMVSNet(return_prob_volume=True, return_photometric_confidence=True)
+            self.pretrained_cas_mvsnet = CascadeMVSNet(ndepths=ndepths, return_prob_volume=True, return_photometric_confidence=True)
             
         self.pretrained_cas_mvsnet.load_state_dict(state_dict["model"])
         self.pretrained_cas_mvsnet.eval()
@@ -53,7 +53,7 @@ class CasMVSNetModule(nn.Module):
         
         # multi-stage proj_mats
         # proj_matrices (B, V, 2(intr & extr), 4, 4)
-        proj_matrices = torch.zeros(b, v, 2, 4, 4).cuda()
+        proj_matrices = torch.zeros(b, v, 2, 4, 4, device="cuda")
         proj_matrices[..., 0, :, :] = extrinsics
         proj_matrices[..., 1, :3, :3] = cloned_intrinsics
         

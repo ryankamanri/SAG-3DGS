@@ -35,10 +35,10 @@ def reproject_with_depth(depth_ref, intrinsics_ref, extrinsics_ref, depth_src, i
     batch, height, width = depth_ref.shape
     ## step1. project reference pixels to the source view
     # reference view x, y
-    x_ref, y_ref = torch.meshgrid(torch.arange(0, width), torch.arange(0, height), indexing='xy')
-    x_ref, y_ref = x_ref.cuda().repeat(batch, 1, 1).reshape(batch, -1), y_ref.cuda().repeat(batch, 1, 1).reshape(batch, -1)
+    x_ref, y_ref = torch.meshgrid(torch.arange(0, width, device="cuda"), torch.arange(0, height, device="cuda"), indexing='xy')
+    x_ref, y_ref = x_ref.repeat(batch, 1, 1).reshape(batch, -1), y_ref.repeat(batch, 1, 1).reshape(batch, -1)
     # reference 3D space
-    ones = torch.ones_like(x_ref).cuda()
+    ones = torch.ones_like(x_ref, device="cuda")
     ref_homogeneous = torch.stack((x_ref, y_ref, ones), dim=1)
     xyz_ref = torch.matmul(torch.linalg.inv(intrinsics_ref), ref_homogeneous * depth_ref.reshape(batch, 1, -1).repeat(1, 3, 1)) # (B, C, H*W)
     # source 3D space
@@ -54,7 +54,7 @@ def reproject_with_depth(depth_ref, intrinsics_ref, extrinsics_ref, depth_src, i
     y_src = xy_src[:, 1, :].reshape([batch, height, width])
     # # Prepare the source view grid for remap
     grid = torch.stack((x_src, y_src), dim=-1)  # [B, height, width, 2]
-    grid = 2.0 * grid / torch.tensor([height - 1, width - 1], dtype=torch.float32).cuda() - 1.0  # Normalizing the grid to [-1, 1]
+    grid = 2.0 * grid / torch.tensor([height - 1, width - 1], dtype=torch.float32, device="cuda") - 1.0  # Normalizing the grid to [-1, 1]
 
     # # Sample the source depth using bilinear interpolation
     sampled_depth_src = F.grid_sample(depth_src.unsqueeze(1), grid, mode='bilinear', padding_mode='zeros').squeeze(1)
@@ -78,8 +78,8 @@ def reproject_with_depth(depth_ref, intrinsics_ref, extrinsics_ref, depth_src, i
 
 def check_geometric_consistency(depth_ref, intrinsics_ref, extrinsics_ref, depth_src, intrinsics_src, extrinsics_src):
     width, height = depth_ref.shape[2], depth_ref.shape[1]
-    x_ref, y_ref = torch.meshgrid(torch.arange(0, width), torch.arange(0, height), indexing='xy')
-    x_ref, y_ref = x_ref.cuda(), y_ref.cuda()
+    x_ref, y_ref = torch.meshgrid(torch.arange(0, width, device="cuda"), torch.arange(0, height, device="cuda"), indexing='xy')
+    
     depth_reprojected, x2d_reprojected, y2d_reprojected, x2d_src, y2d_src = reproject_with_depth(depth_ref, intrinsics_ref, extrinsics_ref,
                                                     depth_src, intrinsics_src, extrinsics_src)
     # check |p_reproj-p_1| < 1
@@ -136,6 +136,7 @@ def colored_icp_registration(
 
 def global_point_cloud_registration(vertices: list[list[torch.Tensor]], vertices_color: list[list[torch.Tensor]], b, v):
     """
+    # DEPRECATED
     from J. Park, Q.-Y. Zhou, V. Koltun, Colored Point Cloud Registration Revisited, ICCV 2017
     
     input:
@@ -216,8 +217,8 @@ def generate_point_cloud_from_depth_maps(imgs: torch.Tensor, extrinsics, intrins
         # project valid depth to 3d points
         # Note that we filter the valid point at last to facilitate batch parallel processing
         height, width = depth_est_averaged.shape[1:3]
-        x, y = torch.meshgrid(torch.arange(0, width), torch.arange(0, height), indexing='xy')
-        x, y = x.cuda().unsqueeze(0).repeat(b, 1, 1), y.cuda().unsqueeze(0).repeat(b, 1, 1)
+        x, y = torch.meshgrid(torch.arange(0, width, device="cuda"), torch.arange(0, height, device="cuda"), indexing='xy')
+        x, y = x.unsqueeze(0).repeat(b, 1, 1), y.unsqueeze(0).repeat(b, 1, 1)
         # print("valid_points", valid_points.sum())
         # x, y, depth = x[valid_points], y[valid_points], depth_est_averaged[valid_points]
         uvd_ref = (torch.stack((x, y, torch.ones_like(x)), dim=0) * depth_est_averaged).view(b, 3, -1)
@@ -231,10 +232,6 @@ def generate_point_cloud_from_depth_maps(imgs: torch.Tensor, extrinsics, intrins
         for b_idx in range(b):
             vertices[b_idx].append(xyz_world.transpose(1, 2)[b_idx][valid_points[b_idx]])
             vertices_color[b_idx].append(colors.transpose(1, 2)[b_idx][valid_points[b_idx]])
-    
-    # TODO: change to voxel downsample (after voxel segmentation).
-    if use_point_registration:
-        global_point_cloud_registration(vertices, vertices_color, b, v)
         
     
     # concat all vertices for every scene/batch
@@ -302,7 +299,7 @@ class PCDGenerator(nn.Module):
         elif self.use_cas_mvsnet:
             # multi-stage proj_mats
             # proj_matrices (B, V, 2(intr & extr), 4, 4)
-            proj_matrices = torch.zeros(b, v, 2, 4, 4).cuda()
+            proj_matrices = torch.zeros(b, v, 2, 4, 4, device="cuda")
             proj_matrices[..., 0, :, :] = extrinsics
             proj_matrices[..., 1, :3, :3] = intrinsics
             

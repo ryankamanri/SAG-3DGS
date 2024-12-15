@@ -13,6 +13,7 @@ from .loss import Loss
 class LossStructCfg:
     weight: float
     weight_existence_loss: float
+    weight_current_loss: float
     weight_offset_loss: float
     weight_color_loss: float
 
@@ -29,11 +30,13 @@ class LossStruct(Loss[LossStructCfg, LossStructCfgWrapper]):
         gaussians: EncoderOutput,
         global_step: int,
     ) -> Float[Tensor, ""]:
-        if gaussians.others == {}: return torch.tensor(0.).cuda()
+        if gaussians.others == {}: return torch.tensor(0., device="cuda")
         existence_loss = Tensor(gaussians.others["existence_loss"]).mean()
+        current_loss = Tensor(gaussians.others["current_loss"]).mean()
         offset_loss = Tensor(gaussians.others["offset_loss"]).mean()
         color_loss = Tensor(gaussians.others["color_loss"]).mean()
         return self.cfg.weight * (
             self.cfg.weight_existence_loss * existence_loss +
+            self.cfg.weight_current_loss * current_loss +
             self.cfg.weight_offset_loss * offset_loss +
             self.cfg.weight_color_loss * color_loss)

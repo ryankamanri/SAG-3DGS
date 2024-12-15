@@ -21,7 +21,7 @@ from .encoder import Encoder
 from .mvsnet.cas_mvsnet_module import CasMVSNetModule, CasMVSNetModuleResult
 from ..encodings.positional_encoding import camera_positional_encoding
 from .backbone.multi_costvolume_transformer_module import MultiCostVolumeTransformerModule
-from .backbone.hash_table_voxelized_gaussian_adapter_module import HashTableVoxelizedGaussianAdapterModule
+from .backbone.hash_table_voxelized_gaussian_adapter_module import HashTableVoxelizedGaussianAdapterModule, GAUSSIAN_FEATURE_CHANNELS
 
 
 
@@ -30,6 +30,14 @@ from .backbone.hash_table_voxelized_gaussian_adapter_module import HashTableVoxe
 class EncoderCascadeCfg:
     name: Literal["cascade"]
     cas_mvsnet_ckpt_path: str
+    cas_mvsnet_use_backbone: bool
+    cas_mvsnet_load_to_backbone: bool
+    cas_mvsnet_ndepth: list[int]
+    positional_encoding_num_frequencies: int
+    multi_costvolume_transformer_layers: int
+    multi_costvolume_transformer_num_head: int # see the following TODO. Now only single-head is available
+    voxel_size_list: list[int]
+    min_opacity_list: list[float]
 
 
 class EncoderCascade(Encoder[EncoderCascadeCfg]):
@@ -39,19 +47,31 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     
     def __init__(self, cfg: EncoderCascadeCfg) -> None:
         super().__init__(cfg)
-        self.cas_mvsnet_module = CasMVSNetModule(cfg.cas_mvsnet_ckpt_path, use_backbone=True, load_to_backbone=False)
+        self.cas_mvsnet_module = CasMVSNetModule(
+            cas_mvsnet_ckpt_path=cfg.cas_mvsnet_ckpt_path, 
+            ndepths=cfg.cas_mvsnet_ndepth, 
+            use_backbone=cfg.cas_mvsnet_use_backbone, 
+            load_to_backbone=cfg.cas_mvsnet_load_to_backbone
+            )
+        
+        self.positional_encoding_num_frequencies = cfg.positional_encoding_num_frequencies
+        self.rgb_channels = 3
+        
         self.multi_costvolume_transformer_module = MultiCostVolumeTransformerModule(
-            num_transformer_layers=2 * 2, # need to be 2n
-            input_channels=75,
-            out_channels=14, # 3(means)+7(quaternion+scale)+3*1(shs)+1(opacity)
-            num_head=1, # TODO: fix abnormal code of multi-head attention.
-            ffn_dim_expansion=4,
-            no_cross_attn=False
+            num_transformer_layers=cfg.multi_costvolume_transformer_layers, 
+            input_channels=(self.rgb_channels + cfg.cas_mvsnet_ndepth[-1] + 32 * self.positional_encoding_num_frequencies),
+            out_channels=GAUSSIAN_FEATURE_CHANNELS, # 3(means)+7(quaternion+scale)+3*1(shs)+1(opacity)+1(current)
+            num_head=cfg.multi_costvolume_transformer_num_head # TODO: fix abnormal code of multi-head attention.
         )
         
         self.multiview_trans_attn_split = 16
         
-        self.gaussian_adapter_module = HashTableVoxelizedGaussianAdapterModule([32, 128, 512])
+        self.gaussian_adapter_module = HashTableVoxelizedGaussianAdapterModule(
+            voxel_size_list=cfg.voxel_size_list, 
+            min_opacity=cfg.min_opacity_list
+        )
+        
+        print(cfg)
         
     def preprocess(self, context):
         imgs : torch.Tensor = context["image"] # (B, V, C, H, W), or get the origin size image by context["origin_image"]
@@ -88,7 +108,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         imgs, extrinsics, intrinsics, nears, fars = self.preprocess(context)
         
         cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, extrinsics, intrinsics, nears, fars)
-        cam_poses = camera_positional_encoding(extrinsics, intrinsics, num_frequencies=2)
+        cam_poses = camera_positional_encoding(extrinsics, intrinsics, num_frequencies=self.positional_encoding_num_frequencies)
         hash_tables = self.multi_costvolume_transformer_module(cas_module_result, cam_poses, self.multiview_trans_attn_split)
         gaussians: EncoderOutput = self.gaussian_adapter_module(hash_tables, cas_module_result, extrinsics, fars)
         

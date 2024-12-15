@@ -6,6 +6,12 @@ from torch import Tensor
 
 @dataclass
 class EncoderOutput:
+    """
+        means: Float[Tensor, "batch gaussian dim"]
+        covariances: Float[Tensor, "batch gaussian dim dim"]
+        harmonics: Float[Tensor, "batch gaussian 3 d_sh"]
+        opacities: Float[Tensor, "batch gaussian"]
+    """
     means: Float[Tensor, "batch gaussian dim"]
     covariances: Float[Tensor, "batch gaussian dim dim"]
     harmonics: Float[Tensor, "batch gaussian 3 d_sh"]

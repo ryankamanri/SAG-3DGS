@@ -30,7 +30,6 @@ with install_import_hook(
     from src.model.decoder import get_decoder
     from src.model.encoder import get_encoder
     from src.model.model_wrapper import ModelWrapper
-    from src.model.encoder.mvsnet import PCDGenerator
 
 
 def cyan(text: str) -> str:
@@ -56,7 +55,7 @@ def train(cfg_dict: DictConfig):
         os.makedirs(output_dir, exist_ok=True)
     print(cyan(f"Saving outputs to {output_dir}."))
     latest_run = output_dir.parents[1] / "latest-run"
-    os.system(f"rm {latest_run}")
+    os.system(f"rm -r {latest_run}")
     os.system(f"ln -s {output_dir} {latest_run}")
 
     # Set up logging with wandb.
@@ -126,7 +125,6 @@ def train(cfg_dict: DictConfig):
         "optimizer_cfg": cfg.optimizer,
         "test_cfg": cfg.test,
         "train_cfg": cfg.train,
-        "pcd_generator": PCDGenerator(cfg.model.mvsnet), 
         "encoder": encoder,
         "encoder_visualizer": encoder_visualizer,
         "decoder": get_decoder(cfg.model.decoder, cfg.dataset),

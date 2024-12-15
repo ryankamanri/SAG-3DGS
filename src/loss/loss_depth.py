@@ -34,9 +34,9 @@ class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
         gaussians: EncoderOutput,
         global_step: int,
     ) -> Float[Tensor, ""]:
-        if gaussians.others == {}: return torch.tensor(0.).cuda()
+        if gaussians.others == {}: return torch.tensor(0., device="cuda")
         cas_module_result: CasMVSNetModuleResult = gaussians.others["cas_module_result"]
-        loss = torch.tensor(0.).cuda()
+        loss = torch.tensor(0., device="cuda")
         for ref_view_result in cas_module_result.ref_view_result_list:
             loss += self.cfg.stage1_weight * torch.Tensor(ref_view_result.pretrained["stage1"]["depth"] - ref_view_result.backbone["stage1"]["depth"]).abs().mean()
             loss += self.cfg.stage2_weight * torch.Tensor(ref_view_result.pretrained["stage2"]["depth"] - ref_view_result.backbone["stage2"]["depth"]).abs().mean()

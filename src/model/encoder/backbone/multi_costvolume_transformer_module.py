@@ -17,8 +17,8 @@ class MultiCostVolumeTransformerModule(nn.Module):
         input_channels, 
         out_channels, 
         num_head, 
-        ffn_dim_expansion, 
-        no_cross_attn) -> None:
+        ffn_dim_expansion = 4, 
+        no_cross_attn = False) -> None:
         super().__init__()
         
         self.feature_channels = out_channels * 4
@@ -28,7 +28,7 @@ class MultiCostVolumeTransformerModule(nn.Module):
         
         
         self.transformer = MultiViewFeatureTransformer(
-            num_layers=num_transformer_layers,
+            num_layers=2*num_transformer_layers, # need to be 2n
             d_model=self.feature_channels,
             nhead=num_head,
             ffn_dim_expansion=ffn_dim_expansion,
@@ -73,8 +73,8 @@ class MultiCostVolumeTransformerModule(nn.Module):
         
         separated_feat_2 = self.deconv2(separated_feat_1) # (B, C, 4H, 4W)
         
-        course_feat_1 = self.conv1(view_merged_features.view(b, self.out_channels * 4, -1)) # # (B, C, H, W)
+        course_feat_1 = self.conv1(view_merged_features.view(b, self.out_channels * 4, -1)) # # (B, C, HW)
         
-        course_feat_2 = self.conv2(separated_feat_1.view(b, self.out_channels * 2, -1)) # # (B, C, 2H, 2W)
+        course_feat_2 = self.conv2(separated_feat_1.view(b, self.out_channels * 2, -1)) # # (B, C, 4HW)
         
         return course_feat_1, course_feat_2, separated_feat_2.view(b, self.out_channels, -1)

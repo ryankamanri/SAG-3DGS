@@ -40,7 +40,6 @@ from ..visualization.validation_in_3d import render_cameras, render_projections
 from .decoder.decoder import Decoder, DepthRenderingMode
 from .encoder import Encoder
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
-from .encoder.mvsnet import PCDGenerator
 from .types import EncoderOutput
 
 @dataclass
@@ -81,7 +80,6 @@ class TrajectoryFn(Protocol):
 
 class ModelWrapper(LightningModule):
     logger: Optional[WandbLogger]
-    pcd_generator: PCDGenerator
     encoder: nn.Module
     encoder_visualizer: Optional[EncoderVisualizer]
     decoder: Decoder
@@ -96,7 +94,6 @@ class ModelWrapper(LightningModule):
         optimizer_cfg: OptimizerCfg,
         test_cfg: TestCfg,
         train_cfg: TrainCfg,
-        pcd_generator: PCDGenerator, 
         encoder: Encoder,
         encoder_visualizer: Optional[EncoderVisualizer],
         decoder: Decoder,
@@ -112,7 +109,6 @@ class ModelWrapper(LightningModule):
         # Set up the model.
         
         # initialize pretrained mvsnet
-        self.pcd_generator = pcd_generator
         self.encoder = encoder
         self.encoder_visualizer = encoder_visualizer
         self.decoder = decoder
@@ -156,10 +152,12 @@ class ModelWrapper(LightningModule):
 
         # Compute and log loss.
         total_loss = 0
+        loss_str = ""
         for loss_fn in self.losses:
             loss = loss_fn.forward(output, batch, gaussians, self.global_step)
             self.log(f"loss/{loss_fn.name}", loss)
             total_loss = total_loss + loss
+            loss_str += f"{loss_fn.name}: {loss}; "
         self.log("loss/total", total_loss)
 
         if (
@@ -173,7 +171,8 @@ class ModelWrapper(LightningModule):
                 f"bound = [{batch['context']['near'].detach().cpu().numpy().mean()} "
                 f"{batch['context']['far'].detach().cpu().numpy().mean()}]; "
                 f"gaussians = {gaussians.opacities.shape[1]}; "
-                f"loss = {total_loss:.6f}"
+                f"loss = [{loss_str}]; "
+                f"total loss = {total_loss:.6f}"
             )
         self.log("info/near", batch["context"]["near"].detach().cpu().numpy().mean())
         self.log("info/far", batch["context"]["far"].detach().cpu().numpy().mean())
