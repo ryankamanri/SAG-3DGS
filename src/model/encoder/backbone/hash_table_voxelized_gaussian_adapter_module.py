@@ -102,6 +102,22 @@ def hash_query(coordinates: torch.Tensor, hash_table: torch.Tensor):
     
     return hash_table[:, hash_index]
     
+    
+def isin_3d_coordinates(coor_1: torch.Tensor, coor_2: torch.Tensor):
+    """
+    ### Compute whether the element of `coor_1` is in `coor_2`. Ensure: 1. dtype=int; 2. max element < 1000;
+    
+    input:
+        `coor_1`: [N, 3] int
+        `coor_2`: [N, 3] int
+    output:
+        [N] bool
+    """
+    coor_1_flat = coor_1[:, 0] + coor_1[:, 1] * 1000 + coor_1[:, 2] * 1000000
+    coor_2_flat = coor_2[:, 0] + coor_2[:, 1] * 1000 + coor_2[:, 2] * 1000000
+    
+    return torch.isin(coor_1_flat, coor_2_flat)
+
 
 def create_coordinates(voxel_size: int, last_voxel_size: int = 0, last_coordinates: torch.Tensor = None):
     """
@@ -298,13 +314,12 @@ def compute_struct_loss(
     get_color = lambda coor: hash_query(coor, hash_table)[SLICE_SHS]
     get_current = lambda coor: hash_query(coor, hash_table)[SLICE_CURRENT]
 
-    is_mapped_point = torch.all(coordinates[:, None, :3] == downsampled_pcds[scale_idx][:, :3], dim=-1).any(dim=1)
+    is_mapped_point = isin_3d_coordinates(coordinates, downsampled_pcds[scale_idx])
     
     no_point_coordinates = coordinates[torch.logical_not(is_mapped_point)] # case 1
     has_point_coordinates = coordinates[is_mapped_point] # (N1, 3)
 
-    is_mapped_and_correct_classified_point = torch.all(
-        has_point_coordinates[:, None, :3] == classified_pcds[scale_idx][:, :3], dim=-1).any(dim=1)
+    is_mapped_and_correct_classified_point = isin_3d_coordinates(has_point_coordinates, classified_pcds[scale_idx])
     
     not_current_scale_point_coordinates = has_point_coordinates[torch.logical_not(is_mapped_and_correct_classified_point)] # case 3
     # TODO: check is_mapped_and_correct_classified_point.sum() == classified_pcd.shape[0]
@@ -340,8 +355,7 @@ def compute_struct_loss(
     # Find the coursest scale and decide: does it have a pseudo truth?
     max_scale_no_point_coordinates = (no_point_coordinates * (voxel_size_list[0] / voxel_size_list[scale_idx])).int()
 
-    is_max_downsampled_may_exist_coordinates = torch.all(
-        max_scale_no_point_coordinates[:, None, :3] == max_scale_voxel_existence_coordinates[:, :3], dim=-1).any(dim=1)
+    is_max_downsampled_may_exist_coordinates = isin_3d_coordinates(max_scale_no_point_coordinates, max_scale_voxel_existence_coordinates)
     
     max_downsampled_not_exist_coordinates = max_scale_no_point_coordinates[torch.logical_not(is_max_downsampled_may_exist_coordinates)]
     

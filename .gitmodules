@@ -1,0 +1,6 @@
+[submodule "submodules/diff-gaussian-rasterization-modified"]
+	path = submodules/diff-gaussian-rasterization-modified
+	url = https://github.com/dcharatan/diff-gaussian-rasterization-modified
+[submodule "submodules/pytorch3d"]
+	path = submodules/pytorch3d
+	url = https://github.com/facebookresearch/pytorch3d.git
