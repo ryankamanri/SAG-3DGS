@@ -3,7 +3,7 @@
 defaults:
   - override /dataset: re10k
   - override /model/encoder: cascade
-  - override /loss: [mse, lpips, depth, struct]
+  - override /loss: [mse, lpips, depth, struct, color]
 
 wandb:
   name: dtu/views2

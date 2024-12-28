@@ -3,4 +3,3 @@ struct:
   weight_existence_loss: 0.25
   weight_current_loss: 0.25
   weight_offset_loss: 0.25
-  weight_color_loss: 0.25

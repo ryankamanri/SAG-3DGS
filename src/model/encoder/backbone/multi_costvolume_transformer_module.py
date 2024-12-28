@@ -41,6 +41,8 @@ class MultiCostVolumeTransformerModule(nn.Module):
         self.conv2 = nn.Conv1d(self.out_channels * 2, self.out_channels, 1)
         
     def preprocess(self, cas_module_result: CasMVSNetModuleResult, cam_poses: torch.Tensor):
+        def inverse_sigmoid(x):
+            return torch.log(x/(1-x))
         v = len(cas_module_result.ref_view_result_list)
         b, c, h, w = cas_module_result.ref_view_result_list[0].img.shape
         cat_feature_list = []
@@ -50,7 +52,7 @@ class MultiCostVolumeTransformerModule(nn.Module):
             
             # element-wise concatnate
             cat_feature = torch.cat((
-                ref_view_result.img, 
+                inverse_sigmoid(torch.clamp(ref_view_result.img, 1e-6, 1-1e-6)), # is img need to be activated inversely?
                 ref_view_result.backbone["prob_volume"], 
                 cam_pose_encoding
             ), dim=1)

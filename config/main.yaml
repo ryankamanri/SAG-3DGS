@@ -37,7 +37,7 @@ data_loader:
     seed: 3456
 
 optimizer:
-  lr: 2.e-4
+  lr: 2.e-5
   warm_up_steps: 2000
   cosine_lr: true
 
@@ -51,7 +51,7 @@ checkpointing:
 train:
   depth_mode: null
   extended_visualization: false
-  print_log_every_n_steps: 1
+  print_log_every_n_steps: 10
 
 test:
   output_path: outputs/test

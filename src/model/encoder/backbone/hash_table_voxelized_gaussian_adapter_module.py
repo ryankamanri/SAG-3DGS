@@ -40,41 +40,47 @@ def activate_hash_table(hash_table: torch.Tensor, far: torch.Tensor, voxel_size:
     return activated_hash_table
 
 
-def compute_voxel_center(coordinates: torch.Tensor, camera_center: torch.Tensor, voxel_size: int, far: torch.Tensor) -> torch.Tensor:
+def compute_voxel_center(coordinates: torch.Tensor, voxel_size: int, far: torch.Tensor) -> torch.Tensor:
     """
-    mapping (0, 0, 0) -> mu - f + o
-            (S-1, S-1, S-1) -> mu + f - o
-            (S, S, S) -> mu + f + o
+    ### Mapping cooordinates to voxel center with origin `0`.
+    mapping (0, 0, 0) -> o
+            (S-1, S-1, S-1) -> 2f - o
+            (S, S, S) -> 2f + o
             
     
     input:
-        `coordinates`: [N, 3] int
+        `coordinates`: coordinates with shape [N, 3] int
         `camera_center`: [3]
         
     output:
-        [N, 3] float
+        voxel center with shape [N, 3] float
     """
-    
-    return (coordinates / voxel_size * 2 * far) - far + camera_center.view(1, 3) + (far / voxel_size)
+    return (coordinates / voxel_size * 2 * far) + (far / voxel_size)
 
 
-def compute_voxel_indices(x: torch.Tensor, camera_center: torch.Tensor, voxel_size: int, far: torch.Tensor):
+def compute_voxel_indices(voxel_center: torch.Tensor, voxel_size: int, far: torch.Tensor):
     """
-    ### The inverse function of `compute_voxel_center`
-    mapping (0, 0, 0) <- mu - f + o (+-o)
-            (S-1, S-1, S-1) <- mu + f - o
-            (S, S, S) <- mu + f + o
+    ### The inverse function of `compute_voxel_center` with origin `0`
+    mapping (0, 0, 0) <- o (+-o)
+            (S-1, S-1, S-1) <- 2f - o (+-o)
+            (S, S, S) <- 2f + o (+-o)
     
     input:
-        `x`: [N, 3]
+        `voxel_center`: voxel center with shape [N, 3] float
         `camera_center`: [3]
         
     output:
-        [N, 3] int
+        coordinates with shape [N, 3] int
     """
-    return ((x - (far / voxel_size) - camera_center.view(1, 3) + far) * voxel_size / 2 / far).round()
+    return ((voxel_center - (far / voxel_size)) * voxel_size / 2 / far).round().int()
 
-
+def compute_local_coordinates_offset(camera_center: torch.Tensor, voxel_size: int, far: torch.Tensor):
+    """
+    ### compute the offset from global coordinates (origin `0`) to local coordinates (origin `mu - f`)
+    if add the offset, it means switch from local coordinates to global coordinates (l2g), 
+    if minus the offset, it means switch from global coordinates to local coordinates (g2l).
+    """
+    return ((camera_center.view(1, 3) - far) * voxel_size / 2 / far).int()
 
 def bitwise_xor(x: torch.Tensor, dim: int):
     assert dim < len(x.shape)
@@ -152,7 +158,8 @@ def create_gaussians_from_features(gaussian_features: torch.Tensor, coordinates:
         extrinsic: [V, 4, 4]
         far: 1
     """
-    voxel_center = compute_voxel_center(coordinates, camera_center, voxel_size, far).permute(1, 0) # (3, N)
+    local_coordinates_offset = compute_local_coordinates_offset(camera_center, voxel_size, far)
+    voxel_center = compute_voxel_center(coordinates + local_coordinates_offset, voxel_size, far).permute(1, 0) # (3, N)
     b, n, dim, d_sh = 1, coordinates.shape[0], 3, 1
     
     means: torch.Tensor = gaussian_features[SLICE_DELTA_MEANS] + voxel_center # (3, N)
@@ -245,7 +252,9 @@ def downsample_and_classify_pcd(
     
     for voxel_size in voxel_size_list:
         # move points to default voxel coordinates and execute downsampling
-        voxel_indices = compute_voxel_indices(xyz, camera_center, voxel_size, far)
+        local_coordinates_offset = compute_local_coordinates_offset(camera_center, voxel_size, far)
+        voxel_indices = compute_voxel_indices(xyz, voxel_size, far)
+        voxel_indices -= local_coordinates_offset
         downsampled_xyzrgb, downsampled_voxels = voxel_down_sample(xyzrgb, voxel_indices)
         downsampled_pcd_list.append(torch.cat((downsampled_voxels, downsampled_xyzrgb), dim=1))
     
@@ -281,7 +290,7 @@ def compute_max_scale_voxel_existence_coordinates_by_pcd(max_downsampled_pcd: to
     
     d_coordinates = torch.cat((dxs, dys, dzs), dim=-1) # (27, 1, 3)
     
-    max_downsampled_pcd_coordinates = max_downsampled_pcd[:, :3].floor() # (N, 3)
+    max_downsampled_pcd_coordinates = max_downsampled_pcd[:, :3].floor().int() # (N, 3)
     
     return (max_downsampled_pcd_coordinates + d_coordinates).reshape(-1, 3).unique(dim=0) # (27, N, 3) -> (N', 3)
     
@@ -309,17 +318,18 @@ def compute_struct_loss(
     
     #### Note that assume coordinates contains all points.
     """
-    get_opacity = lambda coor: hash_query(coor, hash_table)[SLICE_OPACITY]
-    get_delta_means = lambda coor: hash_query(coor, hash_table)[SLICE_DELTA_MEANS]
-    get_color = lambda coor: hash_query(coor, hash_table)[SLICE_SHS]
-    get_current = lambda coor: hash_query(coor, hash_table)[SLICE_CURRENT]
+    local_coordinates_offset = compute_local_coordinates_offset(camera_center, voxel_size_list[scale_idx], far)
+    get_opacity = lambda coor: hash_query(coor + local_coordinates_offset, hash_table)[SLICE_OPACITY]
+    get_delta_means = lambda coor: hash_query(coor + local_coordinates_offset, hash_table)[SLICE_DELTA_MEANS]
+    get_color = lambda coor: hash_query(coor + local_coordinates_offset, hash_table)[SLICE_SHS]
+    get_current = lambda coor: hash_query(coor + local_coordinates_offset, hash_table)[SLICE_CURRENT]
 
-    is_mapped_point = isin_3d_coordinates(coordinates, downsampled_pcds[scale_idx])
+    is_mapped_point = isin_3d_coordinates(coordinates, downsampled_pcds[scale_idx][:, :3].int())
     
     no_point_coordinates = coordinates[torch.logical_not(is_mapped_point)] # case 1
     has_point_coordinates = coordinates[is_mapped_point] # (N1, 3)
 
-    is_mapped_and_correct_classified_point = isin_3d_coordinates(has_point_coordinates, classified_pcds[scale_idx])
+    is_mapped_and_correct_classified_point = isin_3d_coordinates(has_point_coordinates, classified_pcds[scale_idx][:, :3].int())
     
     not_current_scale_point_coordinates = has_point_coordinates[torch.logical_not(is_mapped_and_correct_classified_point)] # case 3
     # TODO: check is_mapped_and_correct_classified_point.sum() == classified_pcd.shape[0]
@@ -342,7 +352,7 @@ def compute_struct_loss(
     current_n += classified_pcd.shape[0]
     
     predicted_means: torch.Tensor = \
-        compute_voxel_center(classified_pcd[:, :3], camera_center, voxel_size_list[-1], far) + \
+        compute_voxel_center(classified_pcd[:, :3].int() + compute_local_coordinates_offset(camera_center, voxel_size_list[-1], far), voxel_size_list[-1], far) + \
         get_delta_means(classified_pcd[:, :3].int()).permute(1, 0)
         
     predicted_color = get_color(classified_pcd[:, :3].int()).permute(1, 0)
@@ -445,7 +455,8 @@ class HashTableVoxelizedGaussianAdapterModule(nn.Module):
                     total_color_loss += color_loss
                 
                 # query and switch to next level
-                gaussian_features = hash_query(coordinates=coordinates, hash_table=hash_table)
+                local_coordinates_offset = compute_local_coordinates_offset(camera_center, voxel_size, far)
+                gaussian_features = hash_query(coordinates=coordinates + local_coordinates_offset, hash_table=hash_table)
                 existence_mask = gaussian_features[SLICE_OPACITY][0] >= self.min_opacity[scale_idx]
                 current_mask = gaussian_features[SLICE_CURRENT][0] >= 0.5
                 
