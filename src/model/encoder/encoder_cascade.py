@@ -35,7 +35,7 @@ class EncoderCascadeCfg:
     cas_mvsnet_ndepth: list[int]
     positional_encoding_num_frequencies: int
     multi_costvolume_transformer_layers: int
-    multi_costvolume_transformer_num_head: int # see the following TODO. Now only single-head is available
+    multi_costvolume_transformer_num_head: int
     voxel_size_list: list[int]
     min_opacity_list: list[float]
 
@@ -61,7 +61,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             num_transformer_layers=cfg.multi_costvolume_transformer_layers, 
             input_channels=(self.rgb_channels + cfg.cas_mvsnet_ndepth[-1] + 32 * self.positional_encoding_num_frequencies),
             out_channels=GAUSSIAN_FEATURE_CHANNELS, # 3(means)+7(quaternion+scale)+3*1(shs)+1(opacity)+1(current)
-            num_head=cfg.multi_costvolume_transformer_num_head # TODO: fix abnormal code of multi-head attention.
+            num_head=cfg.multi_costvolume_transformer_num_head
         )
         
         self.multiview_trans_attn_split = 16

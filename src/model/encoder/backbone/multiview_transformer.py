@@ -221,70 +221,148 @@ def multi_head_split_window_attention(
     attn_mask=None,
     num_head=1,
 ):
-    """Multi-head scaled dot-product attention
-    Args:
-        q: [N, L, D]
-        k: [N, S, D]
-        v: [N, S, D]
-    Returns:
-        out: (N, L, D)
-    """
+    # Ref: https://github.com/microsoft/Swin-Transformer/blob/main/models/swin_transformer.py
+    # q, k, v: [B, L, C] for 2-view
+    # for multi-view cross-attention, q: [B, L, C], k, v: [B, N-1, L, C]
+    # multi(>2)-view corss-attention
+    if not (q.dim() == k.dim() == v.dim() == 3):
+        assert k.dim() == v.dim() == 4
+        assert h is not None and w is not None
+        assert q.size(1) == h * w
+        
+        m = k.size(1)  # m + 1 is num of views
 
-    assert h is not None and w is not None
-    assert q.size(1) == h * w
+        b, _, c = q.size()
 
-    b, _, c = q.size()
+        b_new = b * num_splits * num_splits
 
-    b_new = b * num_splits * num_splits
+        window_size_h = h // num_splits
+        window_size_w = w // num_splits
 
-    window_size_h = h // num_splits
-    window_size_w = w // num_splits
+        q = q.view(b, h, w, c) # [B, H, W, C]
+        k = k.view(b, m, h, w, c) # [B, N-1, H, W, C]
+        v = v.view(b, m, h, w, c) # [B, N-1, H, W, C]
 
-    q = q.view(b, h, w, c)  # [B, H, W, C]
-    k = k.view(b, h, w, c)
-    v = v.view(b, h, w, c)
+        assert c % num_head == 0
 
-    assert c % num_head == 0
+        scale_factor = (c // num_head) ** 0.5
 
-    scale_factor = (c // num_head) ** 0.5
+        if with_shift:
+            assert attn_mask is not None  # compute once
+            shift_size_h = window_size_h // 2
+            shift_size_w = window_size_w // 2
 
-    if with_shift:
-        assert attn_mask is not None  # compute once
-        shift_size_h = window_size_h // 2
-        shift_size_w = window_size_w // 2
+            q = torch.roll(q, shifts=(-shift_size_h, -shift_size_w), dims=(1, 2))
+            k = torch.roll(k, shifts=(-shift_size_h, -shift_size_w), dims=(2, 3))
+            v = torch.roll(v, shifts=(-shift_size_h, -shift_size_w), dims=(2, 3))
 
-        q = torch.roll(q, shifts=(-shift_size_h, -shift_size_w), dims=(1, 2))
-        k = torch.roll(k, shifts=(-shift_size_h, -shift_size_w), dims=(1, 2))
-        v = torch.roll(v, shifts=(-shift_size_h, -shift_size_w), dims=(1, 2))
+        q = split_feature(q, num_splits=num_splits, channel_last=True)  # [B*K*K, H/K, W/K, C]
+        k = split_feature(
+            k.permute(0, 2, 3, 4, 1).reshape(b, h, w, -1),
+            num_splits=num_splits,
+            channel_last=True,
+        )  # [B*K*K, H/K, W/K, C*(N-1)]
+        v = split_feature(
+            v.permute(0, 2, 3, 4, 1).reshape(b, h, w, -1),
+            num_splits=num_splits,
+            channel_last=True,
+        )  # [B*K*K, H/K, W/K, C*(N-1)]
+        
+        q = q.view(b_new, -1, c) # [B*K*K, H/K*W/K, C]
+        k = (
+            k.view(b_new, h // num_splits, w // num_splits, c, m)
+            .permute(0, 3, 1, 2, 4)
+            .reshape(b_new, c, -1)
+        )  # [B*K*K, C, H/K*W/K*(N-1)]
+        v = (
+            v.view(b_new, h // num_splits, w // num_splits, c, m)
+            .permute(0, 1, 2, 4, 3)
+            .reshape(b_new, -1, c)
+        )  # [B*K*K, H/K*W/K*(N-1), C]
+        
+        # multi-head attn
+        q = q.view(b_new, -1, num_head, c // num_head).permute(0, 2, 1, 3)  # [B, n, H*W, C]
+        k = k.view(b_new, num_head, c // num_head, -1) # [B, n, C, H*W*(N-1)]
 
-    q = split_feature(q, num_splits=num_splits)  # [B*K*K, H/K, W/K, C]
-    k = split_feature(k, num_splits=num_splits)
-    v = split_feature(v, num_splits=num_splits)
+        scores = torch.matmul(q, k) / scale_factor  # [B*K*K, n, H/K*W/K, H/K*W/K*(N-1)]
 
-    # multi-head attn
-    q = q.view(b_new, -1, num_head, c // num_head).permute(0, 2, 1, 3)  # [B, N, H*W, C]
-    k = k.view(b_new, -1, num_head, c // num_head).permute(0, 2, 3, 1)  # [B, N, C, H*W]
-    scores = torch.matmul(q, k) / scale_factor  # [B*K*K, N, H/K*W/K, H/K*W/K]
+        if with_shift:
+            scores += attn_mask.unsqueeze(1).repeat(b, num_head, 1, m)
 
-    if with_shift:
-        scores += attn_mask.unsqueeze(1).repeat(b, num_head, 1, 1)
+        attn = torch.softmax(scores, dim=-1)  # [B*K*K, N, H/K*W/K, H/K*W/K*(N-1)]
 
-    attn = torch.softmax(scores, dim=-1)  # [B*K*K, N, H/K*W/K, H/K*W/K]
+        out = torch.matmul(
+            attn, v.view(b_new, -1, num_head, c // num_head).permute(0, 2, 1, 3)
+        )  # [B*K*K, N, H/K*W/K, C]
 
-    out = torch.matmul(
-        attn, v.view(b_new, -1, num_head, c // num_head).permute(0, 2, 1, 3)
-    )  # [B*K*K, N, H/K*W/K, C]
+        out = merge_splits(
+            out.permute(0, 2, 1, 3).reshape(b_new, h // num_splits, w // num_splits, c),
+            num_splits=num_splits,
+        )  # [B, H, W, C]
 
-    out = merge_splits(
-        out.permute(0, 2, 1, 3).reshape(b_new, h // num_splits, w // num_splits, c),
-        num_splits=num_splits,
-    )  # [B, H, W, C]
+        # shift back
+        if with_shift:
+            out = torch.roll(out, shifts=(shift_size_h, shift_size_w), dims=(1, 2))
 
-    # shift back
-    if with_shift:
-        out = torch.roll(out, shifts=(shift_size_h, shift_size_w), dims=(1, 2))
+        out = out.view(b, -1, c)
+    else:
+        # 2-view self-attention or cross-attention
+        assert q.dim() == k.dim() == v.dim() == 3
+        assert h is not None and w is not None
+        assert q.size(1) == h * w
 
-    out = out.view(b, -1, c)
+        b, _, c = q.size()
+
+        b_new = b * num_splits * num_splits
+
+        window_size_h = h // num_splits
+        window_size_w = w // num_splits
+
+        q = q.view(b, h, w, c)  # [B, H, W, C]
+        k = k.view(b, h, w, c)
+        v = v.view(b, h, w, c)
+
+        assert c % num_head == 0
+
+        scale_factor = (c // num_head) ** 0.5
+
+        if with_shift:
+            assert attn_mask is not None  # compute once
+            shift_size_h = window_size_h // 2
+            shift_size_w = window_size_w // 2
+
+            q = torch.roll(q, shifts=(-shift_size_h, -shift_size_w), dims=(1, 2))
+            k = torch.roll(k, shifts=(-shift_size_h, -shift_size_w), dims=(1, 2))
+            v = torch.roll(v, shifts=(-shift_size_h, -shift_size_w), dims=(1, 2))
+
+        q = split_feature(q, num_splits=num_splits, channel_last=True)  # [B*K*K, H/K, W/K, C]
+        k = split_feature(k, num_splits=num_splits, channel_last=True)
+        v = split_feature(v, num_splits=num_splits, channel_last=True)
+
+        # multi-head attn
+        q = q.view(b_new, -1, num_head, c // num_head).permute(0, 2, 1, 3)  # [B, N, H*W, C]
+        k = k.view(b_new, -1, num_head, c // num_head).permute(0, 2, 3, 1)  # [B, N, C, H*W]
+        scores = torch.matmul(q, k) / scale_factor  # [B*K*K, N, H/K*W/K, H/K*W/K]
+
+        if with_shift:
+            scores += attn_mask.unsqueeze(1).repeat(b, num_head, 1, 1)
+
+        attn = torch.softmax(scores, dim=-1)  # [B*K*K, N, H/K*W/K, H/K*W/K]
+
+        out = torch.matmul(
+            attn, v.view(b_new, -1, num_head, c // num_head).permute(0, 2, 1, 3)
+        )  # [B*K*K, N, H/K*W/K, C]
+
+        out = merge_splits(
+            out.permute(0, 2, 1, 3).reshape(b_new, h // num_splits, w // num_splits, c),
+            num_splits=num_splits,
+        )  # [B, H, W, C]
+
+        # shift back
+        if with_shift:
+            out = torch.roll(out, shifts=(shift_size_h, shift_size_w), dims=(1, 2))
+
+        out = out.view(b, -1, c)
 
     return out
 

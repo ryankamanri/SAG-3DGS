@@ -6,6 +6,6 @@ cas_mvsnet_load_to_backbone: false
 cas_mvsnet_ndepth: [48, 32, 8]
 positional_encoding_num_frequencies: 2
 multi_costvolume_transformer_layers: 2
-multi_costvolume_transformer_num_head: 1 # see TODO. Now only single-head is available
+multi_costvolume_transformer_num_head: 4
 voxel_size_list: [32, 128, 512]
 min_opacity_list: [0.1, 0.1, 0.1]
