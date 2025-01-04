@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import torch
 from torch import nn
-from ..mvsnet import CascadeMVSNet, generate_point_cloud_from_depth_maps
+from ..mvsnet import CascadeMVSNet, generate_point_cloud_from_depth_maps, generate_probability_point_cloud
 
 
 
@@ -10,6 +10,9 @@ class ReferenceViewResult:
     img: torch.Tensor # (B, C, H, W)
     pretrained: dict[str, object]
     backbone: dict[str, object]
+    
+def empty_reference_view_result():
+    return ReferenceViewResult(torch.tensor(0), {}, {})
 
 @dataclass
 class PointCloudResult:
@@ -19,15 +22,37 @@ class PointCloudResult:
     xyz_batches: list[torch.Tensor]
     rgb_batches: list[torch.Tensor]
 
+def empty_point_cloud_result():
+    return PointCloudResult([], [])
+
+@dataclass
+class ProbabilityPointCloudResult:
+    """
+        vertices: [Tensor(N, 4) * B]
+        vertices_prob: [Tensor(N) * B]
+        vertices_feat_idx: Tensor(N) which encode (view, stage, y, x) into (vsyyyxxx)
+    """
+    xyz_batches: list[torch.Tensor]
+    probability_batches: list[torch.Tensor]
+    feature_indexes: torch.Tensor
+    
+def empty_probalility_point_cloud_result():
+    return ProbabilityPointCloudResult([], [], torch.tensor(0))
+
 @dataclass
 class CasMVSNetModuleResult:
     ref_view_result_list: list[ReferenceViewResult]
     registed_pcd: PointCloudResult
+    registed_prob_pcd: ProbabilityPointCloudResult
+    
+def empty_cas_mvsnet_module_result():
+    return CasMVSNetModuleResult([], empty_point_cloud_result(), empty_probalility_point_cloud_result())
 
 class CasMVSNetModule(nn.Module):
 
     def __init__(self, cas_mvsnet_ckpt_path, ndepths=[48, 32, 8], use_backbone=True, load_to_backbone=False) -> None:
         super().__init__()
+        self.ndepths = ndepths
         self.use_backbone = use_backbone
         print(f"loading checkpoint from {cas_mvsnet_ckpt_path}...")
         # initialize pretrained mvsnet
@@ -84,11 +109,11 @@ class CasMVSNetModule(nn.Module):
         depth_values = depth_values.flip(dims=(2,)) # start from near to far.
         return proj_mat, depth_values
         
-    def forward(self, imgs, extrinsics, intrinsics, nears, fars, ndepths=128):
-        proj_mat, depth_values = self.preprocess(imgs, extrinsics, intrinsics, nears, fars, ndepths)
+    def forward(self, imgs, extrinsics, intrinsics, nears, fars):
+        proj_mat, depth_values = self.preprocess(imgs, extrinsics, intrinsics, nears, fars)
         b, v, c, h, w = imgs.shape
         
-        result = CasMVSNetModuleResult(ref_view_result_list=[], registed_pcd=PointCloudResult([], []))
+        result = empty_cas_mvsnet_module_result()
         
         pretrained_depths_est = [] # depth map list
         pretrained_photometric_confidences = []
@@ -112,6 +137,13 @@ class CasMVSNetModule(nn.Module):
         
         with torch.no_grad():            
             vertices, vertices_color = generate_point_cloud_from_depth_maps(imgs, extrinsics, intrinsics, pretrained_depths_est, pretrained_photometric_confidences)
+        
+        prob_vertices, prob_vertices_prob, prob_vertices_feat_idx = generate_probability_point_cloud(
+            imgs, 
+            [ref_view_result.backbone for ref_view_result in result.ref_view_result_list], 
+            extrinsics, intrinsics, self.ndepths)
+        
         result.registed_pcd = PointCloudResult(xyz_batches=vertices, rgb_batches=vertices_color)
+        result.registed_prob_pcd = ProbabilityPointCloudResult(xyz_batches=prob_vertices, probability_batches=prob_vertices_prob, feature_indexes=prob_vertices_feat_idx)
         
         return result

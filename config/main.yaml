@@ -7,10 +7,10 @@ defaults:
   - loss: [mse]
 
 wandb:
-  project: mvsplat
-  entity: placeholder
-  name: placeholder
-  mode: disabled
+  project: sag-3dgs
+  entity: "974481066"
+  name: develop
+  mode: offline
   id: null
 
 mode: train

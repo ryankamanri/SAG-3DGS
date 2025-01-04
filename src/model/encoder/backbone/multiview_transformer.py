@@ -16,6 +16,22 @@ def single_head_full_attention(q, k, v):
     return out
 
 
+def multi_head_full_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, num_head=1):
+    # q, k, v: [B, L, C]
+    # TODO: check if it works.
+    assert q.dim() == k.dim() == v.dim() == 3
+    
+    b, l, c = q.size()
+    q = q.view(b, -1, num_head, c // num_head).permute(0, 2, 1, 3)  # [B, N, L, C/N]
+    k = k.view(b, -1, num_head, c // num_head).permute(0, 2, 3, 1)  # [B, N, C/N, L]
+    v = v.view(b, -1, num_head, c // num_head).permute(0, 2, 1, 3)  # [B, N, L, C/N]
+    
+    scores = torch.matmul(q, k) / ((c // num_head) ** 0.5)  # [B, N, L, L]
+    attn = torch.softmax(scores, dim=2) # [B, N, L, L]
+    out = torch.matmul(attn, v)  # [B, N, L, C/N]
+
+    return out.permute(0, 2, 1, 3).reshape(b, l, c)
+
 def generate_shift_window_attn_mask(
     input_resolution,
     window_size_h,
@@ -480,7 +496,10 @@ class TransformerLayer(nn.Module):
                         attn_mask=shifted_window_attn_mask,
                     )
         else:
-            message = single_head_full_attention(query, key, value)  # [B, L, C]
+            if self.nhead > 1:
+                message = multi_head_full_attention(query, key, value)
+            else:
+                message = single_head_full_attention(query, key, value)  # [B, L, C]
 
         message = self.merge(message)  # [B, L, C]
         message = self.norm1(message)

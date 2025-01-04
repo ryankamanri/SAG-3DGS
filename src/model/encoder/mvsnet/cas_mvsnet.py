@@ -140,24 +140,23 @@ class CascadeMVSNet(nn.Module):
                 else:
                     cur_depth = depth
                 cur_depth = F.interpolate(cur_depth.unsqueeze(1),
-                                                [img.shape[2], img.shape[3]], mode='bilinear',
+                                                [img.shape[2]//int(stage_scale), img.shape[3]//int(stage_scale)], mode='bilinear',
                                                 align_corners=Align_Corners_Range).squeeze(1)
             else:
                 cur_depth = depth_values
             depth_range_samples, cur_period = get_depth_range_samples(cur_depth=cur_depth,
-                                                          cur_period=cur_period, 
+                                                        cur_period=cur_period, 
                                                         ndepth=self.ndepths[stage_idx],
                                                         device=img[0].device,
-                                                        shape=[img.shape[0], img.shape[2], img.shape[3]])
+                                                        shape=[img.shape[0], img.shape[2]//int(stage_scale), img.shape[3]//int(stage_scale)])
 
             outputs_stage = self.DepthNet(stage_idx, features_stage, proj_matrices_stage,
-                                          depth_values=F.interpolate(depth_range_samples.unsqueeze(1),
-                                                                     [self.ndepths[stage_idx], img.shape[2]//int(stage_scale), img.shape[3]//int(stage_scale)], mode='trilinear',
-                                                                     align_corners=Align_Corners_Range).squeeze(1),
+                                          depth_values=depth_range_samples, 
                                           num_depth=self.ndepths[stage_idx],
                                           cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx])
 
             depth = outputs_stage['depth']
+            outputs_stage["depth_range_samples"] = depth_range_samples
 
             outputs["stage{}".format(stage_idx + 1)] = outputs_stage
             outputs.update(outputs_stage)
