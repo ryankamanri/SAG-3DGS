@@ -7,7 +7,7 @@ import open3d as o3d
 import numpy as np
 from sklearn.neighbors import KDTree
 from ..mvsnet.cas_mvsnet_module import CasMVSNetModuleResult, PointCloudResult
-from ...types import EncoderOutput
+from ...types import EncoderOutput, empty_encoder_output
 from ....utils import build_covariance_from_scaling_rotation
 
 GAUSSIAN_FEATURE_CHANNELS = 15
@@ -19,13 +19,21 @@ SLICE_SHS = slice(10, 13)
 SLICE_OPACITY = slice(13, 14)
 SLICE_CURRENT = slice(14, 15)
 
+C0 = 0.28209479177387814
+def RGB2SH(rgb):
+    return (rgb - 0.5) / C0
+
+def SH2RGB(sh):
+    return sh * C0 + 0.5
+
+
 normalization = lambda x: (x - torch.mean(x)) / torch.std(x)
 
 delta_means_activation = lambda x, far, size: normalization(x) * 2 * far / size / 6
 scaling_activation = lambda x, far, size: torch.sigmoid(x) * 2 * far / size
 quaternion_activation = lambda x: x
 opacity_activation = lambda x: torch.sigmoid(x - 4) # sigmoid(-3 | -4) = 0.0474 | 0.018
-color_activation = lambda x: torch.sigmoid(x)
+color_activation = lambda x: RGB2SH(torch.sigmoid(x))
 current_activation = lambda x: torch.sigmoid(x)
 
 
@@ -125,7 +133,7 @@ def isin_3d_coordinates(coor_1: torch.Tensor, coor_2: torch.Tensor):
     return torch.isin(coor_1_flat, coor_2_flat)
 
 
-def create_coordinates(voxel_size: int, last_voxel_size: int = 0, last_coordinates: torch.Tensor = None):
+def create_local_coordinates(voxel_size: int, last_voxel_size: int = 0, last_coordinates: torch.Tensor = None):
     """
     input:
         `last_coordinates`: None or [N, 3]
@@ -390,98 +398,118 @@ class HashTableVoxelizedGaussianAdapterModule(nn.Module):
         self.voxel_size_count = len(voxel_size_list)
         self.voxel_size_list = voxel_size_list
         self.min_opacity = min_opacity
+        
+        self.use_anisotropic_projector = False
+        
+        if self.use_anisotropic_projector:
+            self.anisotropic_projector = nn.Sequential(
+                nn.Linear(in_features=32+3, out_features=64-1), 
+                nn.Linear(in_features=64-1, out_features=64-1)
+            )
+        
+            self.gaussian_parameter_predictor = nn.Sequential(
+                nn.Linear(in_features=64, out_features=64), 
+                nn.Linear(in_features=64, out_features=32), 
+                nn.Linear(in_features=32, out_features=16), 
+                nn.Linear(in_features=16, out_features=15)
+            )
+        else:
+            self.gaussian_parameter_predictor = nn.Sequential(
+                nn.Linear(in_features=192+1, out_features=64), 
+                nn.Linear(in_features=64, out_features=32), 
+                nn.Linear(in_features=32, out_features=16), 
+                nn.Linear(in_features=16, out_features=15)
+            )
+        
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_normal(p)
         pass
     
         
-    def forward(self, multi_scale_hash_tables: tuple, cas_module_result: CasMVSNetModuleResult, extrinsics: torch.Tensor, fars: torch.Tensor):
-        b = multi_scale_hash_tables[0].shape[0]
+    def forward(self, feature_list: list[torch.Tensor], cas_module_result: CasMVSNetModuleResult, extrinsics: torch.Tensor, fars: torch.Tensor):
+        b = feature_list[0].shape[0]
         far = fars[0, 0]
-        is_trainning = multi_scale_hash_tables[0].grad_fn != None
+        is_trainning = feature_list[0].grad_fn != None
         batch_gaussians = []
         batch_losses = [[], [], [], []] # total_existence_loss, total_current_loss, total_offset_loss, total_color_loss
+        prob_pcd = cas_module_result.registed_prob_pcd
+        prob_pcd_feat_idxs = prob_pcd.feature_indexes
+        
+        # convert feature list to a tensor
+        feature_size_list = [feature_list[0].shape[-2:], feature_list[1].shape[-2:], feature_list[2].shape[-2:]]
+        feature_list[0] = F.pad(feature_list[0], (0, feature_size_list[2][-1] - feature_size_list[0][-1], 0, feature_size_list[2][-2] - feature_size_list[0][-2]))
+        feature_list[1] = F.pad(feature_list[1], (0, feature_size_list[2][-1] - feature_size_list[1][-1], 0, feature_size_list[2][-2] - feature_size_list[1][-2]))
+        features = torch.stack(feature_list, dim=2) # (B, V, S, C, H, W)
+        
         for batch in range(b):
-            coordinates = None
+            local_coordinates = None
             last_voxel_size = 0
             total_existence_loss, total_current_loss, total_offset_loss, total_color_loss = torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda")
             camera_center = extrinsics.inverse()[batch][:, :3, 3].mean(dim=0)
             dim, d_sh = 3, 1
-            gaussians = EncoderOutput(
-                means=torch.zeros(1, 0, dim, device="cuda"), 
-                covariances=torch.zeros(1, 0, dim, dim, device="cuda"), 
-                harmonics=torch.zeros(1, 0, 3, d_sh, device="cuda"), 
-                opacities=torch.zeros(1, 0, device="cuda")
+            gaussians = empty_encoder_output()
+            
+            voxel_size = 64
+            local_coordinates = create_local_coordinates(voxel_size, last_coordinates=None)
+            offset = compute_local_coordinates_offset(camera_center, voxel_size, far)
+            centers: torch.Tensor = compute_voxel_center(local_coordinates + offset, voxel_size, far) # (N, 3)
+            
+            prob_pcd_xyz = prob_pcd.xyz_batches[batch][:, :3] # (n, 3)
+            prob_pcd_prob = prob_pcd.probability_batches[batch] # (n)
+            
+            dists, idx, _ = knn_points(
+                p1=centers.unsqueeze(0),  
+                p2=prob_pcd_xyz.unsqueeze(0), 
+                K=16
+            ) # (1, N, K), (1, N, K)
+            
+            k_xyz = prob_pcd_xyz[idx[0]] # (N, K, 3)
+            k_probs = prob_pcd_prob[idx[0]] # (N, K)
+            k_feat_idxs = prob_pcd_feat_idxs[idx[0]] # (N, K) (vsyyyxxx)
+            
+            k_feats = features[
+                batch, 
+                k_feat_idxs // 10000000, 
+                (k_feat_idxs // 1000000) % 10, 
+                :, 
+                (k_feat_idxs // 1000) % 1000, 
+                k_feat_idxs % 1000
+            ] # (N, K, C)
+            
+            n, k, _ = k_feats.shape
+
+            # Add direction information to features
+            dir = k_xyz - centers.unsqueeze(1) # (N, K, 3)
+            dir /= torch.sqrt(dists[0]).unsqueeze(-1) # TODO: assert torch.sqrt(dists[0]) == dir.norm(dim=2)
+            
+            if self.use_anisotropic_projector:
+                aniso_feat = self.anisotropic_projector(torch.cat((k_feats, dir), dim=2)) # (N, K, C=64-1)
+            else:
+                dir_abs = torch.cat((torch.clamp(dir, min=0), torch.clamp(-dir, min=0)), dim=-1)
+                aniso_feat = (k_feats.unsqueeze(-2) * dir_abs.unsqueeze(-1)).view(n, k, -1) # (N, K, 6C)
+            
+            # merge k features
+            weights: torch.Tensor = k_probs / dists[0]
+            weights_sum = torch.sum(weights, dim=1).unsqueeze(1) # (N, 1)
+            weights /= weights_sum # (N, K)
+            
+            merged_feat = torch.sum(weights.unsqueeze(-1) * aniso_feat, dim=1) # (N, C=64-1)
+            
+            gaussian_features = self.gaussian_parameter_predictor(
+                torch.cat((merged_feat, weights_sum), dim=1)
+                ) # (N, 15)
+            
+            gaussian_features = gaussian_features.transpose(0, 1) # (15, N)
+            activated_gaussian_features = activate_hash_table(gaussian_features, far, voxel_size)
+            
+            gaussians = create_gaussians_from_features(
+                gaussian_features=activated_gaussian_features, 
+                coordinates=local_coordinates, 
+                camera_center=camera_center, 
+                voxel_size=voxel_size, 
+                far=far
             )
-            
-            with torch.no_grad():
-                downsampled_pcds, classified_pcds = downsample_and_classify_pcd(
-                    pcd=cas_module_result.registed_pcd, 
-                    voxel_size_list=self.voxel_size_list, 
-                    camera_center=camera_center, 
-                    far=far, 
-                    batch_idx=batch
-                )
-                max_scale_voxel_existence_coordinates = compute_max_scale_voxel_existence_coordinates_by_pcd(downsampled_pcds[0])
-            
-            for scale_idx in range(self.voxel_size_count):
-                voxel_size = self.voxel_size_list[scale_idx]
-                hash_table = activate_hash_table(multi_scale_hash_tables[scale_idx][batch], far, voxel_size) # (C, T)
-                
-                pcd_voxel_coordinates = downsampled_pcds[scale_idx][:, :3].int()
-                
-                coordinates = create_coordinates(
-                    voxel_size=voxel_size, 
-                    last_voxel_size=last_voxel_size, 
-                    last_coordinates=coordinates
-                )
-                
-                coordinates = torch.cat((coordinates, pcd_voxel_coordinates), dim=0).unique(dim=0) # combine coordinates from last level and point cloud
-                
-                if is_trainning:
-                    # compute losses
-                    existence_loss, current_loss, offset_loss, color_loss = compute_struct_loss(
-                        downsampled_pcds=downsampled_pcds, 
-                        classified_pcds=classified_pcds, 
-                        hash_table=hash_table, 
-                        voxel_size_list=self.voxel_size_list, 
-                        scale_idx=scale_idx, 
-                        coordinates=coordinates, 
-                        max_scale_voxel_existence_coordinates=max_scale_voxel_existence_coordinates, 
-                        camera_center=camera_center, 
-                        far=far
-                    )
-                    total_existence_loss += existence_loss
-                    total_current_loss += current_loss
-                    total_offset_loss += offset_loss
-                    total_color_loss += color_loss
-                
-                # query and switch to next level
-                local_coordinates_offset = compute_local_coordinates_offset(camera_center, voxel_size, far)
-                gaussian_features = hash_query(coordinates=coordinates + local_coordinates_offset, hash_table=hash_table)
-                existence_mask = gaussian_features[SLICE_OPACITY][0] >= self.min_opacity[scale_idx]
-                current_mask = gaussian_features[SLICE_CURRENT][0] >= 0.5
-                
-                # select gaussians at current scale
-                current_existence_mask = torch.logical_and(existence_mask, current_mask)
-                if current_existence_mask.sum() > 0:
-                    current_gaussian_features = gaussian_features[:, current_existence_mask]
-                    current_coordinates = coordinates[current_existence_mask]
-                    current_gaussians = create_gaussians_from_features(
-                        gaussian_features=current_gaussian_features, 
-                        coordinates=current_coordinates, 
-                        camera_center=camera_center, 
-                        voxel_size=self.voxel_size_list[scale_idx], 
-                        far=far
-                    )
-                    
-                    gaussians.means = torch.cat((gaussians.means, current_gaussians.means), dim=1)
-                    gaussians.covariances = torch.cat((gaussians.covariances, current_gaussians.covariances), dim=1)
-                    gaussians.harmonics = torch.cat((gaussians.harmonics, current_gaussians.harmonics), dim=1)
-                    gaussians.opacities = torch.cat((gaussians.opacities, current_gaussians.opacities), dim=1)
-                
-                # next level
-                coordinates = coordinates[torch.logical_and(existence_mask, torch.logical_not(current_mask))]
-                last_voxel_size = voxel_size
-        
             
             batch_losses[0].append(total_existence_loss / self.voxel_size_count)
             batch_losses[1].append(total_current_loss / self.voxel_size_count)

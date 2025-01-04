@@ -15,10 +15,11 @@ from ..types import EncoderOutput
 from .backbone import (
     BackboneMultiview,
 )
-from ..types import EncoderOutput
+from ..types import EncoderOutput, empty_encoder_output
 from .common.gaussian_adapter import GaussianAdapter, GaussianAdapterCfg
 from .encoder import Encoder
 from .mvsnet.cas_mvsnet_module import CasMVSNetModule, CasMVSNetModuleResult
+from .backbone.feature_extractor import MultiViewFeatureExtractor
 from ..encodings.positional_encoding import camera_positional_encoding
 from .backbone.multi_costvolume_transformer_module import MultiCostVolumeTransformerModule
 from .backbone.hash_table_voxelized_gaussian_adapter_module import HashTableVoxelizedGaussianAdapterModule, GAUSSIAN_FEATURE_CHANNELS
@@ -53,6 +54,8 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             use_backbone=cfg.cas_mvsnet_use_backbone, 
             load_to_backbone=cfg.cas_mvsnet_load_to_backbone
             )
+        
+        self.feature_extractor = MultiViewFeatureExtractor()
         
         self.positional_encoding_num_frequencies = cfg.positional_encoding_num_frequencies
         self.rgb_channels = 3
@@ -106,12 +109,9 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         ndepths = 192
     ) -> EncoderOutput:
         imgs, extrinsics, intrinsics, nears, fars = self.preprocess(context)
-        
+        feature_list = self.feature_extractor(imgs)
         cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, extrinsics, intrinsics, nears, fars)
-        cam_poses = camera_positional_encoding(extrinsics, intrinsics, num_frequencies=self.positional_encoding_num_frequencies)
-        hash_tables = self.multi_costvolume_transformer_module(cas_module_result, cam_poses, self.multiview_trans_attn_split)
-        gaussians: EncoderOutput = self.gaussian_adapter_module(hash_tables, cas_module_result, extrinsics, fars)
-        
+        gaussians: EncoderOutput = self.gaussian_adapter_module(feature_list, cas_module_result, extrinsics, fars)
         gaussians.others["cas_module_result"] = cas_module_result
         return gaussians
 

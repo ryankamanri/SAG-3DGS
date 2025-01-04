@@ -221,7 +221,7 @@ def generate_point_cloud_from_depth_maps(imgs: torch.Tensor, extrinsics, intrins
         x, y = x.unsqueeze(0).repeat(b, 1, 1), y.unsqueeze(0).repeat(b, 1, 1)
         # print("valid_points", valid_points.sum())
         # x, y, depth = x[valid_points], y[valid_points], depth_est_averaged[valid_points]
-        uvd_ref = (torch.stack((x, y, torch.ones_like(x)), dim=0) * depth_est_averaged).view(b, 3, -1)
+        uvd_ref = (torch.stack((x, y, torch.ones_like(x)), dim=1) * depth_est_averaged).view(b, 3, -1)
         xyz_ref = torch.matmul(torch.linalg.inv(ref_intrinsics), uvd_ref)
         xyz_world = torch.matmul(torch.linalg.inv(ref_extrinsics),
                             torch.cat((xyz_ref, torch.ones_like(x.view(b, 1, -1))), dim=1))[:3] # (B, 4, H*W)
@@ -250,6 +250,81 @@ def generate_point_cloud_from_depth_maps(imgs: torch.Tensor, extrinsics, intrins
     return vertices, vertices_color # [(n_points, 4) * B], [(n_points, 3) * B]
 
 
+def generate_probability_point_cloud(
+    imgs: torch.Tensor, 
+    cas_mvsnet_outputs: list[dict], 
+    extrinsics: torch.Tensor, 
+    intrinsics: torch.Tensor, 
+    ndepths=[48, 32, 8]):
+    """
+    ### Generate probability point cloud (xyz, porbability and feature index)
+    input:
+        imgs: Tensor(B, V, C=3, H, W)
+        cas_mvsnet_outputs: [{
+            depth: Tensor(B, H, W)
+            prob_volume: Tensor(B, D, H, W)
+            depth_range_samples: Tensor(B, D, H, W)
+            stage1: {...}
+            stage2: {...}
+            stage3: {...}
+        } * V]
+        extrinsics: Tensor(B, V, 4, 4)
+        intrinsics: Tensor(B, V, 3, 3)
+        
+    output:
+        vertices: [Tensor(N, 4) * B]
+        vertices_prob: [Tensor(N) * B]
+        vertices_feat_idx: Tensor(N) which encode (view, stage, y, x) into (vsyyyxxx)
+    """
+    b, v, c, h, w = imgs.shape
+    stage_num = len(ndepths)
+    depth_sum = torch.tensor(ndepths, device=imgs.device).sum()
+    # the final point cloud list (per batch)
+    vertices, vertices_prob, vertices_feat_idx = [[] for _ in range(b)], [[] for _ in range(b)], []
+
+    for ref_idx in range(v):
+        cas_mvsnet_output = cas_mvsnet_outputs[ref_idx]
+        extrinsic, intrinsic = extrinsics[:, ref_idx], intrinsics[:, ref_idx]
+        for i in range(stage_num):
+            stage_output = cas_mvsnet_output[f"stage{i+1}"] # start from 1
+            depths = ndepths[i]
+            proportion = 1 / 2 ** (stage_num - 1 - i) # 1/4, 1/2, 1
+
+            stage_intrinsic = intrinsic.clone()
+            stage_intrinsic[:, 0] *= proportion
+            stage_intrinsic[:, 1] *= proportion
+
+            prob_volume: torch.Tensor = stage_output["prob_volume"] # (B, D, H, W)
+
+            height, width = int(h * proportion), int(w * proportion)
+            # get depth range samples and rescale
+            depth_range_samples = stage_output["depth_range_samples"] # (B, D, H, W)
+
+            # project probability volume to 3d points
+            x, y = torch.meshgrid(torch.arange(0, width, device=imgs.device), torch.arange(0, height, device=imgs.device), indexing='xy') # (H, W)
+            feat_idx = y * 1000 + x # encode uv coordinates (H, W)
+            x, y = x.view(1, 1, height, width).repeat(b, depths, 1, 1), y.view(1, 1, height, width).repeat(b, depths, 1, 1) # (B, D, H, W)
+            # print("valid_points", valid_points.sum())
+            # x, y, depth = x[valid_points], y[valid_points], depth_est_averaged[valid_points]
+            uvd_ref = (torch.stack((x, y, torch.ones_like(x)), dim=1) * depth_range_samples).view(b, 3, -1) # (B, 3, D, H, W) -> # (B, 3, D*H*W)
+            xyz_ref = torch.matmul(torch.linalg.inv(intrinsic), uvd_ref) # (B, 3, D*H*W)
+            xyz_world = torch.matmul(torch.linalg.inv(extrinsic),
+                                torch.cat((xyz_ref, torch.ones(b, 1, depths * height * width, device=imgs.device)), dim=1))[:3] # (B, 4, D*H*W)
+            feat_idx = feat_idx.unsqueeze(0).repeat(depths, 1, 1) # (D, H, W)
+            feat_idx += (ref_idx * 10000000 + i * 1000000) # encode to (vsyyyxxx)
+            for b_idx in range(b):
+                vertices[b_idx].append(xyz_world.transpose(1, 2)[b_idx])
+                vertices_prob[b_idx].append(prob_volume.view(b, -1)[b_idx])
+            vertices_feat_idx.append(feat_idx.view(-1))
+                
+    # concat all vertices for every scene/batch
+    # every item in vertices (n_points, 4)
+    for b_idx in range(b):
+        vertices[b_idx] = torch.cat(vertices[b_idx], dim=0)
+        vertices_prob[b_idx] = torch.cat(vertices_prob[b_idx], dim=0)
+    vertices_feat_idx = torch.cat(vertices_feat_idx, dim=0)
+
+    return vertices, vertices_prob, vertices_feat_idx
 
 class PCDGenerator(nn.Module):
     mvsnet: MVSNet

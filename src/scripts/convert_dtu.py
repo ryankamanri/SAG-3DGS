@@ -18,6 +18,7 @@ import json
 import os
 
 from PIL import Image
+from convert import ConvertDataset, Metadata, Example
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--input_dir", type=str, help="input dtu raw directory")
@@ -26,10 +27,6 @@ args = parser.parse_args()
 
 INPUT_IMAGE_DIR = Path(args.input_dir)
 OUTPUT_DIR = Path(args.output_dir)
-
-
-# Target 100 MB per chunk.
-TARGET_BYTES_PER_CHUNK = int(1e8)
 
 
 def build_camera_info(id_list, root_dir):
@@ -118,17 +115,6 @@ def load_images(example_path: Path) -> dict[int, UInt8[Tensor, "..."]]:
     return images_dict
 
 
-class Metadata(TypedDict):
-    url: str
-    timestamps: Int[Tensor, " camera"]
-    cameras: Float[Tensor, "camera entry"]
-
-
-class Example(Metadata):
-    key: str
-    images: list[UInt8[Tensor, "..."]]
-
-
 def load_metadata(intrinsics, world2cams, images) -> Metadata:
     timestamps = []
     cameras = []
@@ -165,72 +151,28 @@ def load_metadata(intrinsics, world2cams, images) -> Metadata:
     }
 
 
-if __name__ == "__main__":
-    # we only use DTU for testing, not for training
-    for stage in ("test",):
+class ConvertDTU(ConvertDataset):
+    def get_image_dir(self, stage, key):
+        return INPUT_IMAGE_DIR / "Rectified" / key
+    
+    def get_metadeta_dir(self, stage, key):
+        return INPUT_IMAGE_DIR / "Cameras" / "train"
+    
+    def get_output_dir(self, stage):
+        return OUTPUT_DIR / stage
+    
+    def get_example_keys(self, stage):
+        return get_example_keys(stage)
+    
+    def load_images(self, image_path):
+        return load_images(image_path)
+    
+    def load_metadata(self, metadata_path, images):
         intrinsics, world2cams, cam2worlds, near_fars = build_camera_info(
             list(range(49)), INPUT_IMAGE_DIR
         )
+        return load_metadata(intrinsics, world2cams, images)
+    pass
 
-        keys = get_example_keys(stage)
-
-        chunk_size = 0
-        chunk_index = 0
-        chunk: list[Example] = []
-
-        def save_chunk():
-            global chunk_size
-            global chunk_index
-            global chunk
-
-            chunk_key = f"{chunk_index:0>6}"
-            print(
-                f"Saving chunk {chunk_key} of {len(keys)} ({chunk_size / 1e6:.2f} MB)."
-            )
-            dir = OUTPUT_DIR / stage
-            dir.mkdir(exist_ok=True, parents=True)
-            torch.save(chunk, dir / f"{chunk_key}.torch")
-
-            # Reset the chunk.
-            chunk_size = 0
-            chunk_index += 1
-            chunk = []
-
-        for key in keys:
-            image_dir = INPUT_IMAGE_DIR / "Rectified" / key
-            num_bytes = get_size(image_dir) // 7
-
-            # Read images and metadata.
-            images = load_images(image_dir)
-            example = load_metadata(intrinsics, world2cams, images)
-
-            # Merge the images into the example.
-            example["images"] = [
-                images[timestamp.item()] for timestamp in example["timestamps"]
-            ]
-            assert len(images) == len(example["timestamps"])
-
-            # Add the key to the example.
-            example["key"] = key
-
-            print(f"    Added {key} to chunk ({num_bytes / 1e6:.2f} MB).")
-            chunk.append(example)
-            chunk_size += num_bytes
-
-            if chunk_size >= TARGET_BYTES_PER_CHUNK:
-                save_chunk()
-
-        if chunk_size > 0:
-            save_chunk()
-
-        # generate index
-        print("Generate key:torch index...")
-        index = {}
-        stage_path = OUTPUT_DIR / stage
-        for chunk_path in tqdm(list(stage_path.iterdir()), desc=f"Indexing {stage_path.name}"):
-            if chunk_path.suffix == ".torch":
-                chunk = torch.load(chunk_path)
-                for example in chunk:
-                    index[example["key"]] = str(chunk_path.relative_to(stage_path))
-        with (stage_path / "index.json").open("w") as f:
-            json.dump(index, f)
+if __name__ == "__main__":
+    ConvertDTU().exec()
