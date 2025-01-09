@@ -11,14 +11,15 @@ from ..mvsnet.cas_mvsnet_module import CasMVSNetModuleResult, PointCloudResult
 from ...types import EncoderOutput, empty_encoder_output
 from ....utils import build_covariance_from_scaling_rotation
 
-GAUSSIAN_FEATURE_CHANNELS = 15
+SH_DEGREE = 4
+GAUSSIAN_FEATURE_CHANNELS = 11 + 3 * SH_DEGREE ** 2
 
 SLICE_DELTA_MEANS = slice(0, 3)
 SLICE_QUATERNION = slice(3, 7)
 SLICE_SCALE = slice(7, 10)
-SLICE_SHS = slice(10, 13)
-SLICE_OPACITY = slice(13, 14)
-SLICE_CURRENT = slice(14, 15)
+SLICE_OPACITY = slice(10, 11)
+SLICE_SHS_D1 = slice(11, 14) # sh degree 1
+SLICE_SHS = slice(11, GAUSSIAN_FEATURE_CHANNELS)
 
 C0 = 0.28209479177387814
 def RGB2SH(rgb):
@@ -43,9 +44,9 @@ def activate_hash_table(hash_table: torch.Tensor, far: torch.Tensor, voxel_size:
     activated_hash_table[SLICE_DELTA_MEANS] = delta_means_activation(hash_table[SLICE_DELTA_MEANS], far, voxel_size)
     activated_hash_table[SLICE_QUATERNION] = quaternion_activation(hash_table[SLICE_QUATERNION])
     activated_hash_table[SLICE_SCALE] = scaling_activation(hash_table[SLICE_SCALE], far, voxel_size)
-    activated_hash_table[SLICE_SHS] = color_activation(hash_table[SLICE_SHS])
     activated_hash_table[SLICE_OPACITY] = opacity_activation(hash_table[SLICE_OPACITY])
-    activated_hash_table[SLICE_CURRENT] = current_activation(hash_table[SLICE_CURRENT])
+    activated_hash_table[SLICE_SHS] = hash_table[SLICE_SHS]
+    activated_hash_table[SLICE_SHS_D1] = color_activation(hash_table[SLICE_SHS_D1])
     return activated_hash_table
 
 
@@ -169,14 +170,14 @@ def create_gaussians_from_features(gaussian_features: torch.Tensor, coordinates:
     """
     local_coordinates_offset = compute_local_coordinates_offset(camera_center, voxel_size, far)
     voxel_center = compute_voxel_center(coordinates + local_coordinates_offset, voxel_size, far).permute(1, 0) # (3, N)
-    b, n, dim, d_sh = 1, coordinates.shape[0], 3, 1
+    b, n, dim, d_sh = 1, coordinates.shape[0], 3, SH_DEGREE ** 2
     
     means: torch.Tensor = gaussian_features[SLICE_DELTA_MEANS] + voxel_center # (3, N)
     covariances: torch.Tensor = build_covariance_from_scaling_rotation(
         gaussian_features[SLICE_SCALE], 
         1, 
         gaussian_features[SLICE_QUATERNION]) # (9, N)
-    harmonics: torch.Tensor = gaussian_features[SLICE_SHS] # (3, N)
+    harmonics: torch.Tensor = gaussian_features[SLICE_SHS] # (d^2, N)
     opacities: torch.Tensor = gaussian_features[SLICE_OPACITY] # (1, N)
     
     gaussians = EncoderOutput(
@@ -190,7 +191,7 @@ def create_gaussians_from_features(gaussian_features: torch.Tensor, coordinates:
 
 
 def combine_batch_gaussians(batch_gaussians: list[EncoderOutput]) -> EncoderOutput:
-    b, dim, d_sh = 1, 3, 1
+    b, dim, d_sh = 1, 3, SH_DEGREE ** 2
     gaussian_size = 0
     means_list, covariance_list, harmonics_list, opacities_list = [], [], [], []
     for gaussian in batch_gaussians:
@@ -324,7 +325,7 @@ def compute_struct_loss(
     """
     get_opacity = lambda mask: gaussians.opacities[mask.unsqueeze(0)]
     get_means = lambda mask: gaussians.means[mask.unsqueeze(0)] # (N, 3)
-    get_color = lambda mask: SH2RGB(gaussians.harmonics[mask.unsqueeze(0)].view(-1, 3))
+    get_color = lambda mask: SH2RGB(gaussians.harmonics[mask.unsqueeze(0)].view(-1, 3 * SH_DEGREE ** 2)[..., :3])
 
     is_mapped_point = isin_3d_coordinates(local_coordinates, downsampled_pcds[scale_idx][:, :3].int())
     
@@ -365,9 +366,7 @@ class VoxelizedGaussianAdapterModule(nn.Module):
 
         self.gaussian_parameter_predictor = nn.Sequential(
             nn.Linear(in_features=feature_channels, out_features=64), 
-            nn.Linear(in_features=64, out_features=32), 
-            nn.Linear(in_features=32, out_features=16), 
-            nn.Linear(in_features=16, out_features=15)
+            nn.Linear(in_features=64, out_features=GAUSSIAN_FEATURE_CHANNELS)
         )
         
         for p in self.parameters():
@@ -391,7 +390,6 @@ class VoxelizedGaussianAdapterModule(nn.Module):
             last_voxel_size = 0
             total_existence_loss, total_current_loss, total_offset_loss, total_color_loss = torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda")
             camera_center = extrinsics.inverse()[batch][:, :3, 3].mean(dim=0)
-            dim, d_sh = 3, 1
             gaussians = empty_encoder_output()
             
             with torch.no_grad():
@@ -446,7 +444,7 @@ class VoxelizedGaussianAdapterModule(nn.Module):
                 far=far
             )
             
-            if False:
+            if is_trainning:
                 # compute losses
                 existence_loss, offset_loss, color_loss = compute_struct_loss(
                     downsampled_pcds=downsampled_pcds, 
