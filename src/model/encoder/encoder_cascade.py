@@ -19,11 +19,11 @@ from ..types import EncoderOutput, empty_encoder_output
 from .common.gaussian_adapter import GaussianAdapter, GaussianAdapterCfg
 from .encoder import Encoder
 from .mvsnet.cas_mvsnet_module import CasMVSNetModule, CasMVSNetModuleResult
-from .backbone.feature_extractor import MultiViewFeatureExtractor
+from .backbone.feature_extractor import CNNFeatureExtractor
 from ..encodings.positional_encoding import camera_positional_encoding
 from .backbone.multi_costvolume_transformer_module import MultiCostVolumeTransformerModule
-from .backbone.hash_table_voxelized_gaussian_adapter_module import HashTableVoxelizedGaussianAdapterModule, GAUSSIAN_FEATURE_CHANNELS
-
+from .backbone.voxelized_gaussian_adapter_module import VoxelizedGaussianAdapterModule, GAUSSIAN_FEATURE_CHANNELS
+from .backbone.voxel_to_point_cross_attn_transformer import VoxelToPointTransformer
 
 
 
@@ -35,8 +35,11 @@ class EncoderCascadeCfg:
     cas_mvsnet_load_to_backbone: bool
     cas_mvsnet_ndepth: list[int]
     positional_encoding_num_frequencies: int
-    multi_costvolume_transformer_layers: int
-    multi_costvolume_transformer_num_head: int
+    feature_channels: int
+    transformer_layers: int
+    transformer_num_head: int
+    no_ffn: bool
+    ffn_dim_expansion: int
     voxel_size_list: list[int]
     min_opacity_list: list[float]
 
@@ -44,7 +47,7 @@ class EncoderCascadeCfg:
 class EncoderCascade(Encoder[EncoderCascadeCfg]):
     cas_mvsnet_module: CasMVSNetModule
     multi_costvolume_transformer_module: MultiCostVolumeTransformerModule
-    gaussian_adapter_module: HashTableVoxelizedGaussianAdapterModule
+    gaussian_adapter_module: VoxelizedGaussianAdapterModule
     
     def __init__(self, cfg: EncoderCascadeCfg) -> None:
         super().__init__(cfg)
@@ -55,21 +58,20 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             load_to_backbone=cfg.cas_mvsnet_load_to_backbone
             )
         
-        self.feature_extractor = MultiViewFeatureExtractor()
+        self.feature_channels = cfg.feature_channels
+        self.feature_extractor = CNNFeatureExtractor(out_channels=self.feature_channels)
         
-        self.positional_encoding_num_frequencies = cfg.positional_encoding_num_frequencies
-        self.rgb_channels = 3
-        
-        self.multi_costvolume_transformer_module = MultiCostVolumeTransformerModule(
-            num_transformer_layers=cfg.multi_costvolume_transformer_layers, 
-            input_channels=(self.rgb_channels + cfg.cas_mvsnet_ndepth[-1] + 32 * self.positional_encoding_num_frequencies),
-            out_channels=GAUSSIAN_FEATURE_CHANNELS, # 3(means)+7(quaternion+scale)+3*1(shs)+1(opacity)+1(current)
-            num_head=cfg.multi_costvolume_transformer_num_head
+        self.transformer = VoxelToPointTransformer(
+            num_layers=cfg.transformer_layers, 
+            d_model=self.feature_channels, 
+            nhead=cfg.transformer_num_head, 
+            no_ffn=cfg.no_ffn, 
+            ffn_dim_expansion=cfg.ffn_dim_expansion
         )
         
-        self.multiview_trans_attn_split = 16
-        
-        self.gaussian_adapter_module = HashTableVoxelizedGaussianAdapterModule(
+        self.gaussian_adapter_module = VoxelizedGaussianAdapterModule(
+            transformer=self.transformer, 
+            feature_channels=self.feature_channels, 
             voxel_size_list=cfg.voxel_size_list, 
             min_opacity=cfg.min_opacity_list
         )
@@ -109,9 +111,9 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         ndepths = 192
     ) -> EncoderOutput:
         imgs, extrinsics, intrinsics, nears, fars = self.preprocess(context)
-        feature_list = self.feature_extractor(imgs)
+        features = self.feature_extractor(imgs) # (B, V, C, H, W)
         cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, extrinsics, intrinsics, nears, fars)
-        gaussians: EncoderOutput = self.gaussian_adapter_module(feature_list, cas_module_result, extrinsics, fars)
+        gaussians: EncoderOutput = self.gaussian_adapter_module(features, cas_module_result, extrinsics, intrinsics, fars)
         gaussians.others["cas_module_result"] = cas_module_result
         return gaussians
 

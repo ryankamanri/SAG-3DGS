@@ -6,6 +6,7 @@ import math
 import open3d as o3d
 import numpy as np
 from sklearn.neighbors import KDTree
+from .voxel_to_point_cross_attn_transformer import VoxelToPointTransformer
 from ..mvsnet.cas_mvsnet_module import CasMVSNetModuleResult, PointCloudResult
 from ...types import EncoderOutput, empty_encoder_output
 from ....utils import build_covariance_from_scaling_rotation
@@ -306,14 +307,9 @@ def compute_max_scale_voxel_existence_coordinates_by_pcd(max_downsampled_pcd: to
 
 def compute_struct_loss(
     downsampled_pcds: list[torch.Tensor], 
-    classified_pcds: list[torch.Tensor], 
-    hash_table: torch.Tensor, 
-    voxel_size_list: list[int], 
     scale_idx: int, 
-    coordinates: torch.Tensor, 
-    max_scale_voxel_existence_coordinates: torch.Tensor, 
-    camera_center: torch.Tensor, 
-    far: torch.Tensor):
+    local_coordinates: torch.Tensor, 
+    gaussians: EncoderOutput):
     """
     ### Compute L_struct for a given scale.
     input:
@@ -326,100 +322,53 @@ def compute_struct_loss(
     
     #### Note that assume coordinates contains all points.
     """
-    local_coordinates_offset = compute_local_coordinates_offset(camera_center, voxel_size_list[scale_idx], far)
-    get_opacity = lambda coor: hash_query(coor + local_coordinates_offset, hash_table)[SLICE_OPACITY]
-    get_delta_means = lambda coor: hash_query(coor + local_coordinates_offset, hash_table)[SLICE_DELTA_MEANS]
-    get_color = lambda coor: hash_query(coor + local_coordinates_offset, hash_table)[SLICE_SHS]
-    get_current = lambda coor: hash_query(coor + local_coordinates_offset, hash_table)[SLICE_CURRENT]
+    get_opacity = lambda mask: gaussians.opacities[mask.unsqueeze(0)]
+    get_means = lambda mask: gaussians.means[mask.unsqueeze(0)] # (N, 3)
+    get_color = lambda mask: SH2RGB(gaussians.harmonics[mask.unsqueeze(0)].view(-1, 3))
 
-    is_mapped_point = isin_3d_coordinates(coordinates, downsampled_pcds[scale_idx][:, :3].int())
+    is_mapped_point = isin_3d_coordinates(local_coordinates, downsampled_pcds[scale_idx][:, :3].int())
     
-    no_point_coordinates = coordinates[torch.logical_not(is_mapped_point)] # case 1
-    has_point_coordinates = coordinates[is_mapped_point] # (N1, 3)
-
-    is_mapped_and_correct_classified_point = isin_3d_coordinates(has_point_coordinates, classified_pcds[scale_idx][:, :3].int())
-    
-    not_current_scale_point_coordinates = has_point_coordinates[torch.logical_not(is_mapped_and_correct_classified_point)] # case 3
-    # TODO: check is_mapped_and_correct_classified_point.sum() == classified_pcd.shape[0]
-    classified_pcd = classified_pcds[scale_idx] # case 2 (n2, iiixyzrgb)
-    
-    # compute existence loss, current loss, offset loss and color loss
+    # compute existence loss, offset loss and color loss
     existence_loss, existence_n = 0., 0
-    current_loss, current_n = 0., 0
-    
-    # for case 3
-    existence_loss += (1. - get_opacity(not_current_scale_point_coordinates)).sum()
-    existence_n += not_current_scale_point_coordinates.shape[0]
-    current_loss += get_current(not_current_scale_point_coordinates).sum()
-    current_n += not_current_scale_point_coordinates.shape[0]
     
     # for case 2
-    existence_loss += (1. - get_opacity(classified_pcd[:, :3].int())).sum()
-    existence_n += classified_pcd.shape[0]
-    current_loss += (1. - get_current(classified_pcd[:, :3].int())).sum()
-    current_n += classified_pcd.shape[0]
+    existence_loss += (1. - get_opacity(is_mapped_point)).sum()
+    existence_n += is_mapped_point.sum()
     
-    predicted_means: torch.Tensor = \
-        compute_voxel_center(classified_pcd[:, :3].int() + compute_local_coordinates_offset(camera_center, voxel_size_list[-1], far), voxel_size_list[-1], far) + \
-        get_delta_means(classified_pcd[:, :3].int()).permute(1, 0)
+    predicted_means: torch.Tensor = get_means(is_mapped_point)
         
-    predicted_color = get_color(classified_pcd[:, :3].int()).permute(1, 0)
+    predicted_color = get_color(is_mapped_point)
     
-    offset_loss = (classified_pcd[:, 3:6] - predicted_means).norm(dim=1).sum() / math.sqrt(3)
-    color_loss = (classified_pcd[:, 6:] - predicted_color).norm(p=1, dim=1).sum() / 3
-    offset_n = color_n = classified_pcd.shape[0]
-    
-    # for case 1
-    # Find the coursest scale and decide: does it have a pseudo truth?
-    max_scale_no_point_coordinates = (no_point_coordinates * (voxel_size_list[0] / voxel_size_list[scale_idx])).int()
-
-    is_max_downsampled_may_exist_coordinates = isin_3d_coordinates(max_scale_no_point_coordinates, max_scale_voxel_existence_coordinates)
-    
-    max_downsampled_not_exist_coordinates = max_scale_no_point_coordinates[torch.logical_not(is_max_downsampled_may_exist_coordinates)]
-    
-    existence_loss += (get_opacity(max_downsampled_not_exist_coordinates)).sum()
-    existence_n += max_downsampled_not_exist_coordinates.shape[0]
+    offset_loss = (downsampled_pcds[scale_idx][:, 3:6] - predicted_means).norm(dim=1).sum() / math.sqrt(3)
+    color_loss = (downsampled_pcds[scale_idx][:, 6:] - predicted_color).norm(p=1, dim=1).sum() / 3
+    offset_n = color_n = downsampled_pcds[scale_idx].shape[0]
     
     # loss normalization
     if existence_n != 0: existence_loss /= existence_n
-    if current_n != 0: current_loss /= current_n
     if offset_n != 0: offset_loss /= offset_n
     if color_n != 0: color_loss /= color_n
         
-    return existence_loss, current_loss, offset_loss, color_loss
+    return existence_loss, offset_loss, color_loss
     
     
 
-class HashTableVoxelizedGaussianAdapterModule(nn.Module):
+class VoxelizedGaussianAdapterModule(nn.Module):
 
-    def __init__(self, voxel_size_list=[32, 128, 512], min_opacity=[0.1, 0.1, 0.1]) -> None:
+    def __init__(self, transformer: VoxelToPointTransformer, feature_channels=192, voxel_size_list=[32, 128, 512], min_opacity=[0.1, 0.1, 0.1]) -> None:
         super().__init__()
         assert len(voxel_size_list) == 3
+        self.transformer = transformer
         self.voxel_size_count = len(voxel_size_list)
         self.voxel_size_list = voxel_size_list
         self.min_opacity = min_opacity
         
-        self.use_anisotropic_projector = False
-        
-        if self.use_anisotropic_projector:
-            self.anisotropic_projector = nn.Sequential(
-                nn.Linear(in_features=32+3, out_features=64-1), 
-                nn.Linear(in_features=64-1, out_features=64-1)
-            )
-        
-            self.gaussian_parameter_predictor = nn.Sequential(
-                nn.Linear(in_features=64, out_features=64), 
-                nn.Linear(in_features=64, out_features=32), 
-                nn.Linear(in_features=32, out_features=16), 
-                nn.Linear(in_features=16, out_features=15)
-            )
-        else:
-            self.gaussian_parameter_predictor = nn.Sequential(
-                nn.Linear(in_features=192+1, out_features=64), 
-                nn.Linear(in_features=64, out_features=32), 
-                nn.Linear(in_features=32, out_features=16), 
-                nn.Linear(in_features=16, out_features=15)
-            )
+
+        self.gaussian_parameter_predictor = nn.Sequential(
+            nn.Linear(in_features=feature_channels, out_features=64), 
+            nn.Linear(in_features=64, out_features=32), 
+            nn.Linear(in_features=32, out_features=16), 
+            nn.Linear(in_features=16, out_features=15)
+        )
         
         for p in self.parameters():
             if p.dim() > 1:
@@ -427,22 +376,17 @@ class HashTableVoxelizedGaussianAdapterModule(nn.Module):
         pass
     
         
-    def forward(self, feature_list: list[torch.Tensor], cas_module_result: CasMVSNetModuleResult, extrinsics: torch.Tensor, fars: torch.Tensor):
-        b = feature_list[0].shape[0]
+    def forward(self, cnn_features: torch.Tensor, cas_module_result: CasMVSNetModuleResult, extrinsics: torch.Tensor, intrinsics: torch.Tensor, fars: torch.Tensor):
+        b, v, c, h, w = cnn_features.shape
         far = fars[0, 0]
-        is_trainning = feature_list[0].grad_fn != None
+        is_trainning = cnn_features.grad_fn != None
         batch_gaussians = []
         batch_losses = [[], [], [], []] # total_existence_loss, total_current_loss, total_offset_loss, total_color_loss
         prob_pcd = cas_module_result.registed_prob_pcd
-        prob_pcd_feat_idxs = prob_pcd.feature_indexes
         
-        # convert feature list to a tensor
-        feature_size_list = [feature_list[0].shape[-2:], feature_list[1].shape[-2:], feature_list[2].shape[-2:]]
-        feature_list[0] = F.pad(feature_list[0], (0, feature_size_list[2][-1] - feature_size_list[0][-1], 0, feature_size_list[2][-2] - feature_size_list[0][-2]))
-        feature_list[1] = F.pad(feature_list[1], (0, feature_size_list[2][-1] - feature_size_list[1][-1], 0, feature_size_list[2][-2] - feature_size_list[1][-2]))
-        features = torch.stack(feature_list, dim=2) # (B, V, S, C, H, W)
         
         for batch in range(b):
+            # for every batch the number of gaussian may be different (LoD)
             local_coordinates = None
             last_voxel_size = 0
             total_existence_loss, total_current_loss, total_offset_loss, total_color_loss = torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda")
@@ -450,55 +394,46 @@ class HashTableVoxelizedGaussianAdapterModule(nn.Module):
             dim, d_sh = 3, 1
             gaussians = empty_encoder_output()
             
-            voxel_size = 64
+            with torch.no_grad():
+                downsampled_pcds, classified_pcds = downsample_and_classify_pcd(
+                    pcd=cas_module_result.registed_pcd, 
+                    voxel_size_list=self.voxel_size_list, 
+                    camera_center=camera_center, 
+                    far=far, 
+                    batch_idx=batch
+                )
+            
+            # TODO: Create multi-scale voxel according to points.
+            voxel_size = self.voxel_size_list[0]
             local_coordinates = create_local_coordinates(voxel_size, last_coordinates=None)
             offset = compute_local_coordinates_offset(camera_center, voxel_size, far)
-            centers: torch.Tensor = compute_voxel_center(local_coordinates + offset, voxel_size, far) # (N, 3)
+            coordinates = local_coordinates + offset
+            centers: torch.Tensor = compute_voxel_center(coordinates, voxel_size, far) # (N, 3)
             
-            prob_pcd_xyz = prob_pcd.xyz_batches[batch][:, :3] # (n, 3)
-            prob_pcd_prob = prob_pcd.probability_batches[batch] # (n)
+            prob_pcd_xyz = prob_pcd.vertices[batch][:, :3] # (V, 3, H, W)
+            prob_pcd_ijk = compute_voxel_indices(prob_pcd_xyz, voxel_size, far) # (V, 3, H, W)
             
-            dists, idx, _ = knn_points(
-                p1=centers.unsqueeze(0),  
-                p2=prob_pcd_xyz.unsqueeze(0), 
-                K=16
-            ) # (1, N, K), (1, N, K)
+            # for reduce memory consumption we uapply transformer per view
+            voxel_feature_list = []
+            for view_idx in range(v):
+                view_slicer = slice(view_idx, view_idx + 1)
+                voxel_feature = self.transformer(
+                    cnn_features=cnn_features[batch, view_slicer], # (V, C, H, W)
+                    extrinsics=extrinsics[batch, view_slicer], 
+                    intrinsics=intrinsics[batch, view_slicer], 
+                    point_xyz=prob_pcd_xyz[view_slicer], # (V, 3, H, W)
+                    voxel_xyz=centers.transpose(0, 1).unsqueeze(0), # (V, 3, N)
+                    point_ijk=prob_pcd_ijk[view_slicer], 
+                    voxel_ijk=coordinates.transpose(0, 1).unsqueeze(0), # (V, 3, N)
+                    confidences=prob_pcd.vertices_confidence[batch, view_slicer] # (V, H, W)
+                ) # (V, C, N)
+                voxel_feature_list.append(voxel_feature)
+                
+            voxel_features = torch.cat(voxel_feature_list, dim=0) # (V, C, N)
             
-            k_xyz = prob_pcd_xyz[idx[0]] # (N, K, 3)
-            k_probs = prob_pcd_prob[idx[0]] # (N, K)
-            k_feat_idxs = prob_pcd_feat_idxs[idx[0]] # (N, K) (vsyyyxxx)
+            merged_feat = torch.mean(voxel_features, dim=0).transpose(0, 1) # (N, C)
             
-            k_feats = features[
-                batch, 
-                k_feat_idxs // 10000000, 
-                (k_feat_idxs // 1000000) % 10, 
-                :, 
-                (k_feat_idxs // 1000) % 1000, 
-                k_feat_idxs % 1000
-            ] # (N, K, C)
-            
-            n, k, _ = k_feats.shape
-
-            # Add direction information to features
-            dir = k_xyz - centers.unsqueeze(1) # (N, K, 3)
-            dir /= torch.sqrt(dists[0]).unsqueeze(-1) # TODO: assert torch.sqrt(dists[0]) == dir.norm(dim=2)
-            
-            if self.use_anisotropic_projector:
-                aniso_feat = self.anisotropic_projector(torch.cat((k_feats, dir), dim=2)) # (N, K, C=64-1)
-            else:
-                dir_abs = torch.cat((torch.clamp(dir, min=0), torch.clamp(-dir, min=0)), dim=-1)
-                aniso_feat = (k_feats.unsqueeze(-2) * dir_abs.unsqueeze(-1)).view(n, k, -1) # (N, K, 6C)
-            
-            # merge k features
-            weights: torch.Tensor = k_probs / dists[0]
-            weights_sum = torch.sum(weights, dim=1).unsqueeze(1) # (N, 1)
-            weights /= weights_sum # (N, K)
-            
-            merged_feat = torch.sum(weights.unsqueeze(-1) * aniso_feat, dim=1) # (N, C=64-1)
-            
-            gaussian_features = self.gaussian_parameter_predictor(
-                torch.cat((merged_feat, 1 - torch.exp(-weights_sum)), dim=1)
-                ) # (N, 15)
+            gaussian_features = self.gaussian_parameter_predictor(merged_feat) # (N, 15)
             
             gaussian_features = gaussian_features.transpose(0, 1) # (15, N)
             activated_gaussian_features = activate_hash_table(gaussian_features, far, voxel_size)
@@ -510,6 +445,18 @@ class HashTableVoxelizedGaussianAdapterModule(nn.Module):
                 voxel_size=voxel_size, 
                 far=far
             )
+            
+            if False:
+                # compute losses
+                existence_loss, offset_loss, color_loss = compute_struct_loss(
+                    downsampled_pcds=downsampled_pcds, 
+                    scale_idx=0, 
+                    local_coordinates=local_coordinates, 
+                    gaussians=gaussians
+                )
+                total_existence_loss += existence_loss
+                total_offset_loss += offset_loss
+                total_color_loss += color_loss
             
             batch_losses[0].append(total_existence_loss / self.voxel_size_count)
             batch_losses[1].append(total_current_loss / self.voxel_size_count)

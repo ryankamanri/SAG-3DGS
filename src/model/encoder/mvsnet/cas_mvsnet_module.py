@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import torch
 from torch import nn
-from ..mvsnet import CascadeMVSNet, generate_point_cloud_from_depth_maps, generate_probability_point_cloud
+from ..mvsnet import CascadeMVSNet, generate_point_cloud_from_depth_maps, generate_depth_map_based_point_cloud
 
 
 
@@ -26,24 +26,22 @@ def empty_point_cloud_result():
     return PointCloudResult([], [])
 
 @dataclass
-class ProbabilityPointCloudResult:
+class ViewBasedPointCloudResult:
     """
-        vertices: [Tensor(N, 4) * B]
-        vertices_prob: [Tensor(N) * B]
-        vertices_feat_idx: Tensor(N) which encode (view, stage, y, x) into (vsyyyxxx)
+        vertices: Tensor(B, V, 4, H, W)
+        vertices_confidence: Tensor(B, V, H, W)
     """
-    xyz_batches: list[torch.Tensor]
-    probability_batches: list[torch.Tensor]
-    feature_indexes: torch.Tensor
+    vertices: torch.Tensor
+    vertices_confidence: torch.Tensor
     
 def empty_probalility_point_cloud_result():
-    return ProbabilityPointCloudResult([], [], torch.tensor(0))
+    return ViewBasedPointCloudResult(torch.tensor(0), torch.tensor(0))
 
 @dataclass
 class CasMVSNetModuleResult:
     ref_view_result_list: list[ReferenceViewResult]
     registed_pcd: PointCloudResult
-    registed_prob_pcd: ProbabilityPointCloudResult
+    registed_prob_pcd: ViewBasedPointCloudResult
     
 def empty_cas_mvsnet_module_result():
     return CasMVSNetModuleResult([], empty_point_cloud_result(), empty_probalility_point_cloud_result())
@@ -138,12 +136,11 @@ class CasMVSNetModule(nn.Module):
         with torch.no_grad():            
             vertices, vertices_color = generate_point_cloud_from_depth_maps(imgs, extrinsics, intrinsics, pretrained_depths_est, pretrained_photometric_confidences)
         
-        prob_vertices, prob_vertices_prob, prob_vertices_feat_idx = generate_probability_point_cloud(
-            imgs, 
-            [ref_view_result.backbone for ref_view_result in result.ref_view_result_list], 
-            extrinsics, intrinsics, self.ndepths)
+        prob_vertices = generate_depth_map_based_point_cloud(pretrained_depths_est, extrinsics, intrinsics)
         
         result.registed_pcd = PointCloudResult(xyz_batches=vertices, rgb_batches=vertices_color)
-        result.registed_prob_pcd = ProbabilityPointCloudResult(xyz_batches=prob_vertices, probability_batches=prob_vertices_prob, feature_indexes=prob_vertices_feat_idx)
+        result.registed_prob_pcd = ViewBasedPointCloudResult(
+            vertices=prob_vertices, 
+            vertices_confidence=torch.stack(pretrained_photometric_confidences, dim=1))
         
         return result

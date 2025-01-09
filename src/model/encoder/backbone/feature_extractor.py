@@ -195,3 +195,31 @@ class MultiViewFeatureExtractor(nn.Module):
         outputs.append(out)
 
         return outputs
+    
+class CNNFeatureExtractor(nn.Module):
+    def __init__(self, in_channels=3, out_channels=192):
+        super(CNNFeatureExtractor, self).__init__()
+        
+        cur_channels = 16
+        self.conv_in_channels_list = [in_channels] # [3]
+        self.conv_out_channels_list = [cur_channels] # [16]
+        while cur_channels * 2 < out_channels:
+            self.conv_in_channels_list.append(cur_channels) # [3, 16, 32, 64]
+            self.conv_out_channels_list.append(cur_channels * 2) # [16, 32, 64, 128]
+            cur_channels *= 2
+        self.conv_in_channels_list.append(cur_channels) # [3, 16, 32, 64, 128]
+        self.conv_out_channels_list.append(out_channels) # [16, 32, 64, 128, 192]
+        
+        self.convs = nn.ModuleList([
+            nn.Conv2d(in_channels=in_c, out_channels=out_c, kernel_size=3, stride=1, padding=1) 
+            for in_c, out_c in zip(self.conv_in_channels_list, self.conv_out_channels_list)])
+        
+    
+    def forward(self, x):
+        # x: Tensor(B, V, C, H, W)
+        b, v, c, h, w = x.shape
+        x = x.view(b*v, c, h, w)
+        for conv in self.convs:
+            x = conv(x)
+
+        return x.view(b, v, -1, h, w)

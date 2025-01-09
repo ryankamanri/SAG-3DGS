@@ -5,7 +5,10 @@ cas_mvsnet_use_backbone: false
 cas_mvsnet_load_to_backbone: false
 cas_mvsnet_ndepth: [48, 32, 8]
 positional_encoding_num_frequencies: 2
-multi_costvolume_transformer_layers: 2
-multi_costvolume_transformer_num_head: 4
+feature_channels: 96
+transformer_layers: 2
+transformer_num_head: 4
+no_ffn: False
+ffn_dim_expansion: 1
 voxel_size_list: [32, 128, 512]
 min_opacity_list: [0.1, 0.1, 0.1]

@@ -27,7 +27,7 @@ def multi_head_full_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     v = v.view(b, -1, num_head, c // num_head).permute(0, 2, 1, 3)  # [B, N, L, C/N]
     
     scores = torch.matmul(q, k) / ((c // num_head) ** 0.5)  # [B, N, L, L]
-    attn = torch.softmax(scores, dim=2) # [B, N, L, L]
+    attn = torch.softmax(scores, dim=-1) # [B, N, L, L]
     out = torch.matmul(attn, v)  # [B, N, L, C/N]
 
     return out.permute(0, 2, 1, 3).reshape(b, l, c)
