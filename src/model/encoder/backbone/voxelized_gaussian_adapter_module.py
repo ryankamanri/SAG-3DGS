@@ -211,10 +211,10 @@ def combine_batch_gaussians(batch_gaussians: list[EncoderOutput]) -> EncoderOutp
     for gaussian in batch_gaussians:
         append_size = gaussian_size - gaussian.opacities.shape[1]
         if append_size > 0: 
-            gaussian.means = torch.cat((gaussian.means, torch.zeros(b, append_size, dim)), dim=1)
-            gaussian.covariances = torch.cat((gaussian.covariances, torch.zeros(b, append_size, dim, dim)), dim=1)
-            gaussian.harmonics = torch.cat((gaussian.harmonics, torch.zeros(b, append_size, 3, d_sh)), dim=1)
-            gaussian.opacities = torch.cat((gaussian.opacities, torch.zeros(b, append_size)), dim=1)
+            gaussian.means = torch.cat((gaussian.means, torch.zeros(b, append_size, dim, device=gaussian.means.device)), dim=1)
+            gaussian.covariances = torch.cat((gaussian.covariances, torch.zeros(b, append_size, dim, dim, device=gaussian.means.device)), dim=1)
+            gaussian.harmonics = torch.cat((gaussian.harmonics, torch.zeros(b, append_size, 3, d_sh, device=gaussian.means.device)), dim=1)
+            gaussian.opacities = torch.cat((gaussian.opacities, torch.zeros(b, append_size, device=gaussian.means.device)), dim=1)
         means_list.append(gaussian.means)
         covariance_list.append(gaussian.covariances)
         harmonics_list.append(gaussian.harmonics)

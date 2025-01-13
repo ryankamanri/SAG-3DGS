@@ -221,7 +221,7 @@ def generate_point_cloud_from_depth_maps(imgs: torch.Tensor, extrinsics, intrins
         x, y = x.unsqueeze(0).repeat(b, 1, 1), y.unsqueeze(0).repeat(b, 1, 1)
         # print("valid_points", valid_points.sum())
         # x, y, depth = x[valid_points], y[valid_points], depth_est_averaged[valid_points]
-        uvd_ref = (torch.stack((x, y, torch.ones_like(x)), dim=1) * depth_est_averaged).view(b, 3, -1)
+        uvd_ref = (torch.stack((x, y, torch.ones_like(x)), dim=1) * depth_est_averaged.unsqueeze(1)).view(b, 3, -1)
         xyz_ref = torch.matmul(torch.linalg.inv(ref_intrinsics), uvd_ref)
         xyz_world = torch.matmul(torch.linalg.inv(ref_extrinsics),
                             torch.cat((xyz_ref, torch.ones_like(x.view(b, 1, -1))), dim=1)) # (B, 4, H*W)
