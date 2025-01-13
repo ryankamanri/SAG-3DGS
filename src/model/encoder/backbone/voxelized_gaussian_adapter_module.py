@@ -193,7 +193,7 @@ def create_gaussians_from_features(gaussian_features: torch.Tensor, coordinates:
     gaussians = EncoderOutput(
         means=means.permute(1, 0).view(b, n, dim),
         covariances=covariances.permute(1, 0).reshape(b, n, dim, dim), 
-        harmonics=harmonics.permute(1, 0).view(b, n, 3, d_sh), 
+        harmonics=harmonics.permute(1, 0).view(b, n, d_sh, 3).transpose(2, 3), # note that (d_sh, 3) in features
         opacities=opacities.permute(1, 0).view(b, n)
     )
     
@@ -325,7 +325,7 @@ def compute_struct_loss(
     """
     get_opacity = lambda mask: gaussians.opacities[mask.unsqueeze(0)]
     get_means = lambda mask: gaussians.means[mask.unsqueeze(0)] # (N, 3)
-    get_color = lambda mask: SH2RGB(gaussians.harmonics[mask.unsqueeze(0)].view(-1, 3 * SH_DEGREE ** 2)[..., :3])
+    get_color = lambda mask: SH2RGB(gaussians.harmonics[mask.unsqueeze(0)].reshape(-1, 3, SH_DEGREE ** 2)[..., 0])
 
     is_mapped_gaussians, is_mapped_points = isin_3d_coordinates(local_coordinates, downsampled_pcds[scale_idx][:, :3].int(), return_inverse=True)
     

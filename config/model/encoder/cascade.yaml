@@ -10,5 +10,5 @@ transformer_layers: 1
 transformer_num_head: 4
 no_ffn: False
 ffn_dim_expansion: 1
-voxel_size_list: [32, 128, 512]
+voxel_size_list: [32, 64, 128, 256]
 min_opacity_list: [0.1, 0.1, 0.1]
