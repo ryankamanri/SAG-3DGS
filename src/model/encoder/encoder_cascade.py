@@ -51,15 +51,18 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     
     def __init__(self, cfg: EncoderCascadeCfg) -> None:
         super().__init__(cfg)
+        
+        self.cas_mvsnet_feature_channels = 8
         self.cas_mvsnet_module = CasMVSNetModule(
             cas_mvsnet_ckpt_path=cfg.cas_mvsnet_ckpt_path, 
             ndepths=cfg.cas_mvsnet_ndepth, 
+            base_channels=self.cas_mvsnet_feature_channels, 
             use_backbone=cfg.cas_mvsnet_use_backbone, 
             load_to_backbone=cfg.cas_mvsnet_load_to_backbone
             )
         
         self.feature_channels = cfg.feature_channels
-        self.feature_extractor = CNNFeatureExtractor(out_channels=self.feature_channels)
+        self.feature_extractor = CNNFeatureExtractor(out_channels=self.feature_channels - self.cas_mvsnet_feature_channels)
         
         self.transformer = VoxelToPointTransformer(
             num_layers=cfg.transformer_layers, 
@@ -113,6 +116,8 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         imgs, extrinsics, intrinsics, nears, fars = self.preprocess(context)
         features = self.feature_extractor(imgs) # (B, V, C, H, W)
         cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, extrinsics, intrinsics, nears, fars)
+        # concat cnn features and interpolated cost volume features
+        features = torch.cat((features, cas_module_result.interpolated_features), dim=2) # (B, V, C', H, W)
         gaussians: EncoderOutput = self.gaussian_adapter_module(features, cas_module_result, extrinsics, intrinsics, fars)
         gaussians.others["cas_module_result"] = cas_module_result
         return gaussians

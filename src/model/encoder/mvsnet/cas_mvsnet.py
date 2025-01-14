@@ -6,9 +6,9 @@ from .cas_module import *
 Align_Corners_Range = False
 
 class DepthNet(nn.Module):
-    def __init__(self, return_prob_volume=False, return_photometric_confidence=False):
+    def __init__(self, return_interpolated_features=False, return_photometric_confidence=False):
         super(DepthNet, self).__init__()
-        self.return_prob_volume = return_prob_volume
+        self.return_interpolated_features = return_interpolated_features
         self.return_photometric_confidence = return_photometric_confidence
 
     def forward(self, stage_idx, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None):
@@ -61,8 +61,37 @@ class DepthNet(nn.Module):
         result = {}
         result["depth"] = depth
         
-        if self.return_prob_volume:
-            result["prob_volume"] = prob_volume
+        if self.return_interpolated_features and stage_idx == 2:
+            # volume_variance: (B, C, D, H, W)
+            # depth_values: (B, D, H, W)
+            b, c, d, h, w = volume_variance.shape
+            depth_idx_sample = depth_regression(prob_volume, depth_values=torch.arange(num_depth, device=prob_volume.device, dtype=torch.float)) # (B, H, W)
+            
+            grid = torch.stack(torch.meshgrid((
+                torch.arange(b, device=depth_idx_sample.device), 
+                torch.arange(h, device=depth_idx_sample.device), 
+                torch.arange(w, device=depth_idx_sample.device), 
+            )), dim=0) # (3(bhw), B, H, W)
+            
+            # TODO: check if it has any "index out of bound" error 
+            depth_idx_sample[depth_idx_sample <= 0] = 1e-10 # avoid idx out of bound due to the bias.
+            depth_idx_sample[depth_idx_sample >= num_depth - 1] = num_depth - 1 - 1e-10 # avoid idx out of bound due to the bias.
+            
+            idx_begin = depth_idx_sample.floor().long() # (B, H, W)
+            idx_end = idx_begin + 1 # (B, H, W)
+            
+            depth_begin = torch.gather(depth_values, dim=1, index=idx_begin.unsqueeze(1)).squeeze(1) # (B, H, W)
+            depth_end = torch.gather(depth_values, dim=1, index=idx_end.unsqueeze(1)).squeeze(1)
+            
+            interpolate = depth_begin != depth_end
+            
+            interpolated_features: torch.Tensor = volume_variance[grid[0], :, idx_begin, grid[1], grid[2]]
+            
+            interpolated_features[interpolate] = ((((depth_end[interpolate] - depth[interpolate]) / (depth_end[interpolate] - depth_begin[interpolate])).unsqueeze(-1) * volume_variance[grid[0], :, idx_begin, grid[1], grid[2]][interpolate]
+                 + ((depth[interpolate] - depth_begin[interpolate]) / (depth_end[interpolate] - depth_begin[interpolate])).unsqueeze(-1) * volume_variance[grid[0], :, idx_end, grid[1], grid[2]][interpolate])) # (B, H, W, C)
+            
+            
+            result["interpolated_features"] = interpolated_features.permute(0, 3, 1, 2)
         
         if not self.return_photometric_confidence:
             return result
@@ -79,8 +108,8 @@ class DepthNet(nn.Module):
 
 
 class CascadeMVSNet(nn.Module):
-    def __init__(self, refine=False, ndepths=[48, 32, 8], depth_interals_ratio=[4, 2, 1], share_cr=False,
-                 grad_method="detach", arch_mode="fpn", cr_base_chs=[8, 8, 8], return_prob_volume=False, return_photometric_confidence=False):
+    def __init__(self, refine=False, base_channels=8, ndepths=[48, 32, 8], depth_interals_ratio=[4, 2, 1], share_cr=False,
+                 grad_method="detach", arch_mode="fpn", cr_base_chs=[8, 8, 8], return_interpolated_features=False, return_photometric_confidence=False):
         super(CascadeMVSNet, self).__init__()
         self.refine = refine
         self.share_cr = share_cr
@@ -105,7 +134,7 @@ class CascadeMVSNet(nn.Module):
             }
         }
 
-        self.feature = FeatureNet(base_channels=8, stride=4, num_stage=self.num_stage, arch_mode=self.arch_mode)
+        self.feature = FeatureNet(base_channels=base_channels, stride=4, num_stage=self.num_stage, arch_mode=self.arch_mode)
         if self.share_cr:
             self.cost_regularization = CostRegNet(in_channels=self.feature.out_channels, base_channels=8)
         else:
@@ -114,7 +143,7 @@ class CascadeMVSNet(nn.Module):
                                                       for i in range(self.num_stage)])
         if self.refine:
             self.refine_network = RefineNet()
-        self.DepthNet = DepthNet(return_prob_volume=return_prob_volume, return_photometric_confidence=return_photometric_confidence)
+        self.DepthNet = DepthNet(return_interpolated_features=return_interpolated_features, return_photometric_confidence=return_photometric_confidence)
 
     def forward(self, imgs, proj_matrices, depth_values):
 

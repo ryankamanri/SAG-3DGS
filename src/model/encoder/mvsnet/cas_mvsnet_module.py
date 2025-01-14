@@ -42,13 +42,14 @@ class CasMVSNetModuleResult:
     ref_view_result_list: list[ReferenceViewResult]
     registed_pcd: PointCloudResult
     registed_prob_pcd: ViewBasedPointCloudResult
+    interpolated_features: torch.Tensor
     
 def empty_cas_mvsnet_module_result():
-    return CasMVSNetModuleResult([], empty_point_cloud_result(), empty_probalility_point_cloud_result())
+    return CasMVSNetModuleResult([], empty_point_cloud_result(), empty_probalility_point_cloud_result(), torch.tensor(0))
 
 class CasMVSNetModule(nn.Module):
 
-    def __init__(self, cas_mvsnet_ckpt_path, ndepths=[48, 32, 8], use_backbone=True, load_to_backbone=False) -> None:
+    def __init__(self, cas_mvsnet_ckpt_path, ndepths=[48, 32, 8], base_channels=8, use_backbone=True, load_to_backbone=False) -> None:
         super().__init__()
         self.ndepths = ndepths
         self.use_backbone = use_backbone
@@ -57,10 +58,10 @@ class CasMVSNetModule(nn.Module):
         state_dict = torch.load(cas_mvsnet_ckpt_path)
         
         if use_backbone:
-            self.pretrained_cas_mvsnet = CascadeMVSNet(ndepths=ndepths, return_photometric_confidence=True)
-            self.backbone_cas_mvsnet = CascadeMVSNet(ndepths=ndepths, return_prob_volume=True)
+            self.pretrained_cas_mvsnet = CascadeMVSNet(ndepths=ndepths, base_channels=base_channels, return_photometric_confidence=True)
+            self.backbone_cas_mvsnet = CascadeMVSNet(ndepths=ndepths, base_channels=base_channels, return_interpolated_features=True)
         else:
-            self.pretrained_cas_mvsnet = CascadeMVSNet(ndepths=ndepths, return_prob_volume=True, return_photometric_confidence=True)
+            self.pretrained_cas_mvsnet = CascadeMVSNet(ndepths=ndepths, base_channels=base_channels, return_interpolated_features=True, return_photometric_confidence=True)
             
         self.pretrained_cas_mvsnet.load_state_dict(state_dict["model"])
         self.pretrained_cas_mvsnet.eval()
@@ -115,6 +116,7 @@ class CasMVSNetModule(nn.Module):
         
         pretrained_depths_est = [] # depth map list
         pretrained_photometric_confidences = []
+        interpolated_features_list = []
         # for every reference image, the mvsnet will generate a depth map and a photometric confidence map
         for vi in range(v):
             with torch.no_grad(): # necessary to reduce the memory
@@ -127,7 +129,7 @@ class CasMVSNetModule(nn.Module):
             else:
                 backbone_outputs = pretrained_outputs
             result.ref_view_result_list.append(ReferenceViewResult(imgs[:, vi], pretrained_outputs, backbone_outputs))
-            
+            interpolated_features_list.append(backbone_outputs["interpolated_features"])
             # switch to next image
             imgs = imgs.roll(dims=1, shifts=-1)
             for stage in proj_mat:
@@ -142,5 +144,7 @@ class CasMVSNetModule(nn.Module):
         result.registed_prob_pcd = ViewBasedPointCloudResult(
             vertices=prob_vertices, 
             vertices_confidence=torch.stack(pretrained_photometric_confidences, dim=1))
+        
+        result.interpolated_features = torch.stack(interpolated_features_list, dim=1)
         
         return result
