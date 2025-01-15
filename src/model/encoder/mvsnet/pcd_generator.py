@@ -90,7 +90,7 @@ def check_geometric_consistency(depth_ref, intrinsics_ref, extrinsics_ref, depth
     relative_depth_diff = depth_diff / depth_ref
 
     # mask = torch.logical_and(dist < 1, relative_depth_diff < 0.01)
-    mask = torch.logical_and(dist < 5, relative_depth_diff < 0.05)
+    mask = torch.logical_and(dist < (width + height) / 50, relative_depth_diff < 0.01)
     depth_reprojected[~mask] = 0
 
     return mask, depth_reprojected, x2d_src, y2d_src

@@ -1,0 +1,6 @@
+name: mvsnerf
+
+dtu_train_path: config/dataset/view_sampler/mvsnerf_stored/dtu_train.lst
+dtu_test_path: config/dataset/view_sampler/mvsnerf_stored/dtu_test.lst
+dtu_pairs_path: config/dataset/view_sampler/mvsnerf_stored/dtu_pairs.txt
+test_pairs_path: C:\Users\97448\+\repos\mvsplat\config\dataset\view_sampler\mvsnerf_stored\pairs.th

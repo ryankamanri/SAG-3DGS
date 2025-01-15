@@ -44,6 +44,9 @@ def cyan(text: str) -> str:
 def train(cfg_dict: DictConfig):
     cfg = load_typed_root_config(cfg_dict)
     set_cfg(cfg_dict)
+    
+    # show current process id
+    print(f"Current process id: {os.getpid()}")
 
     # Set up the output directory.
     if cfg_dict.output_dir is None:

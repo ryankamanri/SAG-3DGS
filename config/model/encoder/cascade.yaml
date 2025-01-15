@@ -1,7 +1,7 @@
 name: cascade
 
 cas_mvsnet_ckpt_path: pretrained/casmvsnet_model_000015.ckpt
-cas_mvsnet_use_backbone: false
+cas_mvsnet_use_backbone: true
 cas_mvsnet_load_to_backbone: false
 cas_mvsnet_ndepth: [48, 32, 8]
 positional_encoding_num_frequencies: 2

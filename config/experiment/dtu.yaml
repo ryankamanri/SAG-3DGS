@@ -2,12 +2,13 @@
 
 defaults:
   - override /dataset: re10k
+  - override /dataset/view_sampler: mvsnerf
   - override /model/encoder: cascade
   - override /loss: [mse, lpips, depth, struct, color]
 
 wandb:
   name: dtu/views2
-  tags: [dtu, 256x256]
+  tags: [dtu, 512x640]
 
 data_loader:
   train:
@@ -30,7 +31,7 @@ model:
 
 
 dataset: 
-  image_shape: [256, 256]
+  image_shape: [512, 640]
   roots: [datasets/dtu]
   near: 2.125
   far: 4.525

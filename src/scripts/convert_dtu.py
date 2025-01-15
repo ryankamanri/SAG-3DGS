@@ -73,25 +73,13 @@ def read_cam_file(filename):
 
 def get_example_keys(stage: Literal["test", "train"]) -> list[str]:
     """ Extracted from: https://github.com/donydchen/matchnerf/blob/main/configs/dtu_meta/val_all.txt """
-    keys = [
-        "scan1_train",
-        "scan8_train",
-        "scan21_train",
-        "scan30_train",
-        "scan31_train",
-        "scan34_train",
-        "scan38_train",
-        "scan40_train",
-        "scan41_train",
-        "scan45_train",
-        "scan55_train",
-        "scan63_train",
-        "scan82_train",
-        "scan103_train",
-        "scan110_train",
-        "scan114_train",
-    ]
-    print(f"Found {len(keys)} keys.")
+    keys = []
+    with open(str(INPUT_IMAGE_DIR / f"new_{stage}.lst"), 'r') as f:
+        scan_xx = f.readline()[:-1] # remove '\n'
+        while scan_xx != "":
+            keys.append(f"{scan_xx}_train")
+            scan_xx = f.readline()[:-1]
+    print(f"Stage {stage} found {len(keys)} keys.")
     return keys
 
 
@@ -108,9 +96,10 @@ def load_images(example_path: Path) -> dict[int, UInt8[Tensor, "..."]]:
     """Load JPG images as raw bytes (do not decode)."""
     images_dict = {}
     for cur_id in range(1, 50):
-        cur_image_name = f"rect_{cur_id:03d}_3_r5000.png"
-        img_bin = load_raw(example_path / cur_image_name)
-        images_dict[cur_id - 1] = img_bin
+        for light_id in range(0, 7):
+            cur_image_name = f"rect_{cur_id:03d}_{light_id}_r5000.png"
+            img_bin = load_raw(example_path / cur_image_name)
+            images_dict[(cur_id - 1) * 7 + light_id] = img_bin
 
     return images_dict
 
@@ -121,25 +110,26 @@ def load_metadata(intrinsics, world2cams, images) -> Metadata:
     url = ""
 
     for vid, intr in intrinsics.items():
-        timestamps.append(int(vid))
+        for light_id in range(0, 7):
+            timestamps.append(int(vid))
 
-        # normalized the intr
-        fx = intr[0, 0]
-        fy = intr[1, 1]
-        cx = intr[0, 2]
-        cy = intr[1, 2]
-        # w = 2.0 * cx
-        # h = 2.0 * cy
-        w, h = Image.open(BytesIO(images[vid].numpy().tobytes())).size
-        saved_fx = fx / w
-        saved_fy = fy / h
-        saved_cx = cx / w
-        saved_cy = cy / h
-        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 0.0, 0.0]
+            # normalized the intr
+            fx = intr[0, 0]
+            fy = intr[1, 1]
+            cx = intr[0, 2]
+            cy = intr[1, 2]
+            # w = 2.0 * cx
+            # h = 2.0 * cy
+            w, h = Image.open(BytesIO(images[vid * 7 + light_id].numpy().tobytes())).size
+            saved_fx = fx / w
+            saved_fy = fy / h
+            saved_cx = cx / w
+            saved_cy = cy / h
+            camera = [saved_fx, saved_fy, saved_cx, saved_cy, 0.0, 0.0]
 
-        w2c = world2cams[vid]
-        camera.extend(w2c[:3].flatten().tolist())
-        cameras.append(np.array(camera))
+            w2c = world2cams[vid]
+            camera.extend(w2c[:3].flatten().tolist())
+            cameras.append(np.array(camera))
 
     timestamps = torch.tensor(timestamps, dtype=torch.int64)
     cameras = torch.tensor(np.stack(cameras), dtype=torch.float32)

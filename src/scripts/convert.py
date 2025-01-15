@@ -21,6 +21,16 @@ TARGET_BYTES_PER_CHUNK = int(1e8)
 
 
 class Metadata(TypedDict):
+    """
+    ### The metadata of dataset images
+    item:
+        `url`: what the image originally from (a video website), which may be useless if you do not specify it
+        `timestamps`: the timestamp when this image is extracted from the video at, you can also fill a unique index.
+        `cameras`: camera extrinsics and intrinsics with shape (18).
+        
+        Note that the structure of cameras is:
+            `Tensor([fx/w, fy/h, cx/w, cy/h, 0.0, 0.0, w2c[0, :], w2c[1, :], w2c[2, :]])`
+    """
     url: str
     timestamps: Int[Tensor, " camera"]
     cameras: Float[Tensor, "camera entry"]
