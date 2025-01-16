@@ -384,13 +384,13 @@ def identify_is_current_scale(point_coordinates: torch.Tensor, local_coordinates
 
 class VoxelizedGaussianAdapterModule(nn.Module):
 
-    def __init__(self, transformer: VoxelToPointTransformer, feature_channels=192, voxel_size_list=[32, 128, 512], min_opacity=[0.1, 0.1, 0.1]) -> None:
+    def __init__(self, transformer: VoxelToPointTransformer, feature_channels=192, voxel_size_list=[32, 128, 512], patch_size_list=[3, 2, 1]) -> None:
         super().__init__()
         self.transformer = transformer
         self.voxel_size_count = len(voxel_size_list)
         self.voxel_size_list = voxel_size_list
-        self.min_opacity = min_opacity
-        
+        self.patch_size_list = patch_size_list
+        assert len(patch_size_list) == len(voxel_size_list)
 
         self.gaussian_parameter_predictor = nn.Sequential(
             nn.Linear(in_features=feature_channels, out_features=64), 
@@ -480,12 +480,12 @@ class VoxelizedGaussianAdapterModule(nn.Module):
                         voxel_xyz=centers.transpose(0, 1).unsqueeze(0), # (V, 3, N)
                         point_ijk=prob_pcd_ijk[view_slicer], 
                         voxel_ijk=coordinates.transpose(0, 1).unsqueeze(0), # (V, 3, N)
-                        confidences=prob_pcd.vertices_confidence[batch, view_slicer] # (V, H, W)
+                        confidences=prob_pcd.vertices_confidence[batch, view_slicer],  # (V, H, W)
+                        k=self.patch_size_list[scale_idx]
                     ) # (V, C, N)
                     merged_feat += voxel_feature.squeeze(0) # (c, n)
                     # remove unused variable
                     del voxel_feature
-                    gc.collect()
                 
                 merged_feat = (merged_feat / v).transpose(0, 1) # (N, C)
                 

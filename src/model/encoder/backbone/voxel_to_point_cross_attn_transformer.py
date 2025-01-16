@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 from pytorch3d.ops import knn_points
 
 
@@ -160,6 +161,54 @@ def voxel_positional_encoding(ijk: torch.Tensor, d_model: int):
     
     return torch.cat((pe_sin, pe_cos), dim=1) # (B, 6D, L)
 
+
+def nearest_patch(yx: torch.Tensor, hw: torch.Tensor, patch_size=4):
+    """
+    ### Compute the nearest patch for every yx inside the 2d space (h*w)
+    
+    input:
+        yx: Tensor(B, N, 2(yx))
+        hw: Tensor(B, 2(hw))
+        
+    output:
+        Tensor(B, N, patch_size * patch_size, 3(byx))
+    """
+    b, n, _ = yx.shape
+    y, x = yx[..., 0], yx[..., 1] # (B, N)
+    h, w = hw[..., 0].float().unsqueeze(-1), hw[..., 1].float().unsqueeze(-1) # (B, 1)
+    # clip to a valid space (y in (0, h-1), w in (0, w-1))
+    y[y < 0] = 0
+    y[y > h - 1] = h - 1
+    x[x < 0] = 0
+    x[x > w - 1] = w - 1
+    
+    # create patch
+    patch_arange = torch.arange(patch_size, device=yx.device)
+    dy, dx = torch.meshgrid(patch_arange, patch_arange) # (ps, ps)
+    offset = (patch_size - 1) / 2
+    dy, dx = (dy - offset).view(1, 1, -1), (dx - offset).view(1, 1, -1) # (1, 1, ps*ps)
+    
+    patch_y = y.unsqueeze(-1).round() + dy
+    patch_x = x.unsqueeze(-1).round() + dx # (B, N, ps*ps)
+    
+    # still clip to a valid space
+    patch_y[patch_y < 0] = 0
+    patch_y[patch_y > h - 1] = h - 1
+    patch_x[patch_x < 0] = 0
+    patch_x[patch_x > w - 1] = w - 1
+    
+    # stack byx
+    byx = torch.stack((
+        torch.meshgrid(
+            torch.arange(0, b, device=yx.device), 
+            torch.arange(0, n, device=yx.device), 
+            torch.arange(0, patch_size * patch_size, device=yx.device)
+        )[0], patch_y.int(), patch_x.int()), dim=-1) # (B, N, ps*ps, 3(byx))
+    
+    return byx
+
+
+
 def compute_voxel_interpolate_and_knn_features(
     cnn_features: torch.Tensor, 
     extrinsics: torch.Tensor, 
@@ -186,28 +235,35 @@ def compute_voxel_interpolate_and_knn_features(
     voxel_centers_uvd = torch.matmul(intrinsics, torch.matmul(extrinsics, voxel_xyz)[:, :3]) # (B, 4, N) -> (B, 3, N)
     voxel_centers_uv = (voxel_centers_uvd[:, :2] / voxel_centers_uvd[:, 2:]).permute(0, 2, 1) # (B, 3, N) -> (B, N, 2)
     # knn features
-    byx = torch.stack(
-        torch.meshgrid(
-            torch.arange(0, b, device=cnn_features.device), 
-            torch.arange(0, h, device=cnn_features.device), 
-            torch.arange(0, w, device=cnn_features.device)), dim=-1) # (B, H, W, 3(bhw))
+    if False: # use knn method, slowly
+        byx = torch.stack(
+            torch.meshgrid(
+                torch.arange(0, b, device=cnn_features.device), 
+                torch.arange(0, h, device=cnn_features.device), 
+                torch.arange(0, w, device=cnn_features.device)), dim=-1) # (B, H, W, 3(bhw))
 
-    yx = byx[..., 1:].view(b, -1, 2) # (B, H*W, 2)
-    _, idx, _ = knn_points(
-        p1=voxel_centers_uv, 
-        p2=yx.float(),
-        K=k
-    ) # (B, N, K) (B, N, K)
+        yx = byx[..., 1:].view(b, -1, 2) # (B, H*W, 2)
+        dist, idx, _ = knn_points(
+            p1=voxel_centers_uv.roll(shifts=1, dims=-1), # uv -> vu
+            p2=yx.float(),
+            K=k
+        ) # (B, N, K) (B, N, K)
+        
+        bidx = torch.stack((
+            torch.meshgrid(
+                torch.arange(0, b, device=cnn_features.device), 
+                torch.arange(0, n, device=cnn_features.device), 
+                torch.arange(0, k, device=cnn_features.device)
+            )[0], idx), dim=-1)
+        # (B, N, K, 2(vidx))
+        
+        knn_byx = byx.view(b, -1, 3)[bidx[..., 0], bidx[..., 1]] # (B, N, K, 3(vhw))
     
-    bidx = torch.stack((
-        torch.meshgrid(
-            torch.arange(0, b, device=cnn_features.device), 
-            torch.arange(0, n, device=cnn_features.device), 
-            torch.arange(0, k, device=cnn_features.device)
-        )[0], idx), dim=-1)
-    # (B, N, K, 2(vidx))
-    
-    knn_byx = byx.view(b, -1, 3)[bidx[..., 0], bidx[..., 1]] # (B, N, K, 3(vhw))
+    knn_byx = nearest_patch(
+        yx=voxel_centers_uv.roll(shifts=1, dims=-1), 
+        hw=torch.tensor([[h, w]], device=cnn_features.device).repeat(b, 1), 
+        patch_size=int(math.sqrt(k))
+    )
     knn_features = cnn_features[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]].permute(0, 3, 1, 2) # (B, N, K, C) -> (B, C, N, K)
     
     # normalize
@@ -277,6 +333,7 @@ class VoxelToPointTransformer(nn.Module):
         b, c, h, w = cnn_features.shape
         _, _, v = voxel_xyz.shape
         assert self.d_model == c
+        assert k == 1 or k == 4 or k == 9 or k == 16 or k == 25 or k == 36 # 1^2 to 6^2
         
         interpolated_features, knn_features, knn_byx = compute_voxel_interpolate_and_knn_features(
             cnn_features=cnn_features, 

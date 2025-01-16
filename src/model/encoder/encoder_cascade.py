@@ -41,7 +41,7 @@ class EncoderCascadeCfg:
     no_ffn: bool
     ffn_dim_expansion: int
     voxel_size_list: list[int]
-    min_opacity_list: list[float]
+    patch_size_list: list[int]
 
 
 class EncoderCascade(Encoder[EncoderCascadeCfg]):
@@ -73,7 +73,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             transformer=self.transformer, 
             feature_channels=self.feature_channels, 
             voxel_size_list=cfg.voxel_size_list, 
-            min_opacity=cfg.min_opacity_list
+            patch_size_list=cfg.patch_size_list
         )
         
         print(cfg)
