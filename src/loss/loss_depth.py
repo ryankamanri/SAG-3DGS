@@ -27,6 +27,15 @@ class LossDepthCfgWrapper:
 
 
 class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
+    
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.stage_weights = {
+            1: self.cfg.stage1_weight, 
+            2: self.cfg.stage2_weight, 
+            3: self.cfg.stage3_weight
+        }
+        
     def forward(
         self,
         prediction: DecoderOutput,
@@ -36,11 +45,18 @@ class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
     ) -> Float[Tensor, ""]:
         if gaussians.others == {}: return torch.tensor(0., device="cuda")
         cas_module_result: CasMVSNetModuleResult = gaussians.others["cas_module_result"]
+        nears: torch.Tensor = gaussians.others["nears"] # (B, V)
+        fars: torch.Tensor = gaussians.others["fars"]
+        b, v = nears.shape
         loss = torch.tensor(0., device="cuda")
+        view_idx = 0
         for ref_view_result in cas_module_result.ref_view_result_list:
-            loss += self.cfg.stage1_weight * torch.Tensor(ref_view_result.pretrained["stage1"]["depth"] - ref_view_result.backbone["stage1"]["depth"]).abs().mean()
-            loss += self.cfg.stage2_weight * torch.Tensor(ref_view_result.pretrained["stage2"]["depth"] - ref_view_result.backbone["stage2"]["depth"]).abs().mean()
-            loss += self.cfg.stage3_weight * torch.Tensor(ref_view_result.pretrained["stage3"]["depth"] - ref_view_result.backbone["stage3"]["depth"]).abs().mean()
+            for stage in range(1, 4):
+                delta_d = torch.Tensor(ref_view_result.pretrained[f"stage{stage}"]["depth"] - ref_view_result.backbone[f"stage{stage}"]["depth"]).abs() # (B, H, W)
+                delta_d_normalized = delta_d / (fars[:, view_idx] - nears[:, view_idx]).view(b, 1, 1) # (B, H, W)
+                confidence = torch.Tensor(ref_view_result.pretrained[f"stage{stage}"]["photometric_confidence"]) # (B, H, W)
+                loss += (delta_d_normalized * confidence).mean() * self.stage_weights[stage]
+            view_idx += 1
         
         loss /= len(cas_module_result.ref_view_result_list)
         return loss * self.cfg.weight

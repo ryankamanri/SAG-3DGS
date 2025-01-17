@@ -115,6 +115,8 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, extrinsics, intrinsics, nears, fars)
         gaussians: EncoderOutput = self.gaussian_adapter_module(features, cas_module_result, extrinsics, intrinsics, fars)
         gaussians.others["cas_module_result"] = cas_module_result
+        gaussians.others["nears"] = nears
+        gaussians.others["fars"] = fars
         return gaussians
 
     @property

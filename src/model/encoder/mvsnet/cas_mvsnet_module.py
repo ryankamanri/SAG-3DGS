@@ -58,7 +58,7 @@ class CasMVSNetModule(nn.Module):
         
         if use_backbone:
             self.pretrained_cas_mvsnet = CascadeMVSNet(ndepths=ndepths, return_photometric_confidence=True)
-            self.backbone_cas_mvsnet = CascadeMVSNet(ndepths=ndepths, return_prob_volume=True)
+            self.backbone_cas_mvsnet = CascadeMVSNet(ndepths=ndepths, return_prob_volume=True, return_photometric_confidence=True)
         else:
             self.pretrained_cas_mvsnet = CascadeMVSNet(ndepths=ndepths, return_prob_volume=True, return_photometric_confidence=True)
             
@@ -115,6 +115,7 @@ class CasMVSNetModule(nn.Module):
         
         pretrained_depths_est = [] # depth map list
         pretrained_photometric_confidences = []
+        backbone_photometric_confidences = []
         # for every reference image, the mvsnet will generate a depth map and a photometric confidence map
         for vi in range(v):
             with torch.no_grad(): # necessary to reduce the memory
@@ -126,6 +127,8 @@ class CasMVSNetModule(nn.Module):
                 backbone_outputs = self.backbone_cas_mvsnet(imgs, proj_mat, depth_values[:, vi, :])
             else:
                 backbone_outputs = pretrained_outputs
+                
+            backbone_photometric_confidences.append(backbone_outputs["photometric_confidence"])
             result.ref_view_result_list.append(ReferenceViewResult(imgs[:, vi], pretrained_outputs, backbone_outputs))
             
             # switch to next image
@@ -141,6 +144,6 @@ class CasMVSNetModule(nn.Module):
         result.registed_pcd = PointCloudResult(xyz_batches=vertices, rgb_batches=vertices_color)
         result.registed_prob_pcd = ViewBasedPointCloudResult(
             vertices=prob_vertices, 
-            vertices_confidence=torch.stack(pretrained_photometric_confidences, dim=1))
+            vertices_confidence=torch.stack(backbone_photometric_confidences, dim=1))
         
         return result

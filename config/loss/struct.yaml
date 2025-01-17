@@ -1,5 +1,4 @@
 struct:
   weight: 0.01
-  weight_existence_loss: 0.25
-  weight_current_loss: 0.25
-  weight_offset_loss: 0.25
+  weight_existence_loss: 0.8
+  weight_offset_loss: 0.2

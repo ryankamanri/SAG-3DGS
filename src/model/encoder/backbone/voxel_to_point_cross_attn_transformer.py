@@ -320,6 +320,7 @@ class VoxelToPointTransformer(nn.Module):
         point_ijk: torch.Tensor, 
         voxel_ijk: torch.Tensor, 
         confidences: torch.Tensor, 
+        voxel_length: torch.Tensor, 
         k=16
     ):
         # cnn_features: [B, C, H, W]
@@ -357,6 +358,15 @@ class VoxelToPointTransformer(nn.Module):
             point_ijk[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]].view(b, -1, 3).permute(0, 2, 1), 
             self.d_model_pe
         ).permute(0, 2, 1).reshape(b, v, k, -1)
+        
+        # Add voxel size encoding
+        voxel_size_encoding = voxel_positional_encoding(
+            ijk=voxel_length.view(1, 1, 1), 
+            d_model=self.d_model // 2
+        )
+        source = source + voxel_size_encoding.permute(0, 2, 1).repeat(b, v, 1)
+        target = target + voxel_size_encoding.permute(0, 2, 1).repeat(b, v*k, 1).view(b, v, k, -1)
+        
 
         for i, layer in enumerate(self.layers):
             source = layer(

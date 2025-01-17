@@ -481,6 +481,7 @@ class VoxelizedGaussianAdapterModule(nn.Module):
                         point_ijk=prob_pcd_ijk[view_slicer], 
                         voxel_ijk=coordinates.transpose(0, 1).unsqueeze(0), # (V, 3, N)
                         confidences=prob_pcd.vertices_confidence[batch, view_slicer],  # (V, H, W)
+                        voxel_length=2 * far / voxel_size, 
                         k=self.patch_size_list[scale_idx]
                     ) # (V, C, N)
                     merged_feat += voxel_feature.squeeze(0) # (c, n)
@@ -511,7 +512,7 @@ class VoxelizedGaussianAdapterModule(nn.Module):
                         gaussians=current_gaussians
                     )
                     total_existence_loss += existence_loss
-                    total_offset_loss += offset_loss
+                    total_offset_loss += offset_loss / (2 * far / voxel_size * math.sqrt(3)) # devide diagonal length to normalize
                     total_color_loss += color_loss
                 
                 # Append current gaussians
