@@ -111,7 +111,7 @@ def load_metadata(intrinsics, world2cams, images) -> Metadata:
 
     for vid, intr in intrinsics.items():
         for light_id in range(0, 7):
-            timestamps.append(int(vid))
+            timestamps.append(int(vid) * 7 + light_id)
 
             # normalized the intr
             fx = intr[0, 0]

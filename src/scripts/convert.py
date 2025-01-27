@@ -161,6 +161,7 @@ class ConvertDataset(ABC):
                     images[timestamp.item()] for timestamp in example["timestamps"]
                 ]
                 assert len(images) == len(example["timestamps"])
+                assert example["timestamps"].unique().shape[0] == len(images), "detected timestamp is NOT unique!"
 
                 # Add the key to the example.
                 example["key"] = key
@@ -179,13 +180,15 @@ class ConvertDataset(ABC):
             print("Generate key:torch index...")
             index = {}
             stage_path = self.get_output_dir(stage)
-            for chunk_path in tqdm(list(stage_path.iterdir()), desc=f"Indexing {stage_path.name}"):
-                if chunk_path.suffix == ".torch":
-                    chunk = torch.load(chunk_path)
-                    for example in chunk:
-                        index[example["key"]] = str(chunk_path.relative_to(stage_path))
-            with (stage_path / "index.json").open("w") as f:
-                json.dump(index, f)
+            
+            if stage_path.exists():
+                for chunk_path in tqdm(list(stage_path.iterdir()), desc=f"Indexing {stage_path.name}"):
+                    if chunk_path.suffix == ".torch":
+                        chunk = torch.load(chunk_path)
+                        for example in chunk:
+                            index[example["key"]] = str(chunk_path.relative_to(stage_path))
+                with (stage_path / "index.json").open("w") as f:
+                    json.dump(index, f)
     pass
 
 

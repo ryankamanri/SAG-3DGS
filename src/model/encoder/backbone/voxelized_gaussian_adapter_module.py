@@ -53,47 +53,95 @@ def activate_gaussians(gaussian_features: torch.Tensor, far: torch.Tensor, voxel
     return activated_gaussian_features
 
 
-def compute_voxel_center(coordinates: torch.Tensor, voxel_size: int, far: torch.Tensor) -> torch.Tensor:
-    """
-    ### Mapping cooordinates to voxel center with origin `0`.
-    mapping (0, 0, 0) -> o
-            (S-1, S-1, S-1) -> 2f - o
-            (S, S, S) -> 2f + o
+class BoundingBox:
+    origin: torch.Tensor # 3D Vector (B, 3)
+    size: torch.Tensor # scalar (B)
+    
+    def __init__(
+        self, 
+        extrinsics: torch.Tensor, # (B, V, 4, 4)
+        intrinsics: torch.Tensor, # (B, V, 3, 3)
+        nears: torch.Tensor, # (B, V)
+        fars: torch.Tensor, # (B, V)
+        width: int, 
+        height: int):
+        b, v, _, _ = extrinsics.shape
+        extrinsics = extrinsics.view(b * v, 4, 4)
+        intrinsics = intrinsics.view(b * v, 3, 3)
+        nears = nears.view(b * v, 1, 1)
+        fars = fars.view(b * v, 1, 1)
+        
+        uv_border = torch.tensor([
+            [0, 0, 1], 
+            [0, height, 1], 
+            [width, 0, 1], 
+            [width, height, 1]
+        ], device=extrinsics.device, dtype=torch.float32).view(1, 4, 3).permute(0, 2, 1) # (1, 3, 4)
+        
+        
+        far_border = torch.cat(
+            (
+                torch.matmul(torch.linalg.inv(intrinsics), uv_border) * fars, 
+                torch.ones(b * v, 1, 4, device=extrinsics.device)
+                ), dim=1
+            ) # (1, 4, 4)
+        
+        near_border = torch.cat(
+            (
+                torch.matmul(torch.linalg.inv(intrinsics), uv_border) * nears, 
+                torch.ones(b * v, 1, 4, device=extrinsics.device)
+                ), dim=1
+            ) # (1, 4, 4)
+        
+        border_xyz = torch.matmul(torch.linalg.inv(extrinsics), torch.cat((far_border, near_border), dim=-1)) # (B*V, 4, 8)
+        
+        border_points = border_xyz.view(b, v, 4, -1).permute(0, 2, 1, 3).reshape(b, 4, -1) # (B, 4, V * 8)
+        min_point, max_point = border_points.min(dim=-1).values, border_points.max(dim=-1).values
+        
+        self.origin = min_point[:, :3] # (B, 3)
+        self.size = (max_point - min_point).max(dim=-1).values # (B)
+        pass
+    
+    def compute_voxel_center(self, coordinates: torch.Tensor, voxel_size: int, batch: int):
+        """
+        ### Mapping cooordinates to voxel center with origin `0`.
+        mapping (0, 0, 0) -> o
+                (S-1, S-1, S-1) -> s - o
+                (S, S, S) -> s + o
+                
+        
+        input:
+            `coordinates`: coordinates with shape [N, 3] int
             
+        output:
+            voxel center with shape [N, 3] float
+        """
+        return (coordinates / voxel_size * self.size[batch]) + (self.size[batch] / 2 / voxel_size)
     
-    input:
-        `coordinates`: coordinates with shape [N, 3] int
-        `camera_center`: [3]
+    def compute_voxel_indices(self, voxel_center: torch.Tensor, voxel_size: int, batch: int):
+        """
+        ### The inverse function of `compute_voxel_center` with origin `0`
+        mapping (0, 0, 0) <- o (+-o)
+                (S-1, S-1, S-1) <- s - o (+-o)
+                (S, S, S) <- s + o (+-o)
         
-    output:
-        voxel center with shape [N, 3] float
-    """
-    return (coordinates / voxel_size * 2 * far) + (far / voxel_size)
-
-
-def compute_voxel_indices(voxel_center: torch.Tensor, voxel_size: int, far: torch.Tensor):
-    """
-    ### The inverse function of `compute_voxel_center` with origin `0`
-    mapping (0, 0, 0) <- o (+-o)
-            (S-1, S-1, S-1) <- 2f - o (+-o)
-            (S, S, S) <- 2f + o (+-o)
+        input:
+            `voxel_center`: voxel center with shape [N, 3] float
+            
+        output:
+            coordinates with shape [N, 3] int
+        """
+        return ((voxel_center - (self.size[batch] / 2 / voxel_size)) * voxel_size / self.size[batch]).round().int()
     
-    input:
-        `voxel_center`: voxel center with shape [N, 3] float
-        `camera_center`: [3]
-        
-    output:
-        coordinates with shape [N, 3] int
-    """
-    return ((voxel_center - (far / voxel_size)) * voxel_size / 2 / far).round().int()
+    def compute_local_coordinates_offset(self, voxel_size: int, batch: int):
+        """
+        ### compute the offset from global coordinates (origin `0`) to local coordinates (origin `self.origin`)
+        if add the offset, it means switch from local coordinates to global coordinates (l2g), 
+        if minus the offset, it means switch from global coordinates to local coordinates (g2l).
+        """
+        return ((self.origin[batch]) * voxel_size / self.size[batch]).int()
 
-def compute_local_coordinates_offset(camera_center: torch.Tensor, voxel_size: int, far: torch.Tensor):
-    """
-    ### compute the offset from global coordinates (origin `0`) to local coordinates (origin `mu - f`)
-    if add the offset, it means switch from local coordinates to global coordinates (l2g), 
-    if minus the offset, it means switch from global coordinates to local coordinates (g2l).
-    """
-    return ((camera_center.view(1, 3) - far) * voxel_size / 2 / far).int()
+    pass
 
 def bitwise_xor(x: torch.Tensor, dim: int):
     assert dim < len(x.shape)
@@ -170,7 +218,7 @@ def create_local_coordinates(voxel_size: int, last_voxel_size: int = 0, last_coo
     return result.view(-1, 3).unique(sorted=True, dim=0) # use unique to sort index
 
 
-def create_gaussians_from_features(gaussian_features: torch.Tensor, coordinates: torch.Tensor, camera_center: torch.Tensor, voxel_size: int, far: torch.Tensor) -> EncoderOutput:
+def create_gaussians_from_features(gaussian_features: torch.Tensor, coordinates: torch.Tensor, voxel_size: int, bbox: BoundingBox, batch: int) -> EncoderOutput:
     """
     input:
         gaussian_features: [C, N]
@@ -178,8 +226,8 @@ def create_gaussians_from_features(gaussian_features: torch.Tensor, coordinates:
         extrinsic: [V, 4, 4]
         far: 1
     """
-    local_coordinates_offset = compute_local_coordinates_offset(camera_center, voxel_size, far)
-    voxel_center = compute_voxel_center(coordinates + local_coordinates_offset, voxel_size, far).permute(1, 0) # (3, N)
+    local_coordinates_offset = bbox.compute_local_coordinates_offset(voxel_size, batch)
+    voxel_center = bbox.compute_voxel_center(coordinates + local_coordinates_offset, voxel_size, batch).permute(1, 0) # (3, N)
     b, n, dim, d_sh = 1, coordinates.shape[0], 3, SH_DEGREE ** 2
     
     means: torch.Tensor = gaussian_features[SLICE_DELTA_MEANS] + voxel_center # (3, N)
@@ -197,6 +245,7 @@ def create_gaussians_from_features(gaussian_features: torch.Tensor, coordinates:
         opacities=opacities.permute(1, 0).view(b, n)
     )
     
+    gaussians.others["scales"] = gaussian_features[SLICE_SCALE].permute(1, 0).view(b, n, dim) # (B, N, 3)
     return gaussians
 
 
@@ -204,6 +253,7 @@ def combine_batch_gaussians(batch_gaussians: list[EncoderOutput]) -> EncoderOutp
     b, dim, d_sh = 1, 3, SH_DEGREE ** 2
     gaussian_size = 0
     means_list, covariance_list, harmonics_list, opacities_list = [], [], [], []
+    scales_list, append_size_list = [], []
     for gaussian in batch_gaussians:
         if gaussian.opacities.shape[1] > gaussian_size:
             gaussian_size = gaussian.opacities.shape[1]
@@ -219,13 +269,19 @@ def combine_batch_gaussians(batch_gaussians: list[EncoderOutput]) -> EncoderOutp
         covariance_list.append(gaussian.covariances)
         harmonics_list.append(gaussian.harmonics)
         opacities_list.append(gaussian.opacities)
+        scales_list.append(gaussian.others["scales"])
+        append_size_list.append(append_size)
         
-    return EncoderOutput(
+    combined_gaussian = EncoderOutput(
         means = torch.cat(means_list, dim=0), 
         covariances = torch.cat(covariance_list, dim=0), 
         harmonics = torch.cat(harmonics_list, dim=0), 
         opacities = torch.cat(opacities_list, dim=0)
     )
+    
+    combined_gaussian.others["scales_list"] = scales_list # (B, N, 3)
+    combined_gaussian.others["append_size_list"] = append_size_list
+    return combined_gaussian
 
 def voxel_down_sample(pcd: torch.Tensor, voxel_indices: torch.Tensor):
     """
@@ -263,8 +319,7 @@ def voxel_down_sample(pcd: torch.Tensor, voxel_indices: torch.Tensor):
 def downsample_pcd(
     pcd: PointCloudResult, 
     voxel_size_list: list[int], 
-    camera_center: torch.Tensor, 
-    far: torch.Tensor, 
+    bbox: BoundingBox, 
     batch_idx: int):
     """
     ### Downsample and classify point cloud to multi-scale voxels
@@ -284,8 +339,8 @@ def downsample_pcd(
     
     for voxel_size in voxel_size_list:
         # move points to default voxel coordinates and execute downsampling
-        local_coordinates_offset = compute_local_coordinates_offset(camera_center, voxel_size, far)
-        voxel_indices = compute_voxel_indices(xyz, voxel_size, far)
+        local_coordinates_offset = bbox.compute_local_coordinates_offset(voxel_size, batch_idx)
+        voxel_indices = bbox.compute_voxel_indices(xyz, voxel_size, batch_idx)
         voxel_indices -= local_coordinates_offset
         downsampled_xyzrgb, downsampled_voxels = voxel_down_sample(xyzrgb, voxel_indices)
         downsampled_pcd_list.append(torch.cat((downsampled_voxels, downsampled_xyzrgb), dim=1))
@@ -403,7 +458,7 @@ class VoxelizedGaussianAdapterModule(nn.Module):
         pass
     
         
-    def forward(self, cnn_features: torch.Tensor, cas_module_result: CasMVSNetModuleResult, extrinsics: torch.Tensor, intrinsics: torch.Tensor, fars: torch.Tensor):
+    def forward(self, cnn_features: torch.Tensor, cas_module_result: CasMVSNetModuleResult, extrinsics: torch.Tensor, intrinsics: torch.Tensor, nears: torch.Tensor, fars: torch.Tensor):
         b, v, c, h, w = cnn_features.shape
         far = fars[0, 0]
         is_trainning = cnn_features.grad_fn != None
@@ -411,6 +466,12 @@ class VoxelizedGaussianAdapterModule(nn.Module):
         batch_losses = [[], [], [], []] # total_existence_loss, total_current_loss, total_offset_loss, total_color_loss
         prob_pcd = cas_module_result.registed_prob_pcd
         
+        bbox = BoundingBox(
+            extrinsics=extrinsics, 
+            intrinsics=intrinsics, 
+            nears=nears, 
+            fars=fars, 
+            width=w, height=h)
         
         for batch in range(b):
             # for every batch the number of gaussian may be different (LoD)
@@ -419,25 +480,25 @@ class VoxelizedGaussianAdapterModule(nn.Module):
             total_existence_loss, total_current_loss, total_offset_loss, total_color_loss = torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda")
             camera_center = extrinsics.inverse()[batch][:, :3, 3].mean(dim=0)
             gaussians = empty_encoder_output(d_sh=SH_DEGREE ** 2)
+            gaussians.others["scales"] = torch.zeros(b, 0, 3, device=cnn_features.device)
             
             if is_trainning:
                 downsampled_pcds = downsample_pcd(
                     pcd=cas_module_result.registed_pcd, 
                     voxel_size_list=self.voxel_size_list, 
-                    camera_center=camera_center, 
-                    far=far, 
+                    bbox=bbox, 
                     batch_idx=batch
                 )
                 
             prob_pcd_xyz = prob_pcd.vertices[batch].permute(0, 2, 3, 1).reshape(-1, 4)[:, :3] # (N, 3)
-            prob_pcd_xyz_local = prob_pcd_xyz - (camera_center - far)
+            prob_pcd_xyz_local = prob_pcd_xyz - bbox.origin[batch]
             max_resolution_voxel_size = self.voxel_size_list[-1]
             max_resolution_prob_pcd, max_resolution_prob_pcd_indices = voxel_down_sample(
                 prob_pcd_xyz_local, 
-                compute_voxel_indices(
+                bbox.compute_voxel_indices(
                     voxel_center=prob_pcd_xyz_local, 
                     voxel_size=max_resolution_voxel_size, # max resolution 
-                    far=far
+                    batch=batch
                 )
             )
                 
@@ -461,12 +522,12 @@ class VoxelizedGaussianAdapterModule(nn.Module):
                 local_coordinates = local_coordinates[is_current_scale]
                 n, _ = local_coordinates.shape
                 # compute global coordinates
-                offset = compute_local_coordinates_offset(camera_center, voxel_size, far)
+                offset = bbox.compute_local_coordinates_offset(voxel_size, batch)
                 coordinates = local_coordinates + offset
-                centers: torch.Tensor = compute_voxel_center(coordinates, voxel_size, far) # (N, 3)
+                centers: torch.Tensor = bbox.compute_voxel_center(coordinates, voxel_size, batch) # (N, 3)
                 
                 prob_pcd_xyz = prob_pcd.vertices[batch][:, :3] # (V, 3, H, W)
-                prob_pcd_ijk = compute_voxel_indices(prob_pcd_xyz, voxel_size, far) # (V, 3, H, W)
+                prob_pcd_ijk = bbox.compute_voxel_indices(prob_pcd_xyz, voxel_size, batch) # (V, 3, H, W)
                 
                 # for reduce memory consumption we apply transformer per view
                 merged_feat = torch.zeros(c, n, device=cnn_features.device)
@@ -498,9 +559,9 @@ class VoxelizedGaussianAdapterModule(nn.Module):
                 current_gaussians = create_gaussians_from_features(
                     gaussian_features=activated_gaussian_features, 
                     coordinates=local_coordinates, 
-                    camera_center=camera_center, 
                     voxel_size=voxel_size, 
-                    far=far
+                    bbox=bbox, 
+                    batch=batch
                 )
                 
                 if is_trainning:
@@ -520,6 +581,7 @@ class VoxelizedGaussianAdapterModule(nn.Module):
                 gaussians.covariances = torch.cat((gaussians.covariances, current_gaussians.covariances), dim=1)
                 gaussians.harmonics = torch.cat((gaussians.harmonics, current_gaussians.harmonics), dim=1)
                 gaussians.opacities = torch.cat((gaussians.opacities, current_gaussians.opacities), dim=1)
+                gaussians.others["scales"] = torch.cat((gaussians.others["scales"], current_gaussians.others["scales"]), dim=1)
                 
                 # next level
                 local_coordinates = next_coordinates
