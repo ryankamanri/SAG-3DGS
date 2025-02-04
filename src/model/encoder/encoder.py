@@ -5,12 +5,12 @@ from torch import nn
 
 from ...dataset.types import BatchedViews, DataShim
 from ..types import EncoderOutput
-from ..types import IConfigureOptimizers
+from ..types import IConfigureOptimizers, IUpdatable
 
 T = TypeVar("T")
 
 
-class Encoder(nn.Module, IConfigureOptimizers, ABC, Generic[T]):
+class Encoder(nn.Module, IConfigureOptimizers, IUpdatable, ABC, Generic[T]):
     cfg: T
 
     def __init__(self, cfg: T) -> None:

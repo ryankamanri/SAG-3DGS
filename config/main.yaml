@@ -39,6 +39,7 @@ data_loader:
 optimizer:
   lr: 2.e-5
   warm_up_steps: 2000
+  max_steps: -1
   cosine_lr: true
   delta_means_lr: 2.e-5
   quaternion_lr: 2.e-5

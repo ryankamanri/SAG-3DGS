@@ -6,8 +6,8 @@ import math
 from .voxel_to_point_cross_attn_transformer import VoxelToPointTransformer
 from ..mvsnet.cas_mvsnet_module import CasMVSNetModuleResult, PointCloudResult
 from ...types import EncoderOutput, empty_encoder_output
-from ...types import IConfigureOptimizers
-from ....utils import build_covariance_from_scaling_rotation
+from ...types import IConfigureOptimizers, IUpdatable
+from ....utils import build_covariance_from_scaling_rotation, get_binonial_lr_func
 
 SH_DEGREE = 4
 GAUSSIAN_FEATURE_CHANNELS = 11 + 3 * SH_DEGREE ** 2
@@ -29,7 +29,10 @@ def RGB2SH(rgb):
 def SH2RGB(sh):
     return sh * C0 + 0.5
 
-
+NAME_SHS_D1 = 'shs_d1'
+NAME_SHS_D2 = 'shs_d2'
+NAME_SHS_D3 = 'shs_d3'
+NAME_SHS_D4 = 'shs_d4'
 
 class BoundingBox:
     origin: torch.Tensor # 3D Vector (B, 3)
@@ -121,7 +124,7 @@ class BoundingBox:
 
     pass
 
-class GaussianParameterPredictor(nn.Module, IConfigureOptimizers):
+class GaussianParameterPredictor(nn.Module, IConfigureOptimizers, IUpdatable):
     def __init__(self, input_dim):
         super().__init__()
         self.input_dim = input_dim
@@ -177,16 +180,36 @@ class GaussianParameterPredictor(nn.Module, IConfigureOptimizers):
         ), dim=-1)
         
     def configure_optimizers(self, cfg):
+        expon = SH_DEGREE - 1
+        self.shs_d1_lr_func = get_binonial_lr_func(cfg.shs_d1_lr, expon, 3, cfg.max_steps)
+        self.shs_d2_lr_func = get_binonial_lr_func(cfg.shs_d2_lr, expon, 2, cfg.max_steps)
+        self.shs_d3_lr_func = get_binonial_lr_func(cfg.shs_d3_lr, expon, 1, cfg.max_steps)
+        self.shs_d4_lr_func = get_binonial_lr_func(cfg.shs_d4_lr, expon, 0, cfg.max_steps)
+        
         return [
             {'params': self.delta_means_predictor.parameters(), 'lr': cfg.delta_means_lr}, 
             {'params': self.quaternion_predictor.parameters(), 'lr': cfg.quaternion_lr}, 
             {'params': self.scale_predictor.parameters(), 'lr': cfg.scale_lr}, 
             {'params': self.opacity_predictor.parameters(), 'lr': cfg.opacity_lr}, 
-            {'params': self.shs_d1_predictor.parameters(), 'lr': cfg.shs_d1_lr}, 
-            {'params': self.shs_d2_predictor.parameters(), 'lr': cfg.shs_d2_lr}, 
-            {'params': self.shs_d3_predictor.parameters(), 'lr': cfg.shs_d3_lr}, 
-            {'params': self.shs_d4_predictor.parameters(), 'lr': cfg.shs_d4_lr}
+            {'params': self.shs_d1_predictor.parameters(), 'lr': self.shs_d1_lr_func(0), 'name': NAME_SHS_D1}, 
+            {'params': self.shs_d2_predictor.parameters(), 'lr': self.shs_d2_lr_func(0), 'name': NAME_SHS_D2}, 
+            {'params': self.shs_d3_predictor.parameters(), 'lr': self.shs_d3_lr_func(0), 'name': NAME_SHS_D3}, 
+            {'params': self.shs_d4_predictor.parameters(), 'lr': self.shs_d4_lr_func(0), 'name': NAME_SHS_D4}
         ]
+        
+    def on_train_batch_start(self, batch, batch_idx, optimizer):
+        for param_group in optimizer.param_groups:
+            if not param_group.keys().__contains__('name'): continue
+            
+            if param_group['name'] == NAME_SHS_D1:
+                param_group['lr'] = self.shs_d1_lr_func(batch_idx)
+            if param_group['name'] == NAME_SHS_D2:
+                param_group['lr'] = self.shs_d2_lr_func(batch_idx)
+            if param_group['name'] == NAME_SHS_D3:
+                param_group['lr'] = self.shs_d3_lr_func(batch_idx)
+            if param_group['name'] == NAME_SHS_D4:
+                param_group['lr'] = self.shs_d4_lr_func(batch_idx)
+        
     pass
 
 def bitwise_xor(x: torch.Tensor, dim: int):
@@ -483,7 +506,7 @@ def identify_is_current_scale(point_coordinates: torch.Tensor, local_coordinates
     
     return torch.logical_not(isin_mask) # (N2) True if <= 1 points inside
 
-class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
+class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers, IUpdatable):
 
     def __init__(self, transformer: VoxelToPointTransformer, feature_channels=192, voxel_size_list=[32, 128, 512], patch_size_list=[3, 2, 1]) -> None:
         super().__init__()
@@ -499,6 +522,10 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
     
     def configure_optimizers(self, cfg):
         return self.gaussian_parameter_predictor.configure_optimizers(cfg)
+    
+    def on_train_batch_start(self, batch, batch_idx, optimizer):
+        self.gaussian_parameter_predictor.on_train_batch_start(batch, batch_idx, optimizer)
+        
         
     def forward(self, cnn_features: torch.Tensor, cas_module_result: CasMVSNetModuleResult, extrinsics: torch.Tensor, intrinsics: torch.Tensor, nears: torch.Tensor, fars: torch.Tensor):
         b, v, c, h, w = cnn_features.shape

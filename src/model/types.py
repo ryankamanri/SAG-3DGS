@@ -5,7 +5,7 @@ from typing import Literal
 import torch
 from jaxtyping import Float
 from torch import Tensor
-
+from torch.optim import Optimizer
 
 @dataclass
 class EncoderOutput:
@@ -34,6 +34,7 @@ def empty_encoder_output(dim=3, d_sh=1, device="cuda") -> EncoderOutput:
 class OptimizerCfg:
     lr: float
     warm_up_steps: int
+    max_steps: int
     cosine_lr: bool
     delta_means_lr: float
     quaternion_lr: float
@@ -69,4 +70,9 @@ class IConfigureOptimizers(ABC):
         Set optimizer params dict list. A simple example: 
         `[{'params': module.parameters(), 'lr': 1e-5}, ...]`
         """
+        pass
+    
+class IUpdatable(ABC):
+    @abstractmethod
+    def on_train_batch_start(self, batch, batch_idx: int, optimizer: Optimizer):
         pass

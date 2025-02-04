@@ -554,3 +554,8 @@ class ModelWrapper(LightningModule):
                 "frequency": 1,
             },
         }
+        
+    def on_train_batch_start(self, batch, batch_idx):
+        optimizer = self.optimizers()
+        assert type(optimizer) != list
+        self.encoder.on_train_batch_start(batch, batch_idx, optimizer.optimizer)

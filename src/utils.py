@@ -1,4 +1,6 @@
 import torch
+import numpy as np
+from scipy.special import comb
 
 def build_rotation(r):
     norm = torch.sqrt(r[:,0]*r[:,0] + r[:,1]*r[:,1] + r[:,2]*r[:,2] + r[:,3]*r[:,3])
@@ -43,3 +45,14 @@ def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
     L = build_scaling_rotation(scaling_modifier * scaling, rotation)
     actual_covariance = L @ L.transpose(1, 2)
     return actual_covariance.view(-1, 9).permute(1, 0)
+
+
+
+def get_binonial_lr_func(
+    lr, expon, index, max_steps=1000000
+):
+    def helper(step):
+        t = np.clip(step / max_steps, 0, 1)
+        return comb(expon, index) * t**(expon-index) * (1-t)**index * lr
+    
+    return helper
