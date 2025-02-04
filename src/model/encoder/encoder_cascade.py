@@ -123,3 +123,10 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     def sampler(self):
         # hack to make the visualizer work
         return None
+    
+    def configure_optimizers(self, cfg):
+        return [
+            {'params': self.feature_extractor.parameters(), 'lr': cfg.lr}, 
+            {'params': self.cas_mvsnet_module.parameters(), 'lr': cfg.lr}, 
+            {'params': self.transformer.parameters(), 'lr': cfg.lr}
+        ] + self.gaussian_adapter_module.configure_optimizers(cfg)

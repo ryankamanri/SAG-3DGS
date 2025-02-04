@@ -6,6 +6,7 @@ import math
 from .voxel_to_point_cross_attn_transformer import VoxelToPointTransformer
 from ..mvsnet.cas_mvsnet_module import CasMVSNetModuleResult, PointCloudResult
 from ...types import EncoderOutput, empty_encoder_output
+from ...types import IConfigureOptimizers
 from ....utils import build_covariance_from_scaling_rotation
 
 SH_DEGREE = 4
@@ -28,29 +29,6 @@ def RGB2SH(rgb):
 def SH2RGB(sh):
     return sh * C0 + 0.5
 
-
-normalization = lambda x: (x - torch.mean(x)) / torch.std(x)
-
-delta_means_activation = lambda x, far, size: normalization(x) * 2 * far / size / 6
-scaling_activation = lambda x, far, size: torch.sigmoid(x) * 2 * far / size
-quaternion_activation = lambda x: x
-opacity_activation = lambda x: torch.sigmoid(x - 4) # sigmoid(-3 | -4) = 0.0474 | 0.018
-color_activation = lambda x: RGB2SH(torch.sigmoid(x))
-current_activation = lambda x: torch.sigmoid(x)
-
-
-def activate_gaussians(gaussian_features: torch.Tensor, far: torch.Tensor, voxel_size: int):
-    activated_gaussian_features = torch.zeros_like(gaussian_features, device="cuda")
-    activated_gaussian_features[SLICE_DELTA_MEANS] = delta_means_activation(gaussian_features[SLICE_DELTA_MEANS], far, voxel_size)
-    activated_gaussian_features[SLICE_QUATERNION] = quaternion_activation(gaussian_features[SLICE_QUATERNION])
-    activated_gaussian_features[SLICE_SCALE] = scaling_activation(gaussian_features[SLICE_SCALE], far, voxel_size)
-    activated_gaussian_features[SLICE_OPACITY] = opacity_activation(gaussian_features[SLICE_OPACITY])
-    activated_gaussian_features[SLICE_SHS] = gaussian_features[SLICE_SHS]
-    activated_gaussian_features[SLICE_SHS_D1] = color_activation(gaussian_features[SLICE_SHS_D1])
-    activated_gaussian_features[SLICE_SHS_D2] = gaussian_features[SLICE_SHS_D2] / 20
-    activated_gaussian_features[SLICE_SHS_D3] = gaussian_features[SLICE_SHS_D3] / 40
-    activated_gaussian_features[SLICE_SHS_D4] = gaussian_features[SLICE_SHS_D4] / 80
-    return activated_gaussian_features
 
 
 class BoundingBox:
@@ -141,6 +119,74 @@ class BoundingBox:
         """
         return ((self.origin[batch]) * voxel_size / self.size[batch]).int()
 
+    pass
+
+class GaussianParameterPredictor(nn.Module, IConfigureOptimizers):
+    def __init__(self, input_dim):
+        super().__init__()
+        self.input_dim = input_dim
+        
+        self.delta_means_activation = lambda x, bbox, voxel_size: (torch.sigmoid(x) - 0.5) * (bbox.size / voxel_size)
+        self.scaling_activation = lambda x, bbox, voxel_size: torch.sigmoid(x) * (bbox.size / voxel_size)
+        self.quaternion_activation = lambda x: x
+        self.opacity_activation = lambda x: torch.sigmoid(x)
+        self.color_activation = lambda x: RGB2SH(torch.sigmoid(x))
+        self.shs_d2_activation = lambda x: x / 5
+        self.shs_d3_activation = lambda x: x / 25
+        self.shs_d4_activation = lambda x: x / 125
+        
+        self.delta_means_predictor = nn.Linear(input_dim, SLICE_DELTA_MEANS.stop - SLICE_DELTA_MEANS.start)
+        self.quaternion_predictor = nn.Linear(input_dim, SLICE_QUATERNION.stop - SLICE_QUATERNION.start)
+        self.scale_predictor = nn.Linear(input_dim, SLICE_SCALE.stop - SLICE_SCALE.start)
+        self.opacity_predictor = nn.Linear(input_dim, SLICE_OPACITY.stop - SLICE_OPACITY.start)
+        self.shs_d1_predictor = nn.Linear(input_dim, SLICE_SHS_D1.stop - SLICE_SHS_D1.start)
+        self.shs_d2_predictor = nn.Linear(input_dim, SLICE_SHS_D2.stop - SLICE_SHS_D2.start)
+        self.shs_d3_predictor = nn.Linear(input_dim, SLICE_SHS_D3.stop - SLICE_SHS_D3.start)
+        self.shs_d4_predictor = nn.Linear(input_dim, SLICE_SHS_D4.stop - SLICE_SHS_D4.start)
+        
+        # init parameters
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_normal(p)
+        # init opacity from sigmoid(-5) (nearly 0).
+        nn.init.constant_(self.opacity_predictor.bias, -5)
+        pass
+    
+
+        
+    def forward(self, feature: torch.Tensor, bbox: BoundingBox, voxel_size: int):
+        # input / output feature (N, C)
+        delta_means = self.delta_means_predictor(feature)
+        quaternion = self.quaternion_predictor(feature)
+        scale = self.scale_predictor(feature)
+        opacity = self.opacity_predictor(feature)
+        shs_d1 = self.shs_d1_predictor(feature)
+        shs_d2 = self.shs_d2_predictor(feature)
+        shs_d3 = self.shs_d3_predictor(feature)
+        shs_d4 = self.shs_d4_predictor(feature)
+        
+        return torch.cat((
+            self.delta_means_activation(delta_means, bbox, voxel_size), 
+            self.quaternion_activation(quaternion), 
+            self.scaling_activation(scale, bbox, voxel_size), 
+            self.opacity_activation(opacity), 
+            self.color_activation(shs_d1), 
+            self.shs_d2_activation(shs_d2), 
+            self.shs_d3_activation(shs_d3), 
+            self.shs_d4_activation(shs_d4)
+        ), dim=-1)
+        
+    def configure_optimizers(self, cfg):
+        return [
+            {'params': self.delta_means_predictor.parameters(), 'lr': cfg.delta_means_lr}, 
+            {'params': self.quaternion_predictor.parameters(), 'lr': cfg.quaternion_lr}, 
+            {'params': self.scale_predictor.parameters(), 'lr': cfg.scale_lr}, 
+            {'params': self.opacity_predictor.parameters(), 'lr': cfg.opacity_lr}, 
+            {'params': self.shs_d1_predictor.parameters(), 'lr': cfg.shs_d1_lr}, 
+            {'params': self.shs_d2_predictor.parameters(), 'lr': cfg.shs_d2_lr}, 
+            {'params': self.shs_d3_predictor.parameters(), 'lr': cfg.shs_d3_lr}, 
+            {'params': self.shs_d4_predictor.parameters(), 'lr': cfg.shs_d4_lr}
+        ]
     pass
 
 def bitwise_xor(x: torch.Tensor, dim: int):
@@ -437,7 +483,7 @@ def identify_is_current_scale(point_coordinates: torch.Tensor, local_coordinates
     
     return torch.logical_not(isin_mask) # (N2) True if <= 1 points inside
 
-class VoxelizedGaussianAdapterModule(nn.Module):
+class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
 
     def __init__(self, transformer: VoxelToPointTransformer, feature_channels=192, voxel_size_list=[32, 128, 512], patch_size_list=[3, 2, 1]) -> None:
         super().__init__()
@@ -447,16 +493,12 @@ class VoxelizedGaussianAdapterModule(nn.Module):
         self.patch_size_list = patch_size_list
         assert len(patch_size_list) == len(voxel_size_list)
 
-        self.gaussian_parameter_predictor = nn.Sequential(
-            nn.Linear(in_features=feature_channels, out_features=64), 
-            nn.Linear(in_features=64, out_features=GAUSSIAN_FEATURE_CHANNELS)
-        )
+        self.gaussian_parameter_predictor = GaussianParameterPredictor(input_dim=feature_channels)
         
-        for p in self.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_normal(p)
         pass
     
+    def configure_optimizers(self, cfg):
+        return self.gaussian_parameter_predictor.configure_optimizers(cfg)
         
     def forward(self, cnn_features: torch.Tensor, cas_module_result: CasMVSNetModuleResult, extrinsics: torch.Tensor, intrinsics: torch.Tensor, nears: torch.Tensor, fars: torch.Tensor):
         b, v, c, h, w = cnn_features.shape
@@ -551,13 +593,15 @@ class VoxelizedGaussianAdapterModule(nn.Module):
                 
                 merged_feat = (merged_feat / v).transpose(0, 1) # (N, C)
                 
-                gaussian_features = self.gaussian_parameter_predictor(merged_feat) # (N, 15)
+                gaussian_features = self.gaussian_parameter_predictor(
+                    feature=merged_feat, 
+                    bbox=bbox, 
+                    voxel_size=voxel_size) # (N, 15)
                 
                 gaussian_features = gaussian_features.transpose(0, 1) # (15, N)
-                activated_gaussian_features = activate_gaussians(gaussian_features, far, voxel_size)
                 
                 current_gaussians = create_gaussians_from_features(
-                    gaussian_features=activated_gaussian_features, 
+                    gaussian_features=gaussian_features, 
                     coordinates=local_coordinates, 
                     voxel_size=voxel_size, 
                     bbox=bbox, 

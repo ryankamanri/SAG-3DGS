@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 
 import moviepy.editor as mpy
@@ -40,29 +39,7 @@ from ..visualization.validation_in_3d import render_cameras, render_projections
 from .decoder.decoder import Decoder, DepthRenderingMode
 from .encoder import Encoder
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
-from .types import EncoderOutput
-
-@dataclass
-class OptimizerCfg:
-    lr: float
-    warm_up_steps: int
-    cosine_lr: bool
-
-
-@dataclass
-class TestCfg:
-    output_path: Path
-    compute_scores: bool
-    save_image: bool
-    save_video: bool
-    eval_time_skip_steps: int
-
-
-@dataclass
-class TrainCfg:
-    depth_mode: DepthRenderingMode | None
-    extended_visualization: bool
-    print_log_every_n_steps: int
+from .types import EncoderOutput, TrainCfg, TestCfg, OptimizerCfg
 
     
 
@@ -80,7 +57,7 @@ class TrajectoryFn(Protocol):
 
 class ModelWrapper(LightningModule):
     logger: Optional[WandbLogger]
-    encoder: nn.Module
+    encoder: Encoder
     encoder_visualizer: Optional[EncoderVisualizer]
     decoder: Decoder
     losses: nn.ModuleList
@@ -549,7 +526,10 @@ class ModelWrapper(LightningModule):
                 )
 
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=self.optimizer_cfg.lr)
+        optimizer = optim.Adam([
+            {'params': self.losses.parameters(), 'lr': self.optimizer_cfg.lr}, 
+            {'params': self.decoder.parameters(), 'lr': self.optimizer_cfg.lr}
+        ] + self.encoder.configure_optimizers(self.optimizer_cfg))
         if self.optimizer_cfg.cosine_lr:
             warm_up = torch.optim.lr_scheduler.OneCycleLR(
                             optimizer, self.optimizer_cfg.lr,
