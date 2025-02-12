@@ -67,6 +67,18 @@ test:
   eval_time_skip_steps: 0
   save_image: true
   save_video: false
+  fine_tune: false
+  fine_tune_cfg:
+    fine_tune_steps: 10000
+    means_lr: 2.e-5
+    quaternion_lr: 2.e-5
+    scale_lr: 1.e-5
+    opacity_lr: 5.e-5
+    shs_d1_lr: 5.e-5
+    shs_d2_lr: 1.e-5
+    shs_d3_lr: 2.e-6
+    shs_d4_lr: 4.e-7
+    lambda_dssim: 0.2
 
 seed: 111123
 

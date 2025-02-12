@@ -39,8 +39,8 @@ from ..visualization.validation_in_3d import render_cameras, render_projections
 from .decoder.decoder import Decoder, DepthRenderingMode
 from .encoder import Encoder
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
-from .types import EncoderOutput, TrainCfg, TestCfg, OptimizerCfg
-
+from .types import EncoderOutput, TrainCfg, TestCfg, OptimizerCfg, FineTuneGaussianWrapper
+from ..utils import l1_loss, ssim
     
 
 @runtime_checkable
@@ -173,16 +173,41 @@ class ModelWrapper(LightningModule):
                 self.global_step,
                 deterministic=False,
             )
-        with self.benchmarker.time("decoder", num_calls=v):
-            output = self.decoder.forward(
-                gaussians,
-                batch["target"]["extrinsics"],
-                batch["target"]["intrinsics"],
-                batch["target"]["near"],
-                batch["target"]["far"],
-                (h, w),
-                depth_mode=None,
-            )
+        if self.test_cfg.fine_tune:
+            with torch.inference_mode(False):
+                fine_tune_gaussian_wrapper = FineTuneGaussianWrapper(gaussians, self.test_cfg.fine_tune_cfg)
+                gt = batch["fine_tune"]["image"].clone() # clone to get a non-inference mode tensor.
+                b, v, c, h, w = gt.shape
+                with self.benchmarker.time("fine_tune", num_calls=v):
+                    for i in range(self.test_cfg.fine_tune_cfg.fine_tune_steps):
+                        output = self.decoder.forward(
+                            fine_tune_gaussian_wrapper.get_gaussians(),
+                            batch["fine_tune"]["extrinsics"], # TODO: load fine tune images.
+                            batch["fine_tune"]["intrinsics"],
+                            batch["fine_tune"]["near"],
+                            batch["fine_tune"]["far"],
+                            (h, w),
+                            depth_mode=None,
+                        )
+                        # compute loss
+                        Ll1 = l1_loss(output.color, gt)
+                        l_ssim = 1 - ssim(output.color.view(b*v, c, h, w), gt.view(b*v, c, h, w))
+                        if i % 10 == 0: print(f"Iter {i}: loss l1: {Ll1}, ssim: {1 - l_ssim}")
+                        loss = (1.0 - self.test_cfg.fine_tune_cfg.lambda_dssim) * Ll1 + self.test_cfg.fine_tune_cfg.lambda_dssim * l_ssim
+                        loss.backward()
+                        # optimizer step
+                        fine_tune_gaussian_wrapper.step()
+        else:
+            with self.benchmarker.time("decoder", num_calls=v):
+                output = self.decoder.forward(
+                    gaussians,
+                    batch["target"]["extrinsics"],
+                    batch["target"]["intrinsics"],
+                    batch["target"]["near"],
+                    batch["target"]["far"],
+                    (h, w),
+                    depth_mode=None,
+                )
 
         (scene,) = batch["scene"]
         name = get_cfg()["wandb"]["name"]

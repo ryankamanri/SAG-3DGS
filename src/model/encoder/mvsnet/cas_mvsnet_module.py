@@ -115,6 +115,7 @@ class CasMVSNetModule(nn.Module):
         
         pretrained_depths_est = [] # depth map list
         pretrained_photometric_confidences = []
+        backbone_depths_est = []
         backbone_photometric_confidences = []
         # for every reference image, the mvsnet will generate a depth map and a photometric confidence map
         for vi in range(v):
@@ -127,7 +128,8 @@ class CasMVSNetModule(nn.Module):
                 backbone_outputs = self.backbone_cas_mvsnet(imgs, proj_mat, depth_values[:, vi, :])
             else:
                 backbone_outputs = pretrained_outputs
-                
+            
+            backbone_depths_est.append(backbone_outputs["depth"])
             backbone_photometric_confidences.append(backbone_outputs["photometric_confidence"])
             result.ref_view_result_list.append(ReferenceViewResult(imgs[:, vi], pretrained_outputs, backbone_outputs))
             
@@ -139,7 +141,15 @@ class CasMVSNetModule(nn.Module):
         with torch.no_grad():            
             vertices, vertices_color = generate_point_cloud_from_depth_maps(imgs, extrinsics, intrinsics, pretrained_depths_est, pretrained_photometric_confidences)
         
-        prob_vertices = generate_depth_map_based_point_cloud(pretrained_depths_est, extrinsics, intrinsics)
+        prob_vertices = generate_depth_map_based_point_cloud(backbone_depths_est, extrinsics, intrinsics)
+        
+        if False:
+            assert b == 1
+            import open3d
+            pcd = open3d.geometry.PointCloud()
+            pcd.points = open3d.utility.Vector3dVector(prob_vertices.permute(0, 1, 3, 4, 2).reshape(b*v*h*w, 4)[..., :3].detach().cpu())
+            pcd.colors = open3d.utility.Vector3dVector(imgs.permute(0, 1, 3, 4, 2).reshape(b*v*h*w, 3).detach().cpu())
+            open3d.visualization.draw_geometries([pcd])      
         
         result.registed_pcd = PointCloudResult(xyz_batches=vertices, rgb_batches=vertices_color)
         result.registed_prob_pcd = ViewBasedPointCloudResult(

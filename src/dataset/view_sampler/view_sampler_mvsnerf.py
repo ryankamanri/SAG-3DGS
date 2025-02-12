@@ -13,6 +13,10 @@ from .view_sampler import ViewSampler
 @dataclass
 class ViewSamplerMVSNeRFCfg:
     name: Literal["mvsnerf"]
+    num_target_views_train: int
+    num_context_views_train: int
+    num_target_views_test: int
+    num_context_views_test: int
     dtu_train_path: str
     dtu_test_path: str
     dtu_pairs_path: str
@@ -24,6 +28,7 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
     def __init__(self, cfg, stage, is_overfitting, cameras_are_circular, step_tracker):
         super().__init__(cfg, stage, is_overfitting, cameras_are_circular, step_tracker)
         self.build_metas()
+        self.test_pairs = torch.load(cfg.test_pairs_path)
     
     def build_remap(self):
         self.remap = np.zeros(np.max(self.id_list) + 1).astype('int')
@@ -67,7 +72,7 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
         Int64[Tensor, " context_view"],  # indices for context views
         Int64[Tensor, " target_view"],  # indices for target views
     ]:
-        if not scene.startswith("scan"): # 
+        if not scene.startswith("dtu"): # 
             # TODO: handle other test dataset and return
             pass
         
@@ -75,23 +80,34 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
         image_count = len(self.metas)
         light_count = 7
         
-        light_idx, target_view, src_views = self.metas[random.randint(0, image_count - 1)]
         if self.stage == 'test':
-            # TODO: handle dtu test dataset and return
-            pass
+            light_idx = 3
+            return (
+                (torch.tensor(self.test_pairs["dtu_train"]) * light_count + light_idx)[:self.num_context_views], 
+                (torch.tensor(self.test_pairs["dtu_test"]) * light_count + light_idx)[:self.num_target_views]
+            )
         
-        ids = torch.randperm(5)[:3]
+        light_idx, target_view, src_views = self.metas[random.randint(0, image_count - 1)]
+
+        ids = torch.randperm(5)[:self.num_context_views]
         
         return (
             torch.tensor([src_views[i] * light_count + light_idx for i in ids], device=device), 
             torch.tensor([target_view * light_count + light_idx])
         )
         
+    def sample_fine_tune(self, scene, extrinsics, intrinsics, device = ..., **kwargs):
+        if self.stage != 'test': return None
+        if scene.startswith('dtu'): # DTU
+            return torch.tensor(self.test_pairs["dtu_train"])
+        # TODO: add other datasets.
+        
+        
         
     @property
     def num_context_views(self) -> int:
-        return 2
+        return self.cfg.num_context_views_test if self.stage == 'test' else self.cfg.num_context_views_train
 
     @property
     def num_target_views(self) -> int:
-        return self.cfg.num_target_views
+        return self.cfg.num_target_views_test if self.stage == 'test' else self.cfg.num_target_views_train

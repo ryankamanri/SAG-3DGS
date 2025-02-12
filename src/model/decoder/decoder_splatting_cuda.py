@@ -6,6 +6,8 @@ from einops import rearrange, repeat
 from jaxtyping import Float
 from torch import Tensor
 
+from ...utils import build_covariance_from_scaling_rotation
+
 from ...dataset import DatasetCfg
 from ..types import EncoderOutput
 from .cuda_splatting import DepthRenderingMode, render_cuda, render_depth_cuda
@@ -43,6 +45,7 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
         depth_mode: DepthRenderingMode | None = None,
     ) -> DecoderOutput:
         b, v, _, _ = extrinsics.shape
+        _, g, _ = gaussians.means.shape
         color = render_cuda(
             rearrange(extrinsics, "b v i j -> (b v) i j"),
             rearrange(intrinsics, "b v i j -> (b v) i j"),
@@ -51,7 +54,7 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
             image_shape,
             repeat(self.background_color, "c -> (b v) c", b=b, v=v),
             repeat(gaussians.means, "b g xyz -> (b v) g xyz", v=v),
-            repeat(gaussians.covariances, "b g i j -> (b v) g i j", v=v),
+            repeat(build_covariance_from_scaling_rotation(gaussians.scales.view(b*g, 3), 1, gaussians.rotations.view(b*g, 4)).reshape(b, g, 3, 3), "b g i j -> (b v) g i j", v=v),
             repeat(gaussians.harmonics, "b g c d_sh -> (b v) g c d_sh", v=v),
             repeat(gaussians.opacities, "b g -> (b v) g", v=v),
         )
@@ -77,6 +80,7 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
         mode: DepthRenderingMode = "depth",
     ) -> Float[Tensor, "batch view height width"]:
         b, v, _, _ = extrinsics.shape
+        _, g, _ = gaussians.means.shape
         result = render_depth_cuda(
             rearrange(extrinsics, "b v i j -> (b v) i j"),
             rearrange(intrinsics, "b v i j -> (b v) i j"),
@@ -84,7 +88,7 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
             rearrange(far, "b v -> (b v)"),
             image_shape,
             repeat(gaussians.means, "b g xyz -> (b v) g xyz", v=v),
-            repeat(gaussians.covariances, "b g i j -> (b v) g i j", v=v),
+            repeat(build_covariance_from_scaling_rotation(gaussians.scales.view(b*g, 3), 1, gaussians.rotations.view(b*g, 4)).reshape(b, g, 3, 3), "b g i j -> (b v) g i j", v=v),
             repeat(gaussians.opacities, "b g -> (b v) g", v=v),
             mode=mode,
         )

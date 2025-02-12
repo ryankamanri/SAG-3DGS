@@ -2,6 +2,7 @@ import torch
 from jaxtyping import Float, Shaped
 from torch import Tensor
 
+from ..utils import build_covariance_from_scaling_rotation
 from ..model.decoder.cuda_splatting import render_cuda_orthographic
 from ..model.types import EncoderOutput
 from ..visualization.annotation import add_label
@@ -30,7 +31,7 @@ def render_projections(
     extra_label: str = "",
 ) -> Float[Tensor, "batch 3 3 height width"]:
     device = gaussians.means.device
-    b, _, _ = gaussians.means.shape
+    b, g, _ = gaussians.means.shape
 
     # Compute the minima and maxima of the scene.
     minima = gaussians.means.min(dim=1).values
@@ -74,7 +75,7 @@ def render_projections(
             (resolution, resolution),
             torch.zeros((b, 3), dtype=torch.float32, device=device),
             gaussians.means,
-            gaussians.covariances,
+            build_covariance_from_scaling_rotation(gaussians.scales.view(b*g, 3), 1, gaussians.rotations.view(b*g, 4)).reshape(b, g, 3, 3),
             gaussians.harmonics,
             gaussians.opacities,
             fov_degrees=10.0,

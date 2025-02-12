@@ -34,8 +34,7 @@ class LossStruct(Loss[LossStructCfg, LossStructCfgWrapper]):
         offset_loss = Tensor(gaussians.others["offset_loss"]).mean()
         
         # gaussian structure also need to be restricted.
-        scales_list: torch.Tensor = gaussians.others["scales_list"] # [(N, 3) * B]
-        scales = torch.cat(scales_list, dim=0)
+        scales = gaussians.scales
         sorted_scale = scales.sort(dim=2).values
         gaussian_struct_loss = (1 - (sorted_scale[..., 1] / sorted_scale[..., 2]).mean(dim=1)).mean() ** 2
         

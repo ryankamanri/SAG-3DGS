@@ -45,6 +45,16 @@ class ViewSampler(ABC, Generic[T]):
         Int64[Tensor, " target_view"],  # indices for target views
     ]:
         pass
+    
+    def sample_fine_tune(
+        self,
+        scene: str,
+        extrinsics: Float[Tensor, "view 4 4"],
+        intrinsics: Float[Tensor, "view 3 3"],
+        device: torch.device = torch.device("cpu"),
+        **kwargs,
+    ) -> Int64[Tensor, " fine_tune_view"] | None:
+        return None
 
     @property
     @abstractmethod

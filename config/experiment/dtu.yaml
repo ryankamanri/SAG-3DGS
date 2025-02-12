@@ -14,6 +14,9 @@ data_loader:
   train:
     batch_size: 1
 
+optimizer:
+  max_steps: 300_001
+
 trainer:
   max_steps: 300_001
 
@@ -31,6 +34,7 @@ model:
 
 
 dataset: 
+  name: dtu
   image_shape: [512, 640]
   roots: [datasets/dtu]
   near: 2.125

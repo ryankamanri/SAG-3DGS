@@ -148,18 +148,18 @@ class VoxelToPointTransformerBlock(nn.Module):
 def voxel_positional_encoding(ijk: torch.Tensor, d_model: int):
     """
     input:
-        ijk: [B, 3, L]
+        ijk: [B, C, L]
         
     output: [B, 6D, L]
     """
-    b, _, l = ijk.shape
-    i = torch.arange(d_model, device=ijk.device).view(1, 1, -1, 1) # (1, 1, D, 1)
-    ijk = ijk.unsqueeze(-2) # (B, 3, 1, L)
+    b, c, l = ijk.shape
+    i = torch.arange(d_model, device=ijk.device).view(1, 1, d_model, 1) # (1, 1, D, 1)
+    ijk = ijk.unsqueeze(-2) # (B, C, 1, L)
     
-    pe_sin = torch.sin(ijk / 10000 ** (i / d_model)).reshape(b, -1, l) # (B, 3D, L)
-    pe_cos = torch.cos(ijk / 10000 ** (i / d_model)).reshape(b, -1, l) # (B, 3D, L)
+    pe_sin = torch.sin(ijk / 10000 ** (i / d_model)).reshape(b, c * d_model, l) # (B, C*D, L)
+    pe_cos = torch.cos(ijk / 10000 ** (i / d_model)).reshape(b, c * d_model, l) # (B, C*D, L)
     
-    return torch.cat((pe_sin, pe_cos), dim=1) # (B, 6D, L)
+    return torch.cat((pe_sin, pe_cos), dim=1) # (B, 2CD, L)
 
 
 def nearest_patch(yx: torch.Tensor, hw: torch.Tensor, patch_size=4):
@@ -357,7 +357,7 @@ class VoxelToPointTransformer(nn.Module):
         target = target + voxel_positional_encoding(
             point_ijk[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]].view(b, -1, 3).permute(0, 2, 1), 
             self.d_model_pe
-        ).permute(0, 2, 1).reshape(b, v, k, -1)
+        ).permute(0, 2, 1).reshape(b, v, k, c)
         
         # Add voxel size encoding
         voxel_size_encoding = voxel_positional_encoding(
@@ -365,7 +365,7 @@ class VoxelToPointTransformer(nn.Module):
             d_model=self.d_model // 2
         )
         source = source + voxel_size_encoding.permute(0, 2, 1).repeat(b, v, 1)
-        target = target + voxel_size_encoding.permute(0, 2, 1).repeat(b, v*k, 1).view(b, v, k, -1)
+        target = target + voxel_size_encoding.permute(0, 2, 1).repeat(b, v*k, 1).view(b, v, k, c)
         
 
         for i, layer in enumerate(self.layers):

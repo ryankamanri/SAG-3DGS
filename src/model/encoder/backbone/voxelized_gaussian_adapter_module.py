@@ -1,5 +1,4 @@
 import torch
-import gc
 from torch import nn
 import torch.nn.functional as F
 import math
@@ -7,7 +6,6 @@ from .voxel_to_point_cross_attn_transformer import VoxelToPointTransformer
 from ..mvsnet.cas_mvsnet_module import CasMVSNetModuleResult, PointCloudResult
 from ...types import EncoderOutput, empty_encoder_output
 from ...types import IConfigureOptimizers
-from ....utils import build_covariance_from_scaling_rotation
 
 SH_DEGREE = 4
 GAUSSIAN_FEATURE_CHANNELS = 11 + 3 * SH_DEGREE ** 2
@@ -121,7 +119,7 @@ class BoundingBox:
 
     pass
 
-class GaussianParameterPredictor(nn.Module, IConfigureOptimizers):
+class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
     def __init__(self, input_dim):
         super().__init__()
         self.input_dim = input_dim
@@ -277,29 +275,27 @@ def create_gaussians_from_features(gaussian_features: torch.Tensor, coordinates:
     b, n, dim, d_sh = 1, coordinates.shape[0], 3, SH_DEGREE ** 2
     
     means: torch.Tensor = gaussian_features[SLICE_DELTA_MEANS] + voxel_center # (3, N)
-    covariances: torch.Tensor = build_covariance_from_scaling_rotation(
-        gaussian_features[SLICE_SCALE], 
-        1, 
-        gaussian_features[SLICE_QUATERNION]) # (9, N)
+    scales: torch.Tensor = gaussian_features[SLICE_SCALE]
+    rotations: torch.Tensor = gaussian_features[SLICE_QUATERNION]
     harmonics: torch.Tensor = gaussian_features[SLICE_SHS] # (d^2, N)
     opacities: torch.Tensor = gaussian_features[SLICE_OPACITY] # (1, N)
     
     gaussians = EncoderOutput(
-        means=means.permute(1, 0).view(b, n, dim),
-        covariances=covariances.permute(1, 0).reshape(b, n, dim, dim), 
+        means=means.permute(1, 0).view(b, n, dim), 
+        scales=scales.permute(1, 0).view(b, n, dim),  # (B, N, 3)
+        rotations=rotations.permute(1, 0).view(b, n, 4), 
         harmonics=harmonics.permute(1, 0).view(b, n, d_sh, 3).transpose(2, 3), # note that (d_sh, 3) in features
         opacities=opacities.permute(1, 0).view(b, n)
     )
     
-    gaussians.others["scales"] = gaussian_features[SLICE_SCALE].permute(1, 0).view(b, n, dim) # (B, N, 3)
     return gaussians
 
 
 def combine_batch_gaussians(batch_gaussians: list[EncoderOutput]) -> EncoderOutput:
     b, dim, d_sh = 1, 3, SH_DEGREE ** 2
     gaussian_size = 0
-    means_list, covariance_list, harmonics_list, opacities_list = [], [], [], []
-    scales_list, append_size_list = [], []
+    means_list, scales_list, rotations_list, harmonics_list, opacities_list = [], [], [], [], []
+    append_size_list = []
     for gaussian in batch_gaussians:
         if gaussian.opacities.shape[1] > gaussian_size:
             gaussian_size = gaussian.opacities.shape[1]
@@ -308,24 +304,25 @@ def combine_batch_gaussians(batch_gaussians: list[EncoderOutput]) -> EncoderOutp
         append_size = gaussian_size - gaussian.opacities.shape[1]
         if append_size > 0: 
             gaussian.means = torch.cat((gaussian.means, torch.zeros(b, append_size, dim, device=gaussian.means.device)), dim=1)
-            gaussian.covariances = torch.cat((gaussian.covariances, torch.zeros(b, append_size, dim, dim, device=gaussian.means.device)), dim=1)
+            gaussian.scales = torch.cat((gaussian.scales, torch.zeros(b, append_size, dim, device=gaussian.means.device)), dim=1)
+            gaussian.rotations = torch.cat((gaussian.rotations, torch.zeros(b, append_size, 4, device=gaussian.means.device)), dim=1)
             gaussian.harmonics = torch.cat((gaussian.harmonics, torch.zeros(b, append_size, 3, d_sh, device=gaussian.means.device)), dim=1)
             gaussian.opacities = torch.cat((gaussian.opacities, torch.zeros(b, append_size, device=gaussian.means.device)), dim=1)
         means_list.append(gaussian.means)
-        covariance_list.append(gaussian.covariances)
+        scales_list.append(gaussian.scales)
+        rotations_list.append(gaussian.rotations)
         harmonics_list.append(gaussian.harmonics)
         opacities_list.append(gaussian.opacities)
-        scales_list.append(gaussian.others["scales"])
         append_size_list.append(append_size)
         
     combined_gaussian = EncoderOutput(
         means = torch.cat(means_list, dim=0), 
-        covariances = torch.cat(covariance_list, dim=0), 
+        scales = torch.cat(scales_list, dim=0), 
+        rotations = torch.cat(rotations_list, dim=0), 
         harmonics = torch.cat(harmonics_list, dim=0), 
         opacities = torch.cat(opacities_list, dim=0)
     )
     
-    combined_gaussian.others["scales_list"] = scales_list # (B, N, 3)
     combined_gaussian.others["append_size_list"] = append_size_list
     return combined_gaussian
 
@@ -493,12 +490,12 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
         self.patch_size_list = patch_size_list
         assert len(patch_size_list) == len(voxel_size_list)
 
-        self.gaussian_parameter_predictor = GaussianParameterPredictor(input_dim=feature_channels)
+        self.gaussian_features_predictor = GaussianFeaturesPredictor(input_dim=feature_channels)
         
         pass
     
     def configure_optimizers(self, cfg):
-        return self.gaussian_parameter_predictor.configure_optimizers(cfg)
+        return self.gaussian_features_predictor.configure_optimizers(cfg)
         
     def forward(self, cnn_features: torch.Tensor, cas_module_result: CasMVSNetModuleResult, extrinsics: torch.Tensor, intrinsics: torch.Tensor, nears: torch.Tensor, fars: torch.Tensor):
         b, v, c, h, w = cnn_features.shape
@@ -593,7 +590,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 
                 merged_feat = (merged_feat / v).transpose(0, 1) # (N, C)
                 
-                gaussian_features = self.gaussian_parameter_predictor(
+                gaussian_features = self.gaussian_features_predictor(
                     feature=merged_feat, 
                     bbox=bbox, 
                     voxel_size=voxel_size) # (N, 15)
@@ -622,10 +619,10 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 
                 # Append current gaussians
                 gaussians.means = torch.cat((gaussians.means, current_gaussians.means), dim=1)
-                gaussians.covariances = torch.cat((gaussians.covariances, current_gaussians.covariances), dim=1)
+                gaussians.scales = torch.cat((gaussians.scales, current_gaussians.scales), dim=1)
+                gaussians.rotations = torch.cat((gaussians.rotations, current_gaussians.rotations), dim=1)
                 gaussians.harmonics = torch.cat((gaussians.harmonics, current_gaussians.harmonics), dim=1)
                 gaussians.opacities = torch.cat((gaussians.opacities, current_gaussians.opacities), dim=1)
-                gaussians.others["scales"] = torch.cat((gaussians.others["scales"], current_gaussians.others["scales"]), dim=1)
                 
                 # next level
                 local_coordinates = next_coordinates

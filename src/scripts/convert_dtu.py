@@ -27,7 +27,7 @@ args = parser.parse_args()
 
 INPUT_IMAGE_DIR = Path(args.input_dir)
 OUTPUT_DIR = Path(args.output_dir)
-
+SPLIT_LIST_DIR = Path(os.curdir) / Path("config/dataset/view_sampler/mvsnerf_stored")
 
 def build_camera_info(id_list, root_dir):
     """Return the camera information for the given id_list"""
@@ -74,8 +74,8 @@ def read_cam_file(filename):
 def get_example_keys(stage: Literal["test", "train"]) -> list[str]:
     """ Extracted from: https://github.com/donydchen/matchnerf/blob/main/configs/dtu_meta/val_all.txt """
     keys = []
-    with open(str(INPUT_IMAGE_DIR / f"new_{stage}.lst"), 'r') as f:
-        scan_xx = f.readline()[:-1] # remove '\n'
+    with open(str(SPLIT_LIST_DIR / f"dtu_{stage}.lst"), 'r') as f:
+        scan_xx = f.readline().rstrip() # remove '\n'
         while scan_xx != "":
             keys.append(f"{scan_xx}_train")
             scan_xx = f.readline()[:-1]

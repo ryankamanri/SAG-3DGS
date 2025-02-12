@@ -23,7 +23,7 @@ from .view_sampler import ViewSampler
 
 @dataclass
 class DatasetRE10kCfg(DatasetCfgCommon):
-    name: Literal["re10k"]
+    name: Literal["dtu", "llff", "tandt", "ns", "scannet"]
     roots: list[Path]
     baseline_epsilon: float
     max_fov: float
@@ -121,9 +121,9 @@ class DatasetRE10k(IterableDataset):
 
                 extrinsics, intrinsics = self.convert_poses(example["cameras"])
                 if times_per_scene > 1:  # specifically for DTU
-                    scene = f"{example['key']}_{(run_idx % times_per_scene):02d}"
+                    scene = f"{self.cfg.name}_{example['key']}_{(run_idx % times_per_scene):02d}"
                 else:
-                    scene = example["key"]
+                    scene = f"{self.cfg.name}_{example['key']}"
 
                 try:
                     context_indices, target_indices = self.view_sampler.sample(
@@ -131,6 +131,9 @@ class DatasetRE10k(IterableDataset):
                         extrinsics,
                         intrinsics,
                     )
+                    
+                    fine_tune_indices = self.view_sampler.sample_fine_tune(scene, extrinsics, intrinsics)
+                        
                     # reverse the context
                     # context_indices = torch.flip(context_indices, dims=[0])
                     # print(context_indices)
@@ -151,6 +154,11 @@ class DatasetRE10k(IterableDataset):
                     example["images"][index.item()] for index in target_indices
                 ]
                 target_images = self.convert_images(target_images)
+                
+                fine_tune_images = self.convert_images([
+                    example["images"][index.item()] for index in fine_tune_indices
+                ]) if fine_tune_indices != None else None
+                
 
                 # Skip the example if the images don't have the right shape.
                 context_image_invalid = context_images.shape[1:] != (3, 360, 640)
@@ -190,6 +198,14 @@ class DatasetRE10k(IterableDataset):
                         "far": self.get_bound("far", len(context_indices)) / nf_scale,
                         "index": context_indices,
                     },
+                    "fine_tune": {
+                        "extrinsics": extrinsics[fine_tune_indices], 
+                        "intrinsics": intrinsics[fine_tune_indices], 
+                        "image": fine_tune_images, 
+                        "near": self.get_bound("near", len(fine_tune_indices)) / nf_scale,
+                        "far": self.get_bound("far", len(fine_tune_indices)) / nf_scale,
+                        "index": fine_tune_indices,
+                    }, 
                     "target": {
                         "extrinsics": extrinsics[target_indices],
                         "intrinsics": intrinsics[target_indices],
