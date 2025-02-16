@@ -31,6 +31,7 @@ class DatasetRE10kCfg(DatasetCfgCommon):
     augment: bool
     test_len: int
     test_chunk_interval: int
+    train_times_per_scene: int
     test_times_per_scene: int
     skip_bad_shape: bool = True
     near: float = -1.0
@@ -61,6 +62,7 @@ class DatasetRE10k(IterableDataset):
         self.view_sampler = view_sampler
         self.to_tensor = tf.ToTensor()
         # NOTE: update near & far; remember to DISABLE `apply_bounds_shim` in encoder
+        # Revised by kamanri, the bounds are derive from `Metadata`, not config.
         if cfg.near != -1:
             self.near = cfg.near
         if cfg.far != -1:
@@ -115,11 +117,11 @@ class DatasetRE10k(IterableDataset):
                 chunk = self.shuffle(chunk)
 
             # for example in chunk:
-            times_per_scene = self.cfg.test_times_per_scene
+            times_per_scene = self.cfg.test_times_per_scene if self.stage == "test" else self.cfg.train_times_per_scene
             for run_idx in range(int(times_per_scene * len(chunk))):
                 example = chunk[run_idx // times_per_scene]
 
-                extrinsics, intrinsics = self.convert_poses(example["cameras"])
+                extrinsics, intrinsics, nears, fars = self.convert_poses(example["cameras"])
                 if times_per_scene > 1:  # specifically for DTU
                     scene = f"{self.cfg.name}_{example['key']}_{(run_idx % times_per_scene):02d}"
                 else:
@@ -194,24 +196,24 @@ class DatasetRE10k(IterableDataset):
                         "origin_image": context_images, # add origin image for pcd generation
                         "origin_intrinsics": intrinsics[context_indices],
                         "image": context_images,
-                        "near": self.get_bound("near", len(context_indices)) / nf_scale,
-                        "far": self.get_bound("far", len(context_indices)) / nf_scale,
+                        "near": nears[context_indices] / nf_scale,
+                        "far": fars[context_indices] / nf_scale,
                         "index": context_indices,
                     },
                     "fine_tune": {
                         "extrinsics": extrinsics[fine_tune_indices], 
                         "intrinsics": intrinsics[fine_tune_indices], 
                         "image": fine_tune_images, 
-                        "near": self.get_bound("near", len(fine_tune_indices)) / nf_scale,
-                        "far": self.get_bound("far", len(fine_tune_indices)) / nf_scale,
+                        "near": nears[fine_tune_indices] / nf_scale,
+                        "far": fars[fine_tune_indices] / nf_scale,
                         "index": fine_tune_indices,
-                    }, 
+                    } if fine_tune_indices != None else {}, 
                     "target": {
                         "extrinsics": extrinsics[target_indices],
                         "intrinsics": intrinsics[target_indices],
                         "image": target_images,
-                        "near": self.get_bound("near", len(target_indices)) / nf_scale,
-                        "far": self.get_bound("far", len(target_indices)) / nf_scale,
+                        "near": nears[target_indices] / nf_scale,
+                        "far": fars[target_indices] / nf_scale,
                         "index": target_indices,
                     },
                     "scene": scene,
@@ -226,6 +228,8 @@ class DatasetRE10k(IterableDataset):
     ) -> tuple[
         Float[Tensor, "batch 4 4"],  # extrinsics
         Float[Tensor, "batch 3 3"],  # intrinsics
+        Float[Tensor, "batch"],  # nears
+        Float[Tensor, "batch"],  # fars
     ]:
         b, _ = poses.shape
 
@@ -241,7 +245,9 @@ class DatasetRE10k(IterableDataset):
         # Convert the extrinsics to a 4x4 OpenCV-style W2C matrix.
         w2c = repeat(torch.eye(4, dtype=torch.float32), "h w -> b h w", b=b).clone()
         w2c[:, :3] = rearrange(poses[:, 6:], "b (h w) -> b h w", h=3, w=4)
-        return w2c.inverse(), intrinsics
+        
+        nears, fars = poses[:, 4], poses[:, 5]
+        return w2c.inverse(), intrinsics, nears, fars
 
     def convert_images(
         self,
@@ -250,7 +256,7 @@ class DatasetRE10k(IterableDataset):
         torch_images = []
         for image in images:
             image = Image.open(BytesIO(image.numpy().tobytes()))
-            torch_images.append(self.to_tensor(image))
+            torch_images.append(self.to_tensor(image)[:3]) # (rgb) without (a)
         return torch.stack(torch_images)
 
     def get_bound(

@@ -3,6 +3,7 @@ from typing import Optional, Protocol, runtime_checkable
 
 import moviepy.editor as mpy
 import torch
+from tqdm import tqdm
 import wandb
 from einops import pack, rearrange, repeat
 from jaxtyping import Float
@@ -179,7 +180,8 @@ class ModelWrapper(LightningModule):
                 gt = batch["fine_tune"]["image"].clone() # clone to get a non-inference mode tensor.
                 b, v, c, h, w = gt.shape
                 with self.benchmarker.time("fine_tune", num_calls=v):
-                    for i in range(self.test_cfg.fine_tune_cfg.fine_tune_steps):
+                    proc = tqdm(range(self.test_cfg.fine_tune_cfg.fine_tune_steps), desc="fine tune process")
+                    for i in proc:
                         output = self.decoder.forward(
                             fine_tune_gaussian_wrapper.get_gaussians(),
                             batch["fine_tune"]["extrinsics"], # TODO: load fine tune images.
@@ -192,7 +194,10 @@ class ModelWrapper(LightningModule):
                         # compute loss
                         Ll1 = l1_loss(output.color, gt)
                         l_ssim = 1 - ssim(output.color.view(b*v, c, h, w), gt.view(b*v, c, h, w))
-                        if i % 10 == 0: print(f"Iter {i}: loss l1: {Ll1}, ssim: {1 - l_ssim}")
+                        proc.set_postfix({
+                            'l1': Ll1.item(), 
+                            'ssim': 1 - l_ssim.item()
+                        })
                         loss = (1.0 - self.test_cfg.fine_tune_cfg.lambda_dssim) * Ll1 + self.test_cfg.fine_tune_cfg.lambda_dssim * l_ssim
                         loss.backward()
                         # optimizer step
@@ -217,8 +222,9 @@ class ModelWrapper(LightningModule):
 
         # Save images.
         if self.test_cfg.save_image:
-            for index, color in zip(batch["target"]["index"][0], images_prob):
+            for index, color, color_gt in zip(batch["target"]["index"][0], images_prob, rgb_gt):
                 save_image(color, path / scene / f"color/{index:0>6}.png")
+                save_image(color_gt, path / scene / f"color/{index:0>6}_gt.png")
 
         # save video
         if self.test_cfg.save_video:

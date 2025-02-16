@@ -129,20 +129,28 @@ def load_raw(path: Path) -> UInt8[Tensor, " length"]:
 def load_images(example_path: Path) -> dict[int, UInt8[Tensor, "..."]]:
     """Load JPG images as raw bytes (do not decode)."""
     images_dict = {}
+    
+    # cur_id = 0
+    # img_wh = (960, 640)
+    # src_transform = T.Compose([T.Normalize(mean=[0.485, 0.456, 0.406],
+    #                                         std=[0.229, 0.224, 0.225]),
+    #                             ])
+    
+    # for image_path in example_path.iterdir():
+    #     img = Image.open(image_path).convert('RGB')
+    #     img = img.resize(img_wh, Image.LANCZOS)
+    #     transform = T.ToTensor()
+    #     img = transform(img)  # (3, h, w)
+    #     images_dict[cur_id] = src_transform(img)
+    #     cur_id += 1
+    
     cur_id = 0
-    img_wh = (960, 640)
-    src_transform = T.Compose([T.Normalize(mean=[0.485, 0.456, 0.406],
-                                            std=[0.229, 0.224, 0.225]),
-                                ])
-    
     for image_path in example_path.iterdir():
-        img = Image.open(image_path).convert('RGB')
-        img = img.resize(img_wh, Image.LANCZOS)
-        transform = T.ToTensor()
-        img = transform(img)  # (3, h, w)
-        images_dict[cur_id] = src_transform(img)
+        cur_image_name = image_path
+        img_bin = load_raw(cur_image_name)
+        images_dict[cur_id] = img_bin
         cur_id += 1
-    
+        
     return images_dict
 
 
@@ -165,9 +173,9 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
     H, W, focal = poses[0, :, -1]  # original intrinsics, same for all images
     print('original focal', focal)
     
-    img_wh = (960, 640)
-    focal = [focal * img_wh[0] / W, focal * img_wh[1] / H]
-    print('porcessed focal', focal)
+    # img_wh = (960, 640)
+    focal = [focal, focal]
+    # print('porcessed focal', focal)
 
     # Step 2: correct poses
     poses = np.concatenate([poses[..., 1:2], -poses[..., :1], poses[..., 2:4]], -1)
@@ -179,16 +187,13 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
     bounds /= scale_factor
     poses[..., 3] /= scale_factor
 
-    
 
-    w, h = img_wh
-
-
-    for idx, img in enumerate(images):
+    for _, idx in enumerate(images.keys()):
         c2w = torch.eye(4).float()
         c2w[:3] = torch.FloatTensor(poses[idx])
         w2c = torch.inverse(c2w)
         
+        w, h = Image.open(BytesIO(images[idx].numpy().tobytes())).size
         # normalized the intr
         fx = focal[0]
         fy = focal[1]
@@ -200,7 +205,7 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
         saved_fy = fy / h
         saved_cx = cx / w
         saved_cy = cy / h
-        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 0.0, 0.0]
+        camera = [saved_fx, saved_fy, saved_cx, saved_cy, bounds[idx, 0], bounds[idx, 1]]
 
         camera.extend(w2c[:3].flatten().tolist())
         cameras.append(np.array(camera))

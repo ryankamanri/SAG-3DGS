@@ -73,8 +73,11 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
         Int64[Tensor, " target_view"],  # indices for target views
     ]:
         if not scene.startswith("dtu"): # 
-            # TODO: handle other test dataset and return
-            pass
+            scene_name = scene.split("_")[1]
+            return (
+                torch.tensor(self.test_pairs[f"{scene_name}_train"]), 
+                torch.tensor(self.test_pairs[f"{scene_name}_test"])
+            )
         
         # DTU
         image_count = len(self.metas)

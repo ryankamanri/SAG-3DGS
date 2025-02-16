@@ -37,11 +37,8 @@ dataset:
   name: dtu
   image_shape: [512, 640]
   roots: [datasets/dtu]
-  near: 2.125
-  far: 4.525
   baseline_scale_bounds: false
   make_baseline_1: false
-  test_times_per_scene: 4
   skip_bad_shape: false
 
 test:

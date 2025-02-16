@@ -107,7 +107,7 @@ class CasMVSNetModule(nn.Module):
         depth_values = depth_values.flip(dims=(2,)) # start from near to far.
         return proj_mat, depth_values
         
-    def forward(self, imgs, extrinsics, intrinsics, nears, fars):
+    def forward(self, imgs, extrinsics, intrinsics, nears, fars, is_trainning: bool):
         proj_mat, depth_values = self.preprocess(imgs, extrinsics, intrinsics, nears, fars)
         b, v, c, h, w = imgs.shape
         
@@ -119,11 +119,13 @@ class CasMVSNetModule(nn.Module):
         backbone_photometric_confidences = []
         # for every reference image, the mvsnet will generate a depth map and a photometric confidence map
         for vi in range(v):
-            with torch.no_grad(): # necessary to reduce the memory
-                pretrained_outputs = self.pretrained_cas_mvsnet(imgs, proj_mat, depth_values[:, vi, :]) # depth and photometric_confidence
-            pretrained_depths_est.append(pretrained_outputs["depth"])
-            pretrained_photometric_confidences.append(pretrained_outputs["photometric_confidence"])
-            
+            pretrained_outputs = {}
+            if is_trainning:
+                with torch.no_grad(): # necessary to reduce the memory
+                    pretrained_outputs = self.pretrained_cas_mvsnet(imgs, proj_mat, depth_values[:, vi, :]) # depth and photometric_confidence
+                pretrained_depths_est.append(pretrained_outputs["depth"])
+                pretrained_photometric_confidences.append(pretrained_outputs["photometric_confidence"])
+                
             if self.use_backbone:
                 backbone_outputs = self.backbone_cas_mvsnet(imgs, proj_mat, depth_values[:, vi, :])
             else:
@@ -138,9 +140,11 @@ class CasMVSNetModule(nn.Module):
             for stage in proj_mat:
                 proj_mat[stage] = proj_mat[stage].roll(dims=1, shifts=-1)
         
-        with torch.no_grad():            
-            vertices, vertices_color = generate_point_cloud_from_depth_maps(imgs, extrinsics, intrinsics, pretrained_depths_est, pretrained_photometric_confidences)
-        
+        vertices, vertices_color = [], []
+        if is_trainning:
+            with torch.no_grad():            
+                vertices, vertices_color = generate_point_cloud_from_depth_maps(imgs, extrinsics, intrinsics, pretrained_depths_est, pretrained_photometric_confidences)
+            
         prob_vertices = generate_depth_map_based_point_cloud(backbone_depths_est, extrinsics, intrinsics)
         
         if False:
