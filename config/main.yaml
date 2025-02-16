@@ -17,6 +17,8 @@ mode: train
 
 dataset:
   overfit_to_scene: null
+  train_times_per_scene: 4
+  test_times_per_scene: 1
 
 data_loader:
   # Avoid having to spin up new processes to print out visualizations.
@@ -69,7 +71,7 @@ test:
   save_video: false
   fine_tune: false
   fine_tune_cfg:
-    fine_tune_steps: 10000
+    fine_tune_steps: 2000
     means_lr: 2.e-5
     quaternion_lr: 2.e-5
     scale_lr: 1.e-5

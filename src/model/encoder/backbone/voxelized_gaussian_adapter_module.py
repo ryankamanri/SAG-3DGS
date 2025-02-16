@@ -78,13 +78,20 @@ class BoundingBox:
         self.size = (max_point - min_point).max(dim=-1).values # (B)
         pass
     
-    def compute_voxel_center(self, coordinates: torch.Tensor, voxel_size: int, batch: int):
+    def transform_ndc(self, voxel_center: torch.Tensor, batch: int, xyz_shape: tuple):
+        return (voxel_center - self.origin[batch].view(*xyz_shape)) / self.size[batch]
+    
+    def transform_from_ndc(self, ndc: torch.Tensor, batch: int, xyz_shape: tuple):
+        return ndc * self.size[batch] + self.origin[batch].view(*xyz_shape)
+    
+    def compute_ndc(self, coordinates: torch.Tensor, voxel_size: int):
         """
-        ### Mapping cooordinates to voxel center with origin `0`.
-        mapping (0, 0, 0) -> o
-                (S-1, S-1, S-1) -> s - o
-                (S, S, S) -> s + o
+        ### Mapping cooordinates to normalized voxel center with origin `0` and length `1`.
+        mapping (0, 0, 0) -> o',
+                (S-1, S-1, S-1) -> 1 - o',
+                (S, S, S) -> 1 + o'
                 
+        note that o' is normalized o.
         
         input:
             `coordinates`: coordinates with shape [N, 3] int
@@ -92,30 +99,23 @@ class BoundingBox:
         output:
             voxel center with shape [N, 3] float
         """
-        return (coordinates / voxel_size * self.size[batch]) + (self.size[batch] / 2 / voxel_size)
+        return (coordinates / voxel_size) + (0.5 / voxel_size)
     
-    def compute_voxel_indices(self, voxel_center: torch.Tensor, voxel_size: int, batch: int):
+    def compute_voxel_indices(self, ndc: torch.Tensor, voxel_size: int):
         """
-        ### The inverse function of `compute_voxel_center` with origin `0`
-        mapping (0, 0, 0) <- o (+-o)
-                (S-1, S-1, S-1) <- s - o (+-o)
-                (S, S, S) <- s + o (+-o)
+        ### The inverse function of `compute_ndc` with origin `0`
+        mapping (0, 0, 0) <- o' (+-o'),
+                (S-1, S-1, S-1) <- 1 - o' (+-o'),
+                (S, S, S) <- 1 + o' (+-o')
         
         input:
-            `voxel_center`: voxel center with shape [N, 3] float
+            `ndc`: voxel center with shape [N, 3] float
             
         output:
             coordinates with shape [N, 3] int
         """
-        return ((voxel_center - (self.size[batch] / 2 / voxel_size)) * voxel_size / self.size[batch]).round().int()
+        return ((ndc - (0.5 / voxel_size)) * voxel_size).round().int()
     
-    def compute_local_coordinates_offset(self, voxel_size: int, batch: int):
-        """
-        ### compute the offset from global coordinates (origin `0`) to local coordinates (origin `self.origin`)
-        if add the offset, it means switch from local coordinates to global coordinates (l2g), 
-        if minus the offset, it means switch from global coordinates to local coordinates (g2l).
-        """
-        return ((self.origin[batch]) * voxel_size / self.size[batch]).int()
 
     pass
 
@@ -124,8 +124,8 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         super().__init__()
         self.input_dim = input_dim
         
-        self.delta_means_activation = lambda x, bbox, voxel_size: (torch.sigmoid(x) - 0.5) * (bbox.size / voxel_size)
-        self.scaling_activation = lambda x, bbox, voxel_size: torch.sigmoid(x) * (bbox.size / voxel_size)
+        self.delta_means_activation = lambda x, voxel_size: (torch.sigmoid(x) - 0.5) / voxel_size
+        self.scaling_activation = lambda x, voxel_size: torch.sigmoid(x) / voxel_size
         self.quaternion_activation = lambda x: x
         self.opacity_activation = lambda x: torch.sigmoid(x)
         self.color_activation = lambda x: RGB2SH(torch.sigmoid(x))
@@ -152,7 +152,7 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
     
 
         
-    def forward(self, feature: torch.Tensor, bbox: BoundingBox, voxel_size: int):
+    def forward(self, feature: torch.Tensor, voxel_size: int):
         # input / output feature (N, C)
         delta_means = self.delta_means_predictor(feature)
         quaternion = self.quaternion_predictor(feature)
@@ -164,9 +164,9 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         shs_d4 = self.shs_d4_predictor(feature)
         
         return torch.cat((
-            self.delta_means_activation(delta_means, bbox, voxel_size), 
+            self.delta_means_activation(delta_means, voxel_size), 
             self.quaternion_activation(quaternion), 
-            self.scaling_activation(scale, bbox, voxel_size), 
+            self.scaling_activation(scale, voxel_size), 
             self.opacity_activation(opacity), 
             self.color_activation(shs_d1), 
             self.shs_d2_activation(shs_d2), 
@@ -270,12 +270,12 @@ def create_gaussians_from_features(gaussian_features: torch.Tensor, coordinates:
         extrinsic: [V, 4, 4]
         far: 1
     """
-    local_coordinates_offset = bbox.compute_local_coordinates_offset(voxel_size, batch)
-    voxel_center = bbox.compute_voxel_center(coordinates + local_coordinates_offset, voxel_size, batch).permute(1, 0) # (3, N)
+    voxel_center = bbox.compute_ndc(coordinates.permute(1, 0), voxel_size)
     b, n, dim, d_sh = 1, coordinates.shape[0], 3, SH_DEGREE ** 2
     
-    means: torch.Tensor = gaussian_features[SLICE_DELTA_MEANS] + voxel_center # (3, N)
-    scales: torch.Tensor = gaussian_features[SLICE_SCALE]
+    # convert means and scales from ndc space to real world.
+    means: torch.Tensor = bbox.transform_from_ndc(gaussian_features[SLICE_DELTA_MEANS] + voxel_center, batch, xyz_shape=(3, 1)) # (3, N)
+    scales: torch.Tensor = gaussian_features[SLICE_SCALE] * bbox.size
     rotations: torch.Tensor = gaussian_features[SLICE_QUATERNION]
     harmonics: torch.Tensor = gaussian_features[SLICE_SHS] # (d^2, N)
     opacities: torch.Tensor = gaussian_features[SLICE_OPACITY] # (1, N)
@@ -376,15 +376,13 @@ def downsample_pcd(
 
     xyz = pcd.xyz_batches[batch_idx][:, :3]
     rgb = pcd.rgb_batches[batch_idx]
-    xyzrgb = torch.cat((xyz, rgb), dim=1)
+    xyz_ndc = bbox.transform_ndc(xyz, batch_idx, xyz_shape=(1, 3))
+    xyzrgb = torch.cat((xyz_ndc, rgb), dim=1)
 
     downsampled_pcd_list = [] 
     
     for voxel_size in voxel_size_list:
-        # move points to default voxel coordinates and execute downsampling
-        local_coordinates_offset = bbox.compute_local_coordinates_offset(voxel_size, batch_idx)
-        voxel_indices = bbox.compute_voxel_indices(xyz, voxel_size, batch_idx)
-        voxel_indices -= local_coordinates_offset
+        voxel_indices = bbox.compute_voxel_indices(xyz_ndc, voxel_size)
         downsampled_xyzrgb, downsampled_voxels = voxel_down_sample(xyzrgb, voxel_indices)
         downsampled_pcd_list.append(torch.cat((downsampled_voxels, downsampled_xyzrgb), dim=1))
     
@@ -408,7 +406,9 @@ def compute_struct_loss(
     downsampled_pcds: list[torch.Tensor], 
     scale_idx: int, 
     local_coordinates: torch.Tensor, 
-    gaussians: EncoderOutput):
+    gaussians: EncoderOutput, 
+    bbox: BoundingBox, 
+    batch: int):
     """
     ### Compute L_struct for a given scale.
     input:
@@ -421,8 +421,9 @@ def compute_struct_loss(
     
     #### Note that assume coordinates contains all points.
     """
+    # Note that Gaussians are no longer in ndc space! we should convert means into ndc space.
     get_opacity = lambda mask: gaussians.opacities[mask.unsqueeze(0)]
-    get_means = lambda mask: gaussians.means[mask.unsqueeze(0)] # (N, 3)
+    get_means = lambda mask: bbox.transform_ndc(gaussians.means[mask.unsqueeze(0)], batch, xyz_shape=(1, 3)) # (N, 3)
     get_color = lambda mask: SH2RGB(gaussians.harmonics[mask.unsqueeze(0)].reshape(-1, 3, SH_DEGREE ** 2)[..., 0])
 
     is_mapped_gaussians, is_mapped_points = isin_3d_coordinates(local_coordinates, downsampled_pcds[scale_idx][:, :3].int(), return_inverse=True)
@@ -529,15 +530,15 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                     batch_idx=batch
                 )
                 
-            prob_pcd_xyz = prob_pcd.vertices[batch].permute(0, 2, 3, 1).reshape(-1, 4)[:, :3] # (N, 3)
-            prob_pcd_xyz_local = prob_pcd_xyz - bbox.origin[batch]
+            prob_pcd_xyz = prob_pcd.vertices[batch, :, :3] # (V, 3, H, W)
+            prob_pcd_xyz_ndc = bbox.transform_ndc(prob_pcd_xyz, batch, xyz_shape=(1, 3, 1, 1))
+            prob_pcd_xyz_ndc_reshaped = prob_pcd_xyz_ndc.permute(0, 2, 3, 1).reshape(-1, 4)[:, :3] # (N, 3)
             max_resolution_voxel_size = self.voxel_size_list[-1]
             max_resolution_prob_pcd, max_resolution_prob_pcd_indices = voxel_down_sample(
-                prob_pcd_xyz_local, 
+                prob_pcd_xyz_ndc_reshaped, 
                 bbox.compute_voxel_indices(
-                    voxel_center=prob_pcd_xyz_local, 
-                    voxel_size=max_resolution_voxel_size, # max resolution 
-                    batch=batch
+                    ndc=prob_pcd_xyz_ndc_reshaped, 
+                    voxel_size=max_resolution_voxel_size # max resolution 
                 )
             )
                 
@@ -560,13 +561,10 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 next_coordinates = local_coordinates[torch.logical_not(is_current_scale)]
                 local_coordinates = local_coordinates[is_current_scale]
                 n, _ = local_coordinates.shape
-                # compute global coordinates
-                offset = bbox.compute_local_coordinates_offset(voxel_size, batch)
-                coordinates = local_coordinates + offset
-                centers: torch.Tensor = bbox.compute_voxel_center(coordinates, voxel_size, batch) # (N, 3)
+                # compute ndc
+                centers_ndc = bbox.compute_ndc(local_coordinates, voxel_size)
                 
-                prob_pcd_xyz = prob_pcd.vertices[batch][:, :3] # (V, 3, H, W)
-                prob_pcd_ijk = bbox.compute_voxel_indices(prob_pcd_xyz, voxel_size, batch) # (V, 3, H, W)
+                prob_pcd_ijk = bbox.compute_voxel_indices(prob_pcd_xyz_ndc, voxel_size) # (V, 3, H, W)
                 
                 # for reduce memory consumption we apply transformer per view
                 merged_feat = torch.zeros(c, n, device=cnn_features.device)
@@ -576,10 +574,10 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         cnn_features=cnn_features[batch, view_slicer], # (V, C, H, W)
                         extrinsics=extrinsics[batch, view_slicer], 
                         intrinsics=intrinsics[batch, view_slicer], 
-                        point_xyz=prob_pcd_xyz[view_slicer], # (V, 3, H, W)
-                        voxel_xyz=centers.transpose(0, 1).unsqueeze(0), # (V, 3, N)
+                        point_xyz=prob_pcd_xyz_ndc[view_slicer], # (V, 3, H, W)
+                        voxel_xyz=centers_ndc.transpose(0, 1).unsqueeze(0), # (V, 3, N)
                         point_ijk=prob_pcd_ijk[view_slicer], 
-                        voxel_ijk=coordinates.transpose(0, 1).unsqueeze(0), # (V, 3, N)
+                        voxel_ijk=local_coordinates.transpose(0, 1).unsqueeze(0), # (V, 3, N)
                         confidences=prob_pcd.vertices_confidence[batch, view_slicer],  # (V, H, W)
                         voxel_length=2 * far / voxel_size, 
                         k=self.patch_size_list[scale_idx]
@@ -592,7 +590,6 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 
                 gaussian_features = self.gaussian_features_predictor(
                     feature=merged_feat, 
-                    bbox=bbox, 
                     voxel_size=voxel_size) # (N, 15)
                 
                 gaussian_features = gaussian_features.transpose(0, 1) # (15, N)
@@ -611,7 +608,9 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         downsampled_pcds=downsampled_pcds, 
                         scale_idx=scale_idx, 
                         local_coordinates=local_coordinates, 
-                        gaussians=current_gaussians
+                        gaussians=current_gaussians, 
+                        bbox=bbox, 
+                        batch=batch
                     )
                     total_existence_loss += existence_loss
                     total_offset_loss += offset_loss / (2 * far / voxel_size * math.sqrt(3)) # devide diagonal length to normalize

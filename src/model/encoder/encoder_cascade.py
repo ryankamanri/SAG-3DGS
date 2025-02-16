@@ -84,11 +84,11 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         normalized_intrinsics : torch.Tensor = context["intrinsics"] # (B, V, 3, 3), or get the origin size image by context["origin_intrinsics"]
         nears, fars = context["near"], context["far"] # (B, V)
         b, v, c, h, w = imgs.shape
-        # crop image to adapt to mvsnet and swin transformer (h and w can be devided by 16)
-        if h % 16 != 0:
-            imgs = imgs[..., :-(h % 16), :]
-        if w % 16 != 0:
-            imgs = imgs[..., :-(w % 16)]
+        # crop image to adapt to mvsnet and swin transformer (h and w can be devided by 32)
+        if h % 32 != 0:
+            imgs = imgs[..., :-(h % 32), :]
+        if w % 32 != 0:
+            imgs = imgs[..., :-(w % 32)]
         b, v, c, h, w = imgs.shape # update h and w
         
         # convert extrinsics c2w -> w2c
@@ -112,7 +112,8 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     ) -> EncoderOutput:
         imgs, extrinsics, intrinsics, nears, fars = self.preprocess(context)
         features = self.feature_extractor(imgs) # (B, V, C, H, W)
-        cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, extrinsics, intrinsics, nears, fars)
+        is_trainning = features.grad_fn != None
+        cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, extrinsics, intrinsics, nears, fars, is_trainning)
         gaussians: EncoderOutput = self.gaussian_adapter_module(features, cas_module_result, extrinsics, intrinsics, nears, fars)
         gaussians.others["cas_module_result"] = cas_module_result
         gaussians.others["nears"] = nears

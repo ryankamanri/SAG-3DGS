@@ -29,7 +29,7 @@ class Metadata(TypedDict):
         `cameras`: camera extrinsics and intrinsics with shape (18).
         
         Note that the structure of cameras is:
-            `Tensor([fx/w, fy/h, cx/w, cy/h, 0.0, 0.0, w2c[0, :], w2c[1, :], w2c[2, :]])`
+            `Tensor([fx/w, fy/h, cx/w, cy/h, near, far, w2c[0, :], w2c[1, :], w2c[2, :]])`
     """
     url: str
     timestamps: Int[Tensor, " camera"]

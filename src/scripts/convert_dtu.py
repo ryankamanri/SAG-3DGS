@@ -104,7 +104,7 @@ def load_images(example_path: Path) -> dict[int, UInt8[Tensor, "..."]]:
     return images_dict
 
 
-def load_metadata(intrinsics, world2cams, images) -> Metadata:
+def load_metadata(intrinsics, world2cams, images, near_fars) -> Metadata:
     timestamps = []
     cameras = []
     url = ""
@@ -125,7 +125,7 @@ def load_metadata(intrinsics, world2cams, images) -> Metadata:
             saved_fy = fy / h
             saved_cx = cx / w
             saved_cy = cy / h
-            camera = [saved_fx, saved_fy, saved_cx, saved_cy, 0.0, 0.0]
+            camera = [saved_fx, saved_fy, saved_cx, saved_cy, near_fars[vid][0], near_fars[vid][1]]
 
             w2c = world2cams[vid]
             camera.extend(w2c[:3].flatten().tolist())
@@ -161,7 +161,7 @@ class ConvertDTU(ConvertDataset):
         intrinsics, world2cams, cam2worlds, near_fars = build_camera_info(
             list(range(49)), INPUT_IMAGE_DIR
         )
-        return load_metadata(intrinsics, world2cams, images)
+        return load_metadata(intrinsics, world2cams, images, near_fars)
     pass
 
 if __name__ == "__main__":

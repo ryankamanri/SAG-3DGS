@@ -1,8 +1,9 @@
+import glob
 from io import BytesIO
 import subprocess
 from pathlib import Path
 from typing import Literal, TypedDict
-
+from torchvision import transforms as T
 import numpy as np
 import torch
 from jaxtyping import Float, Int, UInt8
@@ -25,29 +26,10 @@ INPUT_IMAGE_DIR = Path(args.input_dir)
 OUTPUT_DIR = Path(args.output_dir)
 
 
-
-def read_cam_file(filename):
-    scale_factor = 1.0 / 200
-
-    with open(filename) as f:
-        lines = [line.rstrip() for line in f.readlines()]
-    # extrinsics: line [1,5), 4x4 matrix
-    extrinsic = np.fromstring(" ".join(lines[1:5]), dtype=np.float32, sep=" ")
-    extrinsic = extrinsic.reshape((4, 4))
-    # intrinsics: line [7-10), 3x3 matrix
-    intrinsic = np.fromstring(" ".join(lines[7:10]), dtype=np.float32, sep=" ")
-    intrinsic = intrinsic.reshape((3, 3))
-    # depth_min & depth_interval: line 11
-    depth_min = float(lines[11].split()[0]) * scale_factor
-    depth_max = depth_min + float(lines[11].split()[1]) * 192 * scale_factor
-    near_far = [depth_min, depth_max]
-    return intrinsic, extrinsic, near_far
-
-
 def get_example_keys(stage: Literal["test", "train"]) -> list[str]:
     if stage == "train": return []
 
-    return ["chair", "drums", "ficus", "hotdog", "lego", "materials", "mic", "ship"]
+    return ["scene0101_04", "scene0241_01"]
 
 
 def get_size(path: Path) -> int:
@@ -62,46 +44,50 @@ def load_raw(path: Path) -> UInt8[Tensor, " length"]:
 def load_images(example_path: Path) -> dict[int, UInt8[Tensor, "..."]]:
     """Load JPG images as raw bytes (do not decode)."""
     images_dict = {}
-    for cur_id in range(0, 100):
-        cur_image_name = f"r_{cur_id}.png"
-        img_bin = load_raw(example_path / cur_image_name)
+    
+    cur_id = 0
+    for image_path in example_path.iterdir():
+        cur_image_name = image_path
+        img_bin = load_raw(cur_image_name)
         images_dict[cur_id] = img_bin
-
+        cur_id += 1
+    
     return images_dict
 
 
 def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
     
-    with open(metadata_path) as f:
-        meta = json.load(f)
-    
     timestamps = []
     cameras = []
     url = ""
     vid = 0
-    blender2opencv = np.array([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
-    w, h = 800, 800
+    
+    proj_mat_filename = metadata_path / f'{vid:08d}_cam.txt'
+    
+    intrinsic = np.loadtxt(metadata_path / "intrinsic" / "intrinsic_color.txt").astype(np.float32)[:3,:3]
 
-    for frame in meta["frames"]:
+    for _, idx in enumerate(images.keys()):
         
-        c2w = np.array(frame['transform_matrix']) @ blender2opencv
-        w2c = np.linalg.inv(c2w)
+        w, h = Image.open(BytesIO(images[idx].numpy().tobytes())).size
+        focal = [intrinsic[0, 0], intrinsic[1, 1]]
         
-        focal = 0.5 * 800 / np.tan(0.5 * meta['camera_angle_x'])  # original focal length
-
+        extrinsics = np.loadtxt(metadata_path / "pose" / f"{idx}.txt").astype(np.float32)
+        c2w = torch.eye(4).float()
+        c2w[:3] = torch.FloatTensor(extrinsics[:3])
+        w2c = torch.inverse(c2w)
+        
         # normalized the intr
-        fx = focal
-        fy = focal
+        fx = focal[0]
+        fy = focal[1]
         cx = w / 2
         cy = h / 2
         # w = 2.0 * cx
         # h = 2.0 * cy
-        w, h = Image.open(BytesIO(images[vid].numpy().tobytes())).size
         saved_fx = fx / w
         saved_fy = fy / h
         saved_cx = cx / w
         saved_cy = cy / h
-        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 2.0, 6.0]
+        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 0.0, 0.0]
 
         camera.extend(w2c[:3].flatten().tolist())
         cameras.append(np.array(camera))
@@ -122,10 +108,10 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
 
 class ConvertNeRFSynthetic(ConvertDataset):
     def get_image_dir(self, stage, key):
-        return INPUT_IMAGE_DIR / key / "train"
+        return INPUT_IMAGE_DIR / key / "exported" / "color"
     
     def get_metadeta_dir(self, stage, key):
-        return INPUT_IMAGE_DIR / key / f"transforms_train.json"
+        return INPUT_IMAGE_DIR / key / "exported"
     
     def get_output_dir(self, stage):
         return OUTPUT_DIR / stage

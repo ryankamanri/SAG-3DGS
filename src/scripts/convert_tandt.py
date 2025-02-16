@@ -1,8 +1,9 @@
+import glob
 from io import BytesIO
 import subprocess
 from pathlib import Path
 from typing import Literal, TypedDict
-
+from torchvision import transforms as T
 import numpy as np
 import torch
 from jaxtyping import Float, Int, UInt8
@@ -47,7 +48,7 @@ def read_cam_file(filename):
 def get_example_keys(stage: Literal["test", "train"]) -> list[str]:
     if stage == "train": return []
 
-    return ["chair", "drums", "ficus", "hotdog", "lego", "materials", "mic", "ship"]
+    return ["train", "truck"]
 
 
 def get_size(path: Path) -> int:
@@ -62,46 +63,61 @@ def load_raw(path: Path) -> UInt8[Tensor, " length"]:
 def load_images(example_path: Path) -> dict[int, UInt8[Tensor, "..."]]:
     """Load JPG images as raw bytes (do not decode)."""
     images_dict = {}
-    for cur_id in range(0, 100):
-        cur_image_name = f"r_{cur_id}.png"
-        img_bin = load_raw(example_path / cur_image_name)
+    # cur_id = 0
+    # img_wh = (960, 640)
+    # src_transform = T.Compose([T.Normalize(mean=[0.485, 0.456, 0.406],
+    #                                         std=[0.229, 0.224, 0.225]),
+    #                             ])
+    
+    # for image_path in example_path.iterdir():
+    #     img = Image.open(image_path).convert('RGB')
+    #     img = img.resize(img_wh, Image.LANCZOS)
+    #     transform = T.ToTensor()
+    #     img = transform(img)  # (3, h, w)
+    #     images_dict[cur_id] = src_transform(img)
+    #     cur_id += 1
+    
+    cur_id = 0
+    for image_path in example_path.iterdir():
+        cur_image_name = image_path
+        img_bin = load_raw(cur_image_name)
         images_dict[cur_id] = img_bin
-
+        cur_id += 1
+    
     return images_dict
 
 
 def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
     
-    with open(metadata_path) as f:
-        meta = json.load(f)
-    
     timestamps = []
     cameras = []
     url = ""
     vid = 0
-    blender2opencv = np.array([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
-    w, h = 800, 800
+    
+    proj_mat_filename = metadata_path / f'{vid:08d}_cam.txt'
+    intrinsics, extrinsics, near_far = read_cam_file(proj_mat_filename)
 
-    for frame in meta["frames"]:
+    for _, idx in enumerate(images.keys()):
         
-        c2w = np.array(frame['transform_matrix']) @ blender2opencv
-        w2c = np.linalg.inv(c2w)
+        w, h = Image.open(BytesIO(images[idx].numpy().tobytes())).size
+        focal = [intrinsics[0, 0], intrinsics[1, 1]]
         
-        focal = 0.5 * 800 / np.tan(0.5 * meta['camera_angle_x'])  # original focal length
-
+        c2w = torch.eye(4).float()
+        c2w[:3] = torch.FloatTensor(extrinsics[:3])
+        w2c = torch.inverse(c2w)
+        
         # normalized the intr
-        fx = focal
-        fy = focal
+        fx = focal[0]
+        fy = focal[1]
         cx = w / 2
         cy = h / 2
         # w = 2.0 * cx
         # h = 2.0 * cy
-        w, h = Image.open(BytesIO(images[vid].numpy().tobytes())).size
         saved_fx = fx / w
         saved_fy = fy / h
         saved_cx = cx / w
         saved_cy = cy / h
-        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 2.0, 6.0]
+        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 0.0, 0.0]
 
         camera.extend(w2c[:3].flatten().tolist())
         cameras.append(np.array(camera))
@@ -122,10 +138,10 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
 
 class ConvertNeRFSynthetic(ConvertDataset):
     def get_image_dir(self, stage, key):
-        return INPUT_IMAGE_DIR / key / "train"
+        return INPUT_IMAGE_DIR / key / "images"
     
     def get_metadeta_dir(self, stage, key):
-        return INPUT_IMAGE_DIR / key / f"transforms_train.json"
+        return INPUT_IMAGE_DIR / key / "cams_1"
     
     def get_output_dir(self, stage):
         return OUTPUT_DIR / stage
