@@ -317,6 +317,7 @@ class VoxelToPointTransformer(nn.Module):
         intrinsics: torch.Tensor, 
         point_xyz: torch.Tensor, 
         voxel_xyz: torch.Tensor, 
+        voxel_xyz_origin: torch.Tensor, # match the extrinsics and intrinsics
         point_ijk: torch.Tensor, 
         voxel_ijk: torch.Tensor, 
         confidences: torch.Tensor, 
@@ -340,7 +341,7 @@ class VoxelToPointTransformer(nn.Module):
             cnn_features=cnn_features, 
             extrinsics=extrinsics, 
             intrinsics=intrinsics, 
-            voxel_xyz=voxel_xyz.permute(0, 2, 1), 
+            voxel_xyz=voxel_xyz_origin.permute(0, 2, 1), 
             k=k
         ) # (B, C, V), (B, C, V, K), (B, V, K, 3(bhw))
         

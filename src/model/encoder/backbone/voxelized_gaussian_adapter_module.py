@@ -275,7 +275,7 @@ def create_gaussians_from_features(gaussian_features: torch.Tensor, coordinates:
     
     # convert means and scales from ndc space to real world.
     means: torch.Tensor = bbox.transform_from_ndc(gaussian_features[SLICE_DELTA_MEANS] + voxel_center, batch, xyz_shape=(3, 1)) # (3, N)
-    scales: torch.Tensor = gaussian_features[SLICE_SCALE] * bbox.size
+    scales: torch.Tensor = gaussian_features[SLICE_SCALE] * bbox.size[batch]
     rotations: torch.Tensor = gaussian_features[SLICE_QUATERNION]
     harmonics: torch.Tensor = gaussian_features[SLICE_SHS] # (d^2, N)
     opacities: torch.Tensor = gaussian_features[SLICE_OPACITY] # (1, N)
@@ -576,6 +576,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         intrinsics=intrinsics[batch, view_slicer], 
                         point_xyz=prob_pcd_xyz_ndc[view_slicer], # (V, 3, H, W)
                         voxel_xyz=centers_ndc.transpose(0, 1).unsqueeze(0), # (V, 3, N)
+                        voxel_xyz_origin=bbox.transform_from_ndc(centers_ndc.transpose(0, 1).unsqueeze(0), batch, xyz_shape=(1, 3, 1)), 
                         point_ijk=prob_pcd_ijk[view_slicer], 
                         voxel_ijk=local_coordinates.transpose(0, 1).unsqueeze(0), # (V, 3, N)
                         confidences=prob_pcd.vertices_confidence[batch, view_slicer],  # (V, H, W)
