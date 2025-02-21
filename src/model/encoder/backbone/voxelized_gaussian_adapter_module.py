@@ -532,7 +532,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 
             prob_pcd_xyz = prob_pcd.vertices[batch, :, :3] # (V, 3, H, W)
             prob_pcd_xyz_ndc = bbox.transform_ndc(prob_pcd_xyz, batch, xyz_shape=(1, 3, 1, 1))
-            prob_pcd_xyz_ndc_reshaped = prob_pcd_xyz_ndc.permute(0, 2, 3, 1).reshape(-1, 4)[:, :3] # (N, 3)
+            prob_pcd_xyz_ndc_reshaped = prob_pcd_xyz_ndc.permute(0, 2, 3, 1).reshape(v*h*w, 3) # (N, 3)
             max_resolution_voxel_size = self.voxel_size_list[-1]
             max_resolution_prob_pcd, max_resolution_prob_pcd_indices = voxel_down_sample(
                 prob_pcd_xyz_ndc_reshaped, 
