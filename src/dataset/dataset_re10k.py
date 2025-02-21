@@ -117,7 +117,7 @@ class DatasetRE10k(IterableDataset):
                 chunk = self.shuffle(chunk)
 
             # for example in chunk:
-            times_per_scene = self.cfg.test_times_per_scene if self.stage == "test" else self.cfg.train_times_per_scene
+            times_per_scene = self.cfg.train_times_per_scene if self.stage == "train" else self.cfg.test_times_per_scene
             for run_idx in range(int(times_per_scene * len(chunk))):
                 example = chunk[run_idx // times_per_scene]
 
@@ -300,5 +300,5 @@ class DatasetRE10k(IterableDataset):
             min(len(self.index.keys()) *
                 self.cfg.test_times_per_scene, self.cfg.test_len)
             if self.stage == "test" and self.cfg.test_len > 0
-            else len(self.index.keys()) * self.cfg.test_times_per_scene
+            else len(self.index.keys()) * self.cfg.train_times_per_scene
         )

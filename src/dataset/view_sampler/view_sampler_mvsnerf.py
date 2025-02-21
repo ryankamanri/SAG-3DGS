@@ -75,8 +75,8 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
         if not scene.startswith("dtu"): # 
             scene_name = scene.split("_")[1]
             return (
-                torch.tensor(self.test_pairs[f"{scene_name}_train"]), 
-                torch.tensor(self.test_pairs[f"{scene_name}_test"])
+                (torch.tensor(self.test_pairs[f"{scene_name}_train"]))[:self.num_context_views], 
+                (torch.tensor(self.test_pairs[f"{scene_name}_test"]))[:self.num_target_views]
             )
         
         # DTU

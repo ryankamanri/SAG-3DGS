@@ -42,5 +42,4 @@ dataset:
   skip_bad_shape: false
 
 test:
-  eval_time_skip_steps: 5
   compute_scores: true

@@ -39,17 +39,17 @@ data_loader:
     seed: 3456
 
 optimizer:
-  lr: 2.e-5
+  lr: 2.e-4
   warm_up_steps: 2000
   cosine_lr: true
-  delta_means_lr: 2.e-5
-  quaternion_lr: 2.e-5
-  scale_lr: 1.e-5
-  opacity_lr: 5.e-5
-  shs_d1_lr: 5.e-5
-  shs_d2_lr: 1.e-5
-  shs_d3_lr: 2.e-6
-  shs_d4_lr: 4.e-7
+  delta_means_lr: 2.e-4
+  quaternion_lr: 2.e-4
+  scale_lr: 1.e-4
+  opacity_lr: 5.e-4
+  shs_d1_lr: 5.e-4
+  shs_d2_lr: 1.e-4
+  shs_d3_lr: 2.e-5
+  shs_d4_lr: 4.e-6
 
 checkpointing:
   load: null
