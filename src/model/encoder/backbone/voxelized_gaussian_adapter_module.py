@@ -403,18 +403,18 @@ def compute_max_scale_voxel_existence_coordinates_by_pcd(max_downsampled_pcd: to
 
 
 def compute_struct_loss(
-    downsampled_pcds: list[torch.Tensor], 
+    downsampled_pcd: torch.Tensor, 
     scale_idx: int, 
     local_coordinates: torch.Tensor, 
     gaussians: EncoderOutput, 
+    voxel_size_list: list[int], 
     bbox: BoundingBox, 
     batch: int):
     """
     ### Compute L_struct for a given scale.
     input:
-        downsampled_pcds: [n1, 6(iiixyzrgb)] * 3
-        classified_pcds: [n2, 6(iiixyzrgb)] * 3
-        coordinates: [N, 3]
+        downsampled_pcd: [n1, 6(iiixyzrgb)]
+        local_coordinates: [N, 3]
         
     output:
         existence_loss, offset_loss, color_loss
@@ -426,21 +426,32 @@ def compute_struct_loss(
     get_means = lambda mask: bbox.transform_ndc(gaussians.means[mask.unsqueeze(0)], batch, xyz_shape=(1, 3)) # (N, 3)
     get_color = lambda mask: SH2RGB(gaussians.harmonics[mask.unsqueeze(0)].reshape(-1, 3, SH_DEGREE ** 2)[..., 0])
 
-    is_mapped_gaussians, is_mapped_points = isin_3d_coordinates(local_coordinates, downsampled_pcds[scale_idx][:, :3].int(), return_inverse=True)
+    is_mapped_voxels, is_mapped_points = isin_3d_coordinates(local_coordinates, downsampled_pcd[:, :3].int(), return_inverse=True)
     
     # compute existence loss, offset loss and color loss
     existence_loss, existence_n = 0., 0
     
     # for case 2
-    existence_loss += (1. - get_opacity(is_mapped_gaussians)).sum()
-    existence_n += is_mapped_gaussians.sum()
+    # Apply a "soft regression loss," 
+    # i.e., a Gaussian opacity of 1 for voxels where the point is present and 0 for voxels where the point is absent, 
+    # and set the loss based on the distance weight.
+    is_empty_voxels = torch.logical_not(is_mapped_voxels)
     
-    predicted_means: torch.Tensor = get_means(is_mapped_gaussians)
+    # Due to the characteristics of LoD, for non-minimum resolution voxels, 
+    # the distance from the voxel to the nearest point can be estimated based on the voxel size. 
+    # Because there must be a voxel next to the voxel, we estimate that the distance is voxel length.
+    dist_weight = voxel_size_list[0] / voxel_size_list[scale_idx]
+    
+    existence_loss += (1. - get_opacity(is_mapped_voxels)).sum()
+    existence_loss += (get_opacity(is_empty_voxels) * dist_weight ** 2).sum()
+    existence_n += is_mapped_voxels.numel()
+    
+    predicted_means: torch.Tensor = get_means(is_mapped_voxels)
         
-    predicted_color = get_color(is_mapped_gaussians)
+    predicted_color = get_color(is_mapped_voxels)
     
-    offset_loss = (downsampled_pcds[scale_idx][is_mapped_points, 3:6] - predicted_means).norm(dim=1).sum() / math.sqrt(3)
-    color_loss = (downsampled_pcds[scale_idx][is_mapped_points, 6:] - predicted_color).norm(p=1, dim=1).sum() / 3
+    offset_loss = (downsampled_pcd[is_mapped_points, 3:6] - predicted_means).norm(dim=1).sum() / math.sqrt(3)
+    color_loss = (downsampled_pcd[is_mapped_points, 6:] - predicted_color).norm(p=1, dim=1).sum() / 3
     offset_n = color_n = is_mapped_points.sum()
     
     # loss normalization
@@ -464,7 +475,9 @@ def identify_is_current_scale(point_coordinates: torch.Tensor, local_coordinates
         point_coordinates: Tensor(N1, 3(iii))
         local_coordinates: Tensor(N2, 3)
         
-    output: mask Tensor(N2) with type `bool`
+    output: 
+        logical_not(multi_points_mask): Tensor(N2) with type `bool`, which is `True` if <= 1 points inside the voxel
+        unique_point_mask: Tensor(N1) with type `bool`, which is `True` if matched the current scale voxel (no other point in the same voxel).
     """
     # use int64 to avoid data overflow
     point_coordinates = point_coordinates.long()
@@ -475,11 +488,13 @@ def identify_is_current_scale(point_coordinates: torch.Tensor, local_coordinates
     
     has_point_coordinates_flat, counts = point_coordinates_flat.unique(return_counts=True) # (N3)
     
-    have_points_coordinates_flat = has_point_coordinates_flat[counts > 1]
+    multi_points_coordinates_flat = has_point_coordinates_flat[counts > 1]
+    single_point_coordinates_flat = has_point_coordinates_flat[counts == 1]
     
-    isin_mask = torch.isin(voxel_coordinates_flat, have_points_coordinates_flat) # (N2) True if > 1 points inside
+    multi_points_mask = torch.isin(voxel_coordinates_flat, multi_points_coordinates_flat) # (N2) True if > 1 points inside
+    unique_point_mask = torch.isin(point_coordinates_flat, single_point_coordinates_flat) # (N1) True if no other point in the same voxel.
     
-    return torch.logical_not(isin_mask) # (N2) True if <= 1 points inside
+    return torch.logical_not(multi_points_mask), unique_point_mask
 
 class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
 
@@ -498,7 +513,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
     def configure_optimizers(self, cfg):
         return self.gaussian_features_predictor.configure_optimizers(cfg)
         
-    def forward(self, cnn_features: torch.Tensor, cas_module_result: CasMVSNetModuleResult, extrinsics: torch.Tensor, intrinsics: torch.Tensor, nears: torch.Tensor, fars: torch.Tensor):
+    def forward(self, imgs: torch.Tensor, cnn_features: torch.Tensor, cas_module_result: CasMVSNetModuleResult, extrinsics: torch.Tensor, intrinsics: torch.Tensor, nears: torch.Tensor, fars: torch.Tensor):
         b, v, c, h, w = cnn_features.shape
         far = fars[0, 0]
         is_trainning = cnn_features.grad_fn != None
@@ -522,7 +537,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
             gaussians = empty_encoder_output(d_sh=SH_DEGREE ** 2)
             gaussians.others["scales"] = torch.zeros(b, 0, 3, device=cnn_features.device)
             
-            if is_trainning:
+            if False:
                 downsampled_pcds = downsample_pcd(
                     pcd=cas_module_result.registed_pcd, 
                     voxel_size_list=self.voxel_size_list, 
@@ -532,15 +547,16 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 
             prob_pcd_xyz = prob_pcd.vertices[batch, :, :3] # (V, 3, H, W)
             prob_pcd_xyz_ndc = bbox.transform_ndc(prob_pcd_xyz, batch, xyz_shape=(1, 3, 1, 1))
-            prob_pcd_xyz_ndc_reshaped = prob_pcd_xyz_ndc.permute(0, 2, 3, 1).reshape(-1, 4)[:, :3] # (N, 3)
+            prob_pcd_xyzrgb_ndc = torch.cat((prob_pcd_xyz_ndc, imgs[batch]), dim=1) # (V, 6(xyzrgb), H, W)
+            prob_pcd_xyzrgb_ndc_reshaped = prob_pcd_xyzrgb_ndc.permute(0, 2, 3, 1).reshape(v*h*w, 6) # (N, 6)
             max_resolution_voxel_size = self.voxel_size_list[-1]
-            max_resolution_prob_pcd, max_resolution_prob_pcd_indices = voxel_down_sample(
-                prob_pcd_xyz_ndc_reshaped, 
+            max_resolution_prob_pcd_xyzrgb, max_resolution_prob_pcd_indices = voxel_down_sample(
+                prob_pcd_xyzrgb_ndc_reshaped, 
                 bbox.compute_voxel_indices(
-                    ndc=prob_pcd_xyz_ndc_reshaped, 
+                    ndc=prob_pcd_xyzrgb_ndc_reshaped[:, :3], 
                     voxel_size=max_resolution_voxel_size # max resolution 
                 )
-            )
+            ) # (N', 6), (N', 3)
                 
             for scale_idx in range(self.voxel_size_count):
                 # TODO: Create multi-scale voxel according to points.
@@ -553,7 +569,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 
                 point_coordinates = max_resolution_prob_pcd_indices * voxel_size // max_resolution_voxel_size
                 
-                is_current_scale = identify_is_current_scale(
+                is_current_scale, is_unique_point = identify_is_current_scale(
                     point_coordinates=point_coordinates, 
                     local_coordinates=local_coordinates
                 )
@@ -604,12 +620,16 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 )
                 
                 if is_trainning:
+                    downsampled_xyzrgb = max_resolution_prob_pcd_xyzrgb[is_unique_point]
+                    downsampled_ijk = point_coordinates[is_unique_point]
+                    downsampled_pcd = torch.cat((downsampled_ijk, downsampled_xyzrgb), dim=1) # (N', 9(ijkxyzrgb))
                     # compute losses
                     existence_loss, offset_loss, color_loss = compute_struct_loss(
-                        downsampled_pcds=downsampled_pcds, 
+                        downsampled_pcd=downsampled_pcd, 
                         scale_idx=scale_idx, 
                         local_coordinates=local_coordinates, 
                         gaussians=current_gaussians, 
+                        voxel_size_list=self.voxel_size_list, 
                         bbox=bbox, 
                         batch=batch
                     )
