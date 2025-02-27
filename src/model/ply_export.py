@@ -75,13 +75,15 @@ def export_ply(
     # Since our axes are swizzled for the spherical harmonics, we only export the DC
     # band.
     harmonics_view_invariant = harmonics[..., 0]
+    harmonics_rest = harmonics[..., 1:].reshape(harmonics.shape[0], -1)
 
-    dtype_full = [(attribute, "f4") for attribute in construct_list_of_attributes(0)]
+    dtype_full = [(attribute, "f4") for attribute in construct_list_of_attributes((harmonics.shape[-1] - 1) * 3)]
     elements = np.empty(means.shape[0], dtype=dtype_full)
     attributes = (
         means.detach().cpu().numpy(),
         torch.zeros_like(means).detach().cpu().numpy(),
         harmonics_view_invariant.detach().cpu().contiguous().numpy(),
+        harmonics_rest.detach().cpu().contiguous().numpy(),
         opacities[..., None].detach().cpu().numpy(),
         scales.log().detach().cpu().numpy(),
         rotations,

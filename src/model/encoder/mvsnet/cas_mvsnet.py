@@ -116,17 +116,11 @@ class CascadeMVSNet(nn.Module):
             self.refine_network = RefineNet()
         self.DepthNet = DepthNet(return_prob_volume=return_prob_volume, return_photometric_confidence=return_photometric_confidence)
 
-    def forward(self, imgs, proj_matrices, depth_values):
-
-        # step 1. feature extraction
-        features = []
-        for nview_idx in range(imgs.size(1)):  #imgs shape (B, N, C, H, W)
-            img = imgs[:, nview_idx]
-            features.append(self.feature(img))
-
+    def backbone(self, features: list, proj_matrices, depth_values, imgs_shape: tuple):
         outputs = {}
         depth, cur_depth = None, None
         cur_period = 1
+        b, v, c, h, w = imgs_shape
         for stage_idx in range(self.num_stage):
             # print("*********************stage{}*********************".format(stage_idx + 1))
             #stage feature, proj_mats, scales
@@ -140,15 +134,15 @@ class CascadeMVSNet(nn.Module):
                 else:
                     cur_depth = depth
                 cur_depth = F.interpolate(cur_depth.unsqueeze(1),
-                                                [img.shape[2]//int(stage_scale), img.shape[3]//int(stage_scale)], mode='bilinear',
+                                                [h//int(stage_scale), w//int(stage_scale)], mode='bilinear',
                                                 align_corners=Align_Corners_Range).squeeze(1)
             else:
                 cur_depth = depth_values
             depth_range_samples, cur_period = get_depth_range_samples(cur_depth=cur_depth,
                                                         cur_period=cur_period, 
                                                         ndepth=self.ndepths[stage_idx],
-                                                        device=img[0].device,
-                                                        shape=[img.shape[0], img.shape[2]//int(stage_scale), img.shape[3]//int(stage_scale)])
+                                                        device=depth_values.device,
+                                                        shape=[b, h//int(stage_scale), w//int(stage_scale)])
 
             outputs_stage = self.DepthNet(stage_idx, features_stage, proj_matrices_stage,
                                           depth_values=depth_range_samples, 
@@ -167,3 +161,23 @@ class CascadeMVSNet(nn.Module):
             outputs["refined_depth"] = refined_depth
 
         return outputs
+    
+    
+    def forward(self, imgs, proj_matrices, depth_values):
+        b, v, c, h, w = imgs.shape
+        # step 1. feature extraction
+        features = []
+        for nview_idx in range(imgs.size(1)):  #imgs shape (B, N, C, H, W)
+            img = imgs[:, nview_idx]
+            features.append(self.feature(img))
+
+        outputs_list = []
+        for vi in range(v):
+            outputs = self.backbone(features, proj_matrices, depth_values[:, vi, :], imgs.shape)
+            outputs_list.append(outputs)
+            # switch to next image
+            features.append(features.pop(0))
+            for stage in proj_matrices:
+                proj_matrices[stage] = proj_matrices[stage].roll(dims=1, shifts=-1)
+        
+        return outputs_list

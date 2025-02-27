@@ -72,6 +72,9 @@ class TestCfg:
     eval_time_skip_steps: int
     fine_tune: bool
     fine_tune_cfg: FineTuneCfg
+    use_network_gui: bool
+    export_ply: bool
+    dataset_verify_path: str
     
 
 
@@ -124,13 +127,14 @@ class FineTuneGaussianWrapper:
     means: nn.Parameter
     scales: nn.Parameter
     rotations: nn.Parameter
-    harmonics: list[nn.Parameter] = []
+    harmonics: list[nn.Parameter]
     opacities: nn.Parameter
     
     def __init__(self, gaussians: EncoderOutput, cfg: FineTuneCfg):
         self.means = nn.Parameter(gaussians.means.clone().requires_grad_(), requires_grad=True)
         self.scales = nn.Parameter(scaling_deactivation(gaussians.scales.clone().requires_grad_()), requires_grad=True)
         self.rotations = nn.Parameter(gaussians.rotations.clone().requires_grad_(), requires_grad=True)
+        self.harmonics = []
         for i in range(SH_DEGREE):
             self.harmonics.append(nn.Parameter(gaussians.harmonics[..., slice_shs_list[i]].clone().requires_grad_(), requires_grad=True))
         self.opacities = nn.Parameter(opacity_deactivation(gaussians.opacities.clone().requires_grad_()), requires_grad=True)

@@ -72,15 +72,18 @@ test:
   fine_tune: false
   fine_tune_cfg:
     fine_tune_steps: 2000
-    means_lr: 2.e-5
-    quaternion_lr: 2.e-5
-    scale_lr: 1.e-5
-    opacity_lr: 5.e-5
-    shs_d1_lr: 5.e-5
-    shs_d2_lr: 1.e-5
-    shs_d3_lr: 2.e-6
-    shs_d4_lr: 4.e-7
+    means_lr: 2.e-3
+    quaternion_lr: 2.e-3
+    scale_lr: 1.e-3
+    opacity_lr: 5.e-3
+    shs_d1_lr: 5.e-3
+    shs_d2_lr: 1.e-3
+    shs_d3_lr: 2.e-4
+    shs_d4_lr: 4.e-5
     lambda_dssim: 0.2
+  use_network_gui: false
+  export_ply: false
+  dataset_verify_path: overwrite_with_path_to_dataset
 
 seed: 111123
 

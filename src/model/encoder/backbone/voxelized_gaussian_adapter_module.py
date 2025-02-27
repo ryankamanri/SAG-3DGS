@@ -596,7 +596,8 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         point_ijk=prob_pcd_ijk[view_slicer], 
                         voxel_ijk=local_coordinates.transpose(0, 1).unsqueeze(0), # (V, 3, N)
                         confidences=prob_pcd.vertices_confidence[batch, view_slicer],  # (V, H, W)
-                        voxel_length=2 * far / voxel_size, 
+                        # Note: `9.05` is `2 * far` of DTU dataset(`2 * far` is the original length of voxel space). we set it here because we forgot to correct it during trainning.
+                        voxel_length=torch.tensor(9.05 / voxel_size, device=cnn_features.device), 
                         k=self.patch_size_list[scale_idx]
                     ) # (V, C, N)
                     merged_feat += voxel_feature.squeeze(0) # (c, n)
@@ -634,7 +635,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         batch=batch
                     )
                     total_existence_loss += existence_loss
-                    total_offset_loss += offset_loss / (2 * far / voxel_size * math.sqrt(3)) # devide diagonal length to normalize
+                    total_offset_loss += offset_loss / (1 / voxel_size * math.sqrt(3)) # devide diagonal length to normalize
                     total_color_loss += color_loss
                 
                 # Append current gaussians

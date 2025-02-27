@@ -92,5 +92,6 @@ def apply_crop_shim(example: AnyExample, shape: tuple[int, int]) -> AnyExample:
     return {
         **example,
         "context": apply_crop_shim_to_views(example["context"], shape),
+        "fine_tune": apply_crop_shim_to_views(example["fine_tune"], shape) if example["fine_tune"] != {} else {},
         "target": apply_crop_shim_to_views(example["target"], shape),
     }
