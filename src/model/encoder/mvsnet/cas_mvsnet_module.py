@@ -117,28 +117,29 @@ class CasMVSNetModule(nn.Module):
         pretrained_photometric_confidences = []
         backbone_depths_est = []
         backbone_photometric_confidences = []
+        
+        pretrained_outputs_list = []
+        if is_trainning:
+            with torch.no_grad(): # necessary to reduce the memory
+                pretrained_outputs_list = self.pretrained_cas_mvsnet(imgs, proj_mat, depth_values) # depth and photometric_confidence
+        
+        if self.use_backbone:
+            backbone_outputs_list = self.backbone_cas_mvsnet(imgs, proj_mat, depth_values)
+        else:
+            backbone_outputs_list = pretrained_outputs_list
+            
         # for every reference image, the mvsnet will generate a depth map and a photometric confidence map
         for vi in range(v):
-            pretrained_outputs = {}
             if is_trainning:
-                with torch.no_grad(): # necessary to reduce the memory
-                    pretrained_outputs = self.pretrained_cas_mvsnet(imgs, proj_mat, depth_values[:, vi, :]) # depth and photometric_confidence
+                pretrained_outputs = pretrained_outputs_list[vi]
                 pretrained_depths_est.append(pretrained_outputs["depth"])
                 pretrained_photometric_confidences.append(pretrained_outputs["photometric_confidence"])
                 
-            if self.use_backbone:
-                backbone_outputs = self.backbone_cas_mvsnet(imgs, proj_mat, depth_values[:, vi, :])
-            else:
-                backbone_outputs = pretrained_outputs
-            
+            backbone_outputs = backbone_outputs_list[vi]
             backbone_depths_est.append(backbone_outputs["depth"])
             backbone_photometric_confidences.append(backbone_outputs["photometric_confidence"])
-            result.ref_view_result_list.append(ReferenceViewResult(imgs[:, vi], pretrained_outputs, backbone_outputs))
             
-            # switch to next image
-            imgs = imgs.roll(dims=1, shifts=-1)
-            for stage in proj_mat:
-                proj_mat[stage] = proj_mat[stage].roll(dims=1, shifts=-1)
+            result.ref_view_result_list.append(ReferenceViewResult(imgs[:, vi], pretrained_outputs, backbone_outputs))
         
         vertices, vertices_color = [], []
         if is_trainning:

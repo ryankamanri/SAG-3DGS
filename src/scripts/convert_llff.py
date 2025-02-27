@@ -162,6 +162,8 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
     vid = 0
     blender2opencv = np.array([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
     
+    trans1 = np.array([[-1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, -1]])
+
     poses_bounds = np.load(os.path.join(metadata_path, 'poses_bounds.npy'))  # (N_images, 17)
     image_paths = sorted(glob.glob(os.path.join(metadata_path, 'images/*')))
     # load full resolution image then resize
@@ -179,24 +181,30 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
 
     # Step 2: correct poses
     poses = np.concatenate([poses[..., 1:2], -poses[..., :1], poses[..., 2:4]], -1)
-    poses, _ = center_poses(poses, blender2opencv)
+    poses, _ = center_poses(poses[..., :3, :4], blender2opencv)
     
+    ######################
+    # Correct the direction of the z-axis so that the reconstructed Gauss is located in the voxel as much as possible.
+    last_row = np.tile(np.array([0, 0, 0, 1]), (len(poses), 1, 1))  # (N_images, 1, 4)
+    poses = np.concatenate([poses[..., :4], last_row], axis=-2)
+    poses = poses @ trans1
+    ###########################
+
     # Step 3: correct scale so that the nearest depth is at a little more than 1.0
     near_original = bounds.min()
     scale_factor = near_original * 0.75  # 0.75 is the default parameter
     bounds /= scale_factor
     poses[..., 3] /= scale_factor
 
-
     for _, idx in enumerate(images.keys()):
         c2w = torch.eye(4).float()
-        c2w[:3] = torch.FloatTensor(poses[idx])
+        c2w[:3] = torch.FloatTensor(poses[idx, :3, :4])
         w2c = torch.inverse(c2w)
         
         w, h = Image.open(BytesIO(images[idx].numpy().tobytes())).size
         # normalized the intr
-        fx = focal[0]
-        fy = focal[1]
+        fx = focal[0] * w / W
+        fy = focal[1] * h / H
         cx = w / 2
         cy = h / 2
         # w = 2.0 * cx
@@ -205,7 +213,7 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
         saved_fy = fy / h
         saved_cx = cx / w
         saved_cy = cy / h
-        camera = [saved_fx, saved_fy, saved_cx, saved_cy, bounds[idx, 0], bounds[idx, 1]]
+        camera = [saved_fx, saved_fy, saved_cx, saved_cy, bounds[:, 0].min(), bounds[:, 1].max()]
 
         camera.extend(w2c[:3].flatten().tolist())
         cameras.append(np.array(camera))
@@ -223,8 +231,7 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
     }
 
 
-
-class ConvertNeRFSynthetic(ConvertDataset):
+class ConvertLLFF(ConvertDataset):
     def get_image_dir(self, stage, key):
         return INPUT_IMAGE_DIR / key / "images_4"
     
@@ -245,4 +252,4 @@ class ConvertNeRFSynthetic(ConvertDataset):
     pass
 
 if __name__ == "__main__":
-    ConvertNeRFSynthetic().exec()
+    ConvertLLFF().exec()

@@ -296,9 +296,8 @@ class DatasetRE10k(IterableDataset):
         return merged_index
 
     def __len__(self) -> int:
+        # Note: we do not need to consider the situation of validation step due to that we've used `ValidationWrapper(dataset, 1)` as the validation dataset.
         return (
-            min(len(self.index.keys()) *
-                self.cfg.test_times_per_scene, self.cfg.test_len)
-            if self.stage == "test" and self.cfg.test_len > 0
+            len(self.index.keys()) * self.cfg.test_times_per_scene if self.stage == "test"
             else len(self.index.keys()) * self.cfg.train_times_per_scene
         )

@@ -13,7 +13,10 @@ from pytorch_lightning.utilities import rank_zero_only
 from torch import Tensor, nn, optim
 import numpy as np
 import json
+from pathlib import Path
 
+from ..visualization import network_gui
+from .ply_export import export_ply
 from ..dataset.data_module import get_data_shim
 from ..dataset.types import BatchedExample
 from ..dataset import DatasetCfg
@@ -99,7 +102,10 @@ class ModelWrapper(LightningModule):
 
         if self.test_cfg.compute_scores:
             self.test_step_outputs = {}
-            self.time_skip_steps_dict = {"encoder": 0, "decoder": 0}
+            self.time_skip_steps_dict = {"encoder": 0, "decoder": 0, "fine_tune": 0}
+            
+        if self.test_cfg.use_network_gui:
+            network_gui.init()
 
     def training_step(self, batch, batch_idx):
         batch: BatchedExample = self.data_shim(batch)
@@ -164,25 +170,72 @@ class ModelWrapper(LightningModule):
 
     def test_step(self, batch, batch_idx):
         batch: BatchedExample = self.data_shim(batch)
-        b, v, _, h, w = batch["target"]["image"].shape
+        b, v, c, h, w = batch["target"]["image"].shape
         assert b == 1
 
         # Render Gaussians.
         with self.benchmarker.time("encoder"):
-            gaussians = self.encoder(
+            gaussians: EncoderOutput = self.encoder(
                 batch["context"],
                 self.global_step,
                 deterministic=False,
             )
+            
+        print(f"\nRendering scene {batch['scene']} with {gaussians.opacities.shape[1]} gaussians")
+        
+        with self.benchmarker.time("decoder", num_calls=b*v):
+            output = self.decoder.forward(
+                gaussians,
+                batch["target"]["extrinsics"],
+                batch["target"]["intrinsics"],
+                batch["target"]["near"],
+                batch["target"]["far"],
+                (h, w),
+                depth_mode=None,
+            )
+            
+        if self.test_cfg.use_network_gui:
+            render_gaussians = gaussians
+            (scene,) = batch["scene"]
+            dataset_verify_path = (Path(self.test_cfg.dataset_verify_path) / scene.split("_")[1])
+            
+            def render_func(custom_cam: network_gui.MiniCam, scaling_modifier: float):
+                render_gaussians.scales *= scaling_modifier
+                net_image = self.decoder.forward(
+                    gaussians=render_gaussians, 
+                    extrinsics=custom_cam.extrinsics.view(1, 1, 4, 4), # 
+                    # extrinsics=batch["context"]["extrinsics"][0:1, 0:1], # c2w, debug only
+                    intrinsics=custom_cam.normalized_intrinsics.view(1, 1, 3, 3),
+                    near=torch.tensor([[custom_cam.znear]], device=gaussians.means.device),
+                    far=torch.tensor([[custom_cam.zfar]], device=gaussians.means.device),
+                    image_shape=(custom_cam.image_height, custom_cam.image_width),
+                    depth_mode=None,
+                ).color.view(c, custom_cam.image_height, custom_cam.image_width)
+                render_gaussians.scales /= scaling_modifier
+                return net_image
+        
+            network_gui.update(
+                render_func=render_func, 
+                dataset_verify_path=dataset_verify_path, 
+                lock_once=True
+            )
+        
         if self.test_cfg.fine_tune:
+            proc = tqdm(range(self.test_cfg.fine_tune_cfg.fine_tune_steps), desc="fine tune process")
             with torch.inference_mode(False):
                 fine_tune_gaussian_wrapper = FineTuneGaussianWrapper(gaussians, self.test_cfg.fine_tune_cfg)
                 gt = batch["fine_tune"]["image"].clone() # clone to get a non-inference mode tensor.
-                b, v, c, h, w = gt.shape
-                with self.benchmarker.time("fine_tune", num_calls=v):
-                    proc = tqdm(range(self.test_cfg.fine_tune_cfg.fine_tune_steps), desc="fine tune process")
-                    for i in proc:
-                        output = self.decoder.forward(
+                _, v_ft, _, _, _ = gt.shape
+                for i in proc:
+                    if self.test_cfg.use_network_gui:
+                        render_gaussians = fine_tune_gaussian_wrapper.get_gaussians()
+                        network_gui.update(
+                            render_func=render_func, 
+                            dataset_verify_path=dataset_verify_path, 
+                            lock_once=False
+                        )
+                    with self.benchmarker.time("fine_tune"):
+                        output_ft = self.decoder.forward(
                             fine_tune_gaussian_wrapper.get_gaussians(),
                             batch["fine_tune"]["extrinsics"], # TODO: load fine tune images.
                             batch["fine_tune"]["intrinsics"],
@@ -192,8 +245,8 @@ class ModelWrapper(LightningModule):
                             depth_mode=None,
                         )
                         # compute loss
-                        Ll1 = l1_loss(output.color, gt)
-                        l_ssim = 1 - ssim(output.color.view(b*v, c, h, w), gt.view(b*v, c, h, w))
+                        Ll1 = l1_loss(output_ft.color, gt)
+                        l_ssim = 1 - ssim(output_ft.color.view(b*v_ft, c, h, w), gt.view(b*v_ft, c, h, w))
                         proc.set_postfix({
                             'l1': Ll1.item(), 
                             'ssim': 1 - l_ssim.item()
@@ -202,44 +255,117 @@ class ModelWrapper(LightningModule):
                         loss.backward()
                         # optimizer step
                         fine_tune_gaussian_wrapper.step()
-        else:
-            with self.benchmarker.time("decoder", num_calls=v):
-                output = self.decoder.forward(
-                    gaussians,
-                    batch["target"]["extrinsics"],
-                    batch["target"]["intrinsics"],
-                    batch["target"]["near"],
-                    batch["target"]["far"],
-                    (h, w),
-                    depth_mode=None,
+                        pass # with self.benchmarker.time("fine_tune"):
+                    pass # for i in proc:
+                pass # with torch.inference_mode(False):
+            if self.test_cfg.use_network_gui:
+                network_gui.update(
+                    render_func=render_func, 
+                    dataset_verify_path=dataset_verify_path, 
+                    lock_once=True
                 )
+            fine_tuned_gaussians = fine_tune_gaussian_wrapper.get_gaussians()
+            output_ft = self.decoder.forward(
+                fine_tuned_gaussians,
+                batch["target"]["extrinsics"],
+                batch["target"]["intrinsics"],
+                batch["target"]["near"],
+                batch["target"]["far"],
+                (h, w),
+                depth_mode=None,
+            ) # render target frames.
+            pass # if self.test_cfg.fine_tune:
+        
 
-        (scene,) = batch["scene"]
         name = get_cfg()["wandb"]["name"]
+        (scene,) = batch["scene"]
         path = self.test_cfg.output_path / name
         images_prob = output.color[0]
+        images_prob_ft = output_ft.color[0] if self.test_cfg.fine_tune else images_prob
         rgb_gt = batch["target"]["image"][0]
 
         # Save images.
         if self.test_cfg.save_image:
-            for index, color, color_gt in zip(batch["target"]["index"][0], images_prob, rgb_gt):
+            for index, color, color_ft, color_gt in zip(batch["target"]["index"][0], images_prob, images_prob_ft, rgb_gt):
                 save_image(color, path / scene / f"color/{index:0>6}.png")
                 save_image(color_gt, path / scene / f"color/{index:0>6}_gt.png")
+                if self.test_cfg.fine_tune:
+                    save_image(color_ft, path / scene / f"color/{index:0>6}_ft.png")
 
         # save video
         if self.test_cfg.save_video:
+            self.render_video_interpolation(gaussians, batch)
+            if self.test_cfg.fine_tune:
+                self.render_video_interpolation(fine_tuned_gaussians, batch, name="rgb_ft")
             frame_str = "_".join([str(x.item()) for x in batch["context"]["index"][0]])
             save_video(
                 [a for a in images_prob],
                 path / "video" / f"{scene}_frame_{frame_str}.mp4",
             )
 
+        if False:
+            # Draw cameras.
+            cameras = hcat(*render_cameras(batch, 256))
+            self.logger.log_image(
+                "cameras", [prep_image(add_border(cameras))], step=self.global_step
+            )
+
+            if self.encoder_visualizer is not None:
+                for k, image in self.encoder_visualizer.visualize(
+                    batch["context"], self.global_step
+                ).items():
+                    self.logger.log_image(k, [prep_image(image)], step=self.global_step)
+        
+        if False:
+            # Render projections and construct projection image.
+            projections = hcat(*render_projections(
+                                    gaussians,
+                                    256,
+                                    extra_label="(Softmax)",
+                                )[0])
+            self.logger.log_image(
+                "projection",
+                [prep_image(add_border(projections))],
+                step=self.global_step,
+            )
+            if self.test_cfg.fine_tune:
+                projections = hcat(*render_projections(
+                                        fine_tuned_gaussians,
+                                        256,
+                                        extra_label="(Softmax)",
+                                    )[0])
+                self.logger.log_image(
+                    "projection_ft",
+                    [prep_image(add_border(projections))],
+                    step=self.global_step,
+                )
+        
+        if self.test_cfg.export_ply:
+            export_ply(
+                extrinsics=batch["context"]["extrinsics"][0, 0],
+                means=gaussians.means[0],
+                scales=gaussians.scales[0],
+                rotations=gaussians.rotations[0],
+                harmonics=gaussians.harmonics[0],
+                opacities=gaussians.opacities[0],
+                path=path / scene / "gaussians.ply",
+            )
+            if self.test_cfg.fine_tune:
+                export_ply(
+                    extrinsics=batch["context"]["extrinsics"][0, 0],
+                    means=fine_tuned_gaussians.means[0],
+                    scales=fine_tuned_gaussians.scales[0],
+                    rotations=fine_tuned_gaussians.rotations[0],
+                    harmonics=fine_tuned_gaussians.harmonics[0],
+                    opacities=fine_tuned_gaussians.opacities[0],
+                    path=path / scene / "fine_tuned_gaussians.ply",
+                )
+                
+                    
         # compute scores
         if self.test_cfg.compute_scores:
-            if batch_idx < self.test_cfg.eval_time_skip_steps:
-                self.time_skip_steps_dict["encoder"] += 1
-                self.time_skip_steps_dict["decoder"] += v
             rgb = images_prob
+            rgb_ft = images_prob_ft
 
             if f"psnr" not in self.test_step_outputs:
                 self.test_step_outputs[f"psnr"] = []
@@ -247,6 +373,12 @@ class ModelWrapper(LightningModule):
                 self.test_step_outputs[f"ssim"] = []
             if f"lpips" not in self.test_step_outputs:
                 self.test_step_outputs[f"lpips"] = []
+            if f"psnr_ft" not in self.test_step_outputs:
+                self.test_step_outputs[f"psnr_ft"] = []
+            if f"ssim_ft" not in self.test_step_outputs:
+                self.test_step_outputs[f"ssim_ft"] = []
+            if f"lpips_ft" not in self.test_step_outputs:
+                self.test_step_outputs[f"lpips_ft"] = []
 
             self.test_step_outputs[f"psnr"].append(
                 compute_psnr(rgb_gt, rgb).mean().item()
@@ -257,6 +389,22 @@ class ModelWrapper(LightningModule):
             self.test_step_outputs[f"lpips"].append(
                 compute_lpips(rgb_gt, rgb).mean().item()
             )
+            self.test_step_outputs[f"psnr_ft"].append(
+                compute_psnr(rgb_gt, rgb_ft).mean().item()
+            )
+            self.test_step_outputs[f"ssim_ft"].append(
+                compute_ssim(rgb_gt, rgb_ft).mean().item()
+            )
+            self.test_step_outputs[f"lpips_ft"].append(
+                compute_lpips(rgb_gt, rgb_ft).mean().item()
+            )
+            
+            print()
+            print(f"Evaluate scene {batch['scene']}: ")
+            print(f"PSNR(origin/ft): {compute_psnr(rgb_gt, rgb).mean().item()}/{compute_psnr(rgb_gt, rgb_ft).mean().item()}")
+            print(f"SSIM(origin/ft): {compute_ssim(rgb_gt, rgb).mean().item()}/{compute_ssim(rgb_gt, rgb_ft).mean().item()}")
+            print(f"LPIPS(origin/ft): {compute_lpips(rgb_gt, rgb).mean().item()}/{compute_lpips(rgb_gt, rgb_ft).mean().item()}")
+            print()
 
     def on_test_end(self) -> None:
         name = get_cfg()["wandb"]["name"]
@@ -374,10 +522,10 @@ class ModelWrapper(LightningModule):
                 self.logger.log_image(k, [prep_image(image)], step=self.global_step)
 
         # Run video validation step.
-        self.render_video_interpolation(batch)
+        self.render_video_interpolation(gaussians_softmax, batch)
         self.render_video_wobble(batch)
         if self.train_cfg.extended_visualization:
-            self.render_video_interpolation_exaggerated(batch)
+            self.render_video_interpolation_exaggerated(gaussians_softmax, batch)
 
     @rank_zero_only
     def render_video_wobble(self, batch: BatchedExample) -> None:
@@ -405,7 +553,7 @@ class ModelWrapper(LightningModule):
         return self.render_video_generic(batch, trajectory_fn, "wobble", num_frames=60)
 
     @rank_zero_only
-    def render_video_interpolation(self, batch: BatchedExample) -> None:
+    def render_video_interpolation(self, gaussians_prob: EncoderOutput, batch: BatchedExample, name="rgb") -> None:
         _, v, _, _ = batch["context"]["extrinsics"].shape
 
         def trajectory_fn(t):
@@ -429,10 +577,10 @@ class ModelWrapper(LightningModule):
             )
             return extrinsics[None], intrinsics[None]
 
-        return self.render_video_generic(batch, trajectory_fn, "rgb")
+        return self.render_video_generic(gaussians_prob, batch, trajectory_fn, name)
 
     @rank_zero_only
-    def render_video_interpolation_exaggerated(self, batch: BatchedExample) -> None:
+    def render_video_interpolation_exaggerated(self, gaussians_prob: EncoderOutput, batch: BatchedExample) -> None:
         # Two views are needed to get the wobble radius.
         _, v, _, _ = batch["context"]["extrinsics"].shape
         if v != 2:
@@ -469,6 +617,7 @@ class ModelWrapper(LightningModule):
             return extrinsics @ tf, intrinsics[None]
 
         return self.render_video_generic(
+            gaussians_prob, 
             batch,
             trajectory_fn,
             "interpolation_exagerrated",
@@ -479,7 +628,8 @@ class ModelWrapper(LightningModule):
 
     @rank_zero_only
     def render_video_generic(
-        self,
+        self, 
+        gaussians_prob: EncoderOutput, 
         batch: BatchedExample,
         trajectory_fn: TrajectoryFn,
         name: str,
@@ -487,9 +637,6 @@ class ModelWrapper(LightningModule):
         smooth: bool = True,
         loop_reverse: bool = True,
     ) -> None:
-        # Render probabilistic estimate of scene.
-        gaussians_prob = self.encoder(batch["context"], self.global_step, False)
-        # gaussians_det = self.encoder(batch["context"], self.global_step, True)
 
         t = torch.linspace(0, 1, num_frames, dtype=torch.float32, device=self.device)
         if smooth:

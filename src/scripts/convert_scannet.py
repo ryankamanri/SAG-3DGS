@@ -87,7 +87,7 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
         saved_fy = fy / h
         saved_cx = cx / w
         saved_cy = cy / h
-        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 0.0, 0.0]
+        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 1.0, 10.0]
 
         camera.extend(w2c[:3].flatten().tolist())
         cameras.append(np.array(camera))
@@ -106,7 +106,7 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
 
 
 
-class ConvertNeRFSynthetic(ConvertDataset):
+class ConvertScanNet(ConvertDataset):
     def get_image_dir(self, stage, key):
         return INPUT_IMAGE_DIR / key / "exported" / "color"
     
@@ -127,4 +127,4 @@ class ConvertNeRFSynthetic(ConvertDataset):
     pass
 
 if __name__ == "__main__":
-    ConvertNeRFSynthetic().exec()
+    ConvertScanNet().exec()

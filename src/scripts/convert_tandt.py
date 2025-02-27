@@ -63,25 +63,12 @@ def load_raw(path: Path) -> UInt8[Tensor, " length"]:
 def load_images(example_path: Path) -> dict[int, UInt8[Tensor, "..."]]:
     """Load JPG images as raw bytes (do not decode)."""
     images_dict = {}
-    # cur_id = 0
-    # img_wh = (960, 640)
-    # src_transform = T.Compose([T.Normalize(mean=[0.485, 0.456, 0.406],
-    #                                         std=[0.229, 0.224, 0.225]),
-    #                             ])
-    
-    # for image_path in example_path.iterdir():
-    #     img = Image.open(image_path).convert('RGB')
-    #     img = img.resize(img_wh, Image.LANCZOS)
-    #     transform = T.ToTensor()
-    #     img = transform(img)  # (3, h, w)
-    #     images_dict[cur_id] = src_transform(img)
-    #     cur_id += 1
     
     cur_id = 0
     for image_path in example_path.iterdir():
         cur_image_name = image_path
         img_bin = load_raw(cur_image_name)
-        images_dict[cur_id] = img_bin
+        images_dict[int(cur_image_name.stem)] = img_bin
         cur_id += 1
     
     return images_dict
@@ -94,30 +81,29 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
     url = ""
     vid = 0
     
-    proj_mat_filename = metadata_path / f'{vid:08d}_cam.txt'
-    intrinsics, extrinsics, near_far = read_cam_file(proj_mat_filename)
-
     for _, idx in enumerate(images.keys()):
+        
+        proj_mat_filename = metadata_path / f'{idx:08d}_cam.txt'
+        intrinsics, extrinsics, near_far = read_cam_file(proj_mat_filename)
         
         w, h = Image.open(BytesIO(images[idx].numpy().tobytes())).size
         focal = [intrinsics[0, 0], intrinsics[1, 1]]
         
-        c2w = torch.eye(4).float()
-        c2w[:3] = torch.FloatTensor(extrinsics[:3])
-        w2c = torch.inverse(c2w)
+        w2c = torch.eye(4).float()
+        w2c[:3] = torch.FloatTensor(extrinsics[:3]) # the extrinsics is w2c, not c2w.
         
         # normalized the intr
         fx = focal[0]
         fy = focal[1]
-        cx = w / 2
-        cy = h / 2
+        cx = intrinsics[0, 2]
+        cy = intrinsics[1, 2]
         # w = 2.0 * cx
         # h = 2.0 * cy
         saved_fx = fx / w
         saved_fy = fy / h
         saved_cx = cx / w
         saved_cy = cy / h
-        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 0.0, 0.0]
+        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 1.0, 10.0]
 
         camera.extend(w2c[:3].flatten().tolist())
         cameras.append(np.array(camera))
@@ -136,7 +122,7 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
 
 
 
-class ConvertNeRFSynthetic(ConvertDataset):
+class ConvertTanksandTemples(ConvertDataset):
     def get_image_dir(self, stage, key):
         return INPUT_IMAGE_DIR / key / "images"
     
@@ -157,4 +143,4 @@ class ConvertNeRFSynthetic(ConvertDataset):
     pass
 
 if __name__ == "__main__":
-    ConvertNeRFSynthetic().exec()
+    ConvertTanksandTemples().exec()
