@@ -643,4 +643,6 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
         combined_gaussians.others["offset_loss"] = torch.stack(batch_losses[2])
         combined_gaussians.others["color_loss"] = torch.stack(batch_losses[3])
         
+        combined_gaussians.others["bbox"] = bbox
+        
         return combined_gaussians

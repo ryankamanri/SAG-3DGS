@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import time
 from typing import Optional, Protocol, runtime_checkable
 
 import moviepy.editor as mpy
@@ -95,6 +96,9 @@ class ModelWrapper(LightningModule):
         self.decoder = decoder
         self.data_shim = get_data_shim(self.encoder)
         self.losses = nn.ModuleList(losses)
+        
+        # compute time remains
+        self.last_timestamp = time.time()
 
         # This is used for testing.
         self.benchmarker = Benchmarker()
@@ -148,15 +152,20 @@ class ModelWrapper(LightningModule):
             self.global_rank == 0
             and self.global_step % self.train_cfg.print_log_every_n_steps == 0
         ):
+            # compute time remaininging
+            timestamp = time.time()
+            elapsed_seconds_per_step = (timestamp - self.last_timestamp) / self.train_cfg.print_log_every_n_steps
+            self.last_timestamp = timestamp
             print(
+                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}]: "
                 f"train step {self.global_step}; "
                 f"scene = {[x[:20] for x in batch['scene']]}; "
                 f"context = {batch['context']['index'].tolist()}; "
-                f"bound = [{batch['context']['near'].detach().cpu().numpy().mean()} "
-                f"{batch['context']['far'].detach().cpu().numpy().mean()}]; "
+                f"bound = {gaussians.others['bbox'].size.detach().cpu().numpy().mean()}; "
                 f"gaussians = {gaussians.opacities.shape[1]}; "
                 f"loss = [{loss_str}]; "
-                f"total loss = {total_loss:.6f}"
+                f"total loss = {total_loss:.6f}; "
+                f"time remaining(hours) = {((self.trainer.max_steps - self.global_step) * elapsed_seconds_per_step / 3600):.2f}"
             )
         self.log("info/near", batch["context"]["near"].detach().cpu().numpy().mean())
         self.log("info/far", batch["context"]["far"].detach().cpu().numpy().mean())
