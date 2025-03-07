@@ -23,7 +23,7 @@ dataset:
 data_loader:
   # Avoid having to spin up new processes to print out visualizations.
   train:
-    num_workers: 10
+    num_workers: 2
     persistent_workers: true
     batch_size: 4
     seed: 1234

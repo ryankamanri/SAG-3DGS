@@ -9,13 +9,13 @@ from ..model.encoder.mvsnet.cas_mvsnet_module import CasMVSNetModuleResult
 from ..dataset.types import BatchedExample
 from ..model.decoder.decoder import DecoderOutput
 from ..model.types import EncoderOutput
-from .loss import Loss
+from .loss import Loss, LossCfg
 
 
 
 @dataclass
-class LossDepthCfg:
-    weight: float
+class LossDepthCfg(LossCfg):
+    apply_before_step: int
     stage1_weight: float
     stage2_weight: float
     stage3_weight: float
@@ -44,6 +44,11 @@ class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
         global_step: int,
     ) -> Float[Tensor, ""]:
         if gaussians.others == {}: return torch.tensor(0., device="cuda")
+        
+        # After the specified step, don't apply the loss.
+        if global_step > self.cfg.apply_before_step:
+            return torch.tensor(0, dtype=torch.float32, device="cuda")
+        
         cas_module_result: CasMVSNetModuleResult = gaussians.others["cas_module_result"]
         nears: torch.Tensor = gaussians.others["nears"] # (B, V)
         fars: torch.Tensor = gaussians.others["fars"]
@@ -59,4 +64,4 @@ class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
             view_idx += 1
         
         loss /= len(cas_module_result.ref_view_result_list)
-        return loss * self.cfg.weight
+        return loss

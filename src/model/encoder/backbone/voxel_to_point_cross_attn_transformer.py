@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from pytorch3d.ops import knn_points
-
+from ....misc.slice_iterator import SliceIterator
 
 def multi_head_voxel_to_point_cross_attention(
     q: torch.Tensor, 
@@ -177,10 +177,11 @@ def nearest_patch(yx: torch.Tensor, hw: torch.Tensor, patch_size=4):
     y, x = yx[..., 0], yx[..., 1] # (B, N)
     h, w = hw[..., 0].float().unsqueeze(-1), hw[..., 1].float().unsqueeze(-1) # (B, 1)
     # clip to a valid space (y in (0, h-1), w in (0, w-1))
-    y[y < 0] = 0
-    y[y > h - 1] = h - 1
-    x[x < 0] = 0
-    x[x > w - 1] = w - 1
+    h_, w_ = h[0, 0], w[0, 0]
+    y.masked_fill_(y < 0, 0)
+    y.masked_fill_(y > h_ - 1, h_ - 1)
+    x.masked_fill_(x < 0, 0)
+    x.masked_fill_(x > w_ - 1, w_ - 1)
     
     # create patch
     patch_arange = torch.arange(patch_size, device=yx.device)
@@ -192,10 +193,10 @@ def nearest_patch(yx: torch.Tensor, hw: torch.Tensor, patch_size=4):
     patch_x = x.unsqueeze(-1).round() + dx # (B, N, ps*ps)
     
     # still clip to a valid space
-    patch_y[patch_y < 0] = 0
-    patch_y[patch_y > h - 1] = h - 1
-    patch_x[patch_x < 0] = 0
-    patch_x[patch_x > w - 1] = w - 1
+    patch_y.masked_fill_(patch_y < 0, 0)
+    patch_y.masked_fill_(patch_y > h_ - 1, h_ - 1)
+    patch_x.masked_fill_(patch_x < 0, 0)
+    patch_x.masked_fill_(patch_x > w_ - 1, w_ - 1)
     
     # stack byx
     byx = torch.stack((
@@ -284,7 +285,8 @@ class VoxelToPointTransformer(nn.Module):
         d_model=192,
         nhead=1,
         no_ffn=False, 
-        ffn_dim_expansion=4,
+        ffn_dim_expansion=4, 
+        max_voxels_foreach_processing=1000000
     ):
         super(VoxelToPointTransformer, self).__init__()
         
@@ -293,6 +295,7 @@ class VoxelToPointTransformer(nn.Module):
         self.d_model = d_model
         self.d_model_pe = d_model // 6
         self.nhead = nhead
+        self.max_voxels_foreach_processing = max_voxels_foreach_processing
 
         self.layers = nn.ModuleList(
             [
@@ -324,57 +327,77 @@ class VoxelToPointTransformer(nn.Module):
         voxel_length: torch.Tensor, 
         k=16
     ):
+        # Note that `B` is number of views.
         # cnn_features: [B, C, H, W]
         # extrinsics: [B, 4, 4]
         # intrinsics: [B, 3, 3]
         # point_xyz: [B, 3, H, W]
-        # voxel_xyz: [B, 3, V]
+        # voxel_xyz: [3, V]
+        # voxel_xyz_origin: [3, V]
         # point_ijk: [B, 3, H, W]
-        # voxel_ijk: [B, 3, V] 
+        # voxel_ijk: [3, V] 
+        # voxel_length: Tensor(1)
         # confidences: [B, H, W]
         b, c, h, w = cnn_features.shape
-        _, _, v = voxel_xyz.shape
+        _, v = voxel_xyz.shape
         assert self.d_model == c
-        assert k == 1 or k == 4 or k == 9 or k == 16 or k == 25 or k == 36 # 1^2 to 6^2
+        assert k == 1 or k == 4 or k == 9 or k == 16 or k == 25 or k == 36 or k == 49 # 1^2 to 6^2
         
-        interpolated_features, knn_features, knn_byx = compute_voxel_interpolate_and_knn_features(
-            cnn_features=cnn_features, 
-            extrinsics=extrinsics, 
-            intrinsics=intrinsics, 
-            voxel_xyz=voxel_xyz_origin.permute(0, 2, 1), 
-            k=k
-        ) # (B, C, V), (B, C, V, K), (B, V, K, 3(bhw))
+        if v == 0: return torch.zeros(c, v, device=cnn_features.device)
         
-        knn_weights = 1.0 / torch.norm(point_xyz[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]] \
-            - voxel_xyz.permute(0, 2, 1).unsqueeze(-2).repeat(1, 1, k, 1), dim=-1) # (B, V, K, 3) -> (B, V, K)
+        # process voxels for multi times if vixel is too much.
+        # and merge feature from all views.
         
-        confidences = confidences[knn_byx[..., 0], knn_byx[..., 1], knn_byx[..., 2]] # (B, V, K)
+        merged_source_slice_list = []
         
-        source = interpolated_features.permute(0, 2, 1) # (B, V, C)
-        target = knn_features.permute(0, 2, 3, 1) # (B, V, K, C)
+        for si in SliceIterator(0, v, self.max_voxels_foreach_processing):
+            vi = si.stop - si.start
+            voxel_xyz_slice, voxel_xyz_origin_slice, voxel_ijk_slice = \
+                voxel_xyz[:, si].unsqueeze(0).repeat(b, 1, 1), \
+                voxel_xyz_origin[:, si].unsqueeze(0).repeat(b, 1, 1), \
+                voxel_ijk[:, si].unsqueeze(0).repeat(b, 1, 1)
+            
         
-        # position encoding
-        source = source + voxel_positional_encoding(voxel_ijk, self.d_model_pe).permute(0, 2, 1)
-        target = target + voxel_positional_encoding(
-            point_ijk[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]].view(b, -1, 3).permute(0, 2, 1), 
-            self.d_model_pe
-        ).permute(0, 2, 1).reshape(b, v, k, c)
-        
-        # Add voxel size encoding
-        voxel_size_encoding = voxel_positional_encoding(
-            ijk=voxel_length.view(1, 1, 1), 
-            d_model=self.d_model // 2
-        )
-        source = source + voxel_size_encoding.permute(0, 2, 1).repeat(b, v, 1)
-        target = target + voxel_size_encoding.permute(0, 2, 1).repeat(b, v*k, 1).view(b, v, k, c)
-        
-
-        for i, layer in enumerate(self.layers):
-            source = layer(
-                source,
-                target,
-                knn_weights, 
-                confidences, 
+            interpolated_features, knn_features, knn_byx = compute_voxel_interpolate_and_knn_features(
+                cnn_features=cnn_features, 
+                extrinsics=extrinsics, 
+                intrinsics=intrinsics, 
+                voxel_xyz=voxel_xyz_origin_slice.permute(0, 2, 1), 
+                k=k
+            ) # (B, C, V), (B, C, V, K), (B, V, K, 3(bhw))
+            
+            knn_weights = 1.0 / torch.norm(point_xyz[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]] \
+                - voxel_xyz_slice.permute(0, 2, 1).unsqueeze(-2).repeat(1, 1, k, 1), dim=-1) # (B, V, K, 3) -> (B, V, K)
+            
+            voxel_based_confidences = confidences[knn_byx[..., 0], knn_byx[..., 1], knn_byx[..., 2]] # (B, V, K)
+            
+            source = interpolated_features.permute(0, 2, 1) # (B, V, C)
+            target = knn_features.permute(0, 2, 3, 1) # (B, V, K, C)
+            
+            # position encoding
+            source = source + voxel_positional_encoding(voxel_ijk_slice, self.d_model_pe).permute(0, 2, 1)
+            target = target + voxel_positional_encoding(
+                point_ijk[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]].view(b, -1, 3).permute(0, 2, 1), 
+                self.d_model_pe
+            ).permute(0, 2, 1).reshape(b, vi, k, c)
+            
+            # Add voxel size encoding
+            voxel_size_encoding = voxel_positional_encoding(
+                ijk=voxel_length.view(1, 1, 1), 
+                d_model=self.d_model // 2
             )
-
-        return source.permute(0, 2, 1) # (B, C, V=Voxels)
+            source = source + voxel_size_encoding.permute(0, 2, 1).repeat(b, vi, 1)
+            target = target + voxel_size_encoding.permute(0, 2, 1).repeat(b, vi*k, 1).view(b, vi, k, c)
+        
+            for i, layer in enumerate(self.layers):
+                source = layer(
+                    source,
+                    target,
+                    knn_weights, 
+                    voxel_based_confidences, 
+                )
+            
+            merged_source_slice_list.append(source.mean(dim=0)) # (SI, C)
+            del source
+        
+        return torch.cat(merged_source_slice_list, dim=0).transpose_(0, 1) # (C, V)

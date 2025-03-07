@@ -74,7 +74,7 @@ def read_cam_file(filename):
 def get_example_keys(stage: Literal["test", "train"]) -> list[str]:
     """ Extracted from: https://github.com/donydchen/matchnerf/blob/main/configs/dtu_meta/val_all.txt """
     keys = []
-    with open(str(SPLIT_LIST_DIR / f"dtu_{stage}.lst"), 'r') as f:
+    with open(str(SPLIT_LIST_DIR / f"dtu_{stage}_all.txt"), 'r') as f:
         scan_xx = f.readline().rstrip() # remove '\n'
         while scan_xx != "":
             keys.append(f"{scan_xx}_train")

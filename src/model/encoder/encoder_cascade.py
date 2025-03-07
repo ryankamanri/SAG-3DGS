@@ -40,6 +40,7 @@ class EncoderCascadeCfg:
     transformer_num_head: int
     no_ffn: bool
     ffn_dim_expansion: int
+    max_voxels_foreach_processing: int
     voxel_size_list: list[int]
     patch_size_list: list[int]
 
@@ -59,14 +60,15 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             )
         
         self.feature_channels = cfg.feature_channels
-        self.feature_extractor = CNNFeatureExtractor(out_channels=self.feature_channels)
+        self.feature_extractor = FeatureNet()
         
         self.transformer = VoxelToPointTransformer(
             num_layers=cfg.transformer_layers, 
             d_model=self.feature_channels, 
             nhead=cfg.transformer_num_head, 
             no_ffn=cfg.no_ffn, 
-            ffn_dim_expansion=cfg.ffn_dim_expansion
+            ffn_dim_expansion=cfg.ffn_dim_expansion, 
+            max_voxels_foreach_processing=cfg.max_voxels_foreach_processing
         )
         
         self.gaussian_adapter_module = VoxelizedGaussianAdapterModule(

@@ -10,12 +10,11 @@ from ..dataset.types import BatchedExample
 from ..misc.nn_module_tools import convert_to_buffer
 from ..model.decoder.decoder import DecoderOutput
 from ..model.types import EncoderOutput
-from .loss import Loss
+from .loss import Loss, LossCfg
 
 
 @dataclass
-class LossLpipsCfg:
-    weight: float
+class LossLpipsCfg(LossCfg):
     apply_after_step: int
 
 
@@ -51,4 +50,4 @@ class LossLpips(Loss[LossLpipsCfg, LossLpipsCfgWrapper]):
             rearrange(image, "b v c h w -> (b v) c h w"),
             normalize=True,
         )
-        return self.cfg.weight * loss.mean()
+        return loss.mean()

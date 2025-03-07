@@ -6,13 +6,12 @@ from torch import Tensor
 from ..dataset.types import BatchedExample
 from ..model.decoder.decoder import DecoderOutput
 from ..model.types import EncoderOutput
-from .loss import Loss
+from .loss import Loss, LossCfg
 
 
 @dataclass
-class LossMseCfg:
-    weight: float
-
+class LossMseCfg(LossCfg):
+    pass
 
 @dataclass
 class LossMseCfgWrapper:
@@ -28,4 +27,4 @@ class LossMse(Loss[LossMseCfg, LossMseCfgWrapper]):
         global_step: int,
     ) -> Float[Tensor, ""]:
         delta = prediction.color - batch["target"]["image"]
-        return self.cfg.weight * (delta**2).mean()
+        return (delta**2).mean()

@@ -130,6 +130,7 @@ class CasMVSNetModule(nn.Module):
             
         # for every reference image, the mvsnet will generate a depth map and a photometric confidence map
         for vi in range(v):
+            pretrained_outputs = {}
             if is_trainning:
                 pretrained_outputs = pretrained_outputs_list[vi]
                 pretrained_depths_est.append(pretrained_outputs["depth"])

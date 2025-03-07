@@ -582,29 +582,23 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 
                 prob_pcd_ijk = bbox.compute_voxel_indices(prob_pcd_xyz_ndc, voxel_size) # (V, 3, H, W)
                 
-                # for reduce memory consumption we apply transformer per view
-                merged_feat = torch.zeros(c, n, device=cnn_features.device)
-                for view_idx in range(v):
-                    view_slicer = slice(view_idx, view_idx + 1)
-                    voxel_feature: torch.Tensor = self.transformer(
-                        cnn_features=cnn_features[batch, view_slicer], # (V, C, H, W)
-                        extrinsics=extrinsics[batch, view_slicer], 
-                        intrinsics=intrinsics[batch, view_slicer], 
-                        point_xyz=prob_pcd_xyz_ndc[view_slicer], # (V, 3, H, W)
-                        voxel_xyz=centers_ndc.transpose(0, 1).unsqueeze(0), # (V, 3, N)
-                        voxel_xyz_origin=bbox.transform_from_ndc(centers_ndc.transpose(0, 1).unsqueeze(0), batch, xyz_shape=(1, 3, 1)), 
-                        point_ijk=prob_pcd_ijk[view_slicer], 
-                        voxel_ijk=local_coordinates.transpose(0, 1).unsqueeze(0), # (V, 3, N)
-                        confidences=prob_pcd.vertices_confidence[batch, view_slicer],  # (V, H, W)
-                        # Note: `9.05` is `2 * far` of DTU dataset(`2 * far` is the original length of voxel space). we set it here because we forgot to correct it during trainning.
-                        voxel_length=torch.tensor(9.05 / voxel_size, device=cnn_features.device), 
-                        k=self.patch_size_list[scale_idx]
-                    ) # (V, C, N)
-                    merged_feat += voxel_feature.squeeze(0) # (c, n)
-                    # remove unused variable
-                    del voxel_feature
                 
-                merged_feat = (merged_feat / v).transpose(0, 1) # (N, C)
+                voxel_feature: torch.Tensor = self.transformer(
+                    cnn_features=cnn_features[batch], # (V, C, H, W)
+                    extrinsics=extrinsics[batch], 
+                    intrinsics=intrinsics[batch], 
+                    point_xyz=prob_pcd_xyz_ndc, # (V, 3, H, W)
+                    voxel_xyz=centers_ndc.transpose(0, 1), # (3, N)
+                    voxel_xyz_origin=bbox.transform_from_ndc(centers_ndc.transpose(0, 1), batch, xyz_shape=(3, 1)), # (3, N)
+                    point_ijk=prob_pcd_ijk, 
+                    voxel_ijk=local_coordinates.transpose(0, 1), # (3, N)
+                    confidences=prob_pcd.vertices_confidence[batch],  # (V, H, W)
+                    # Note: `9.05` is `2 * far` of DTU dataset(`2 * far` is the original length of voxel space). we set it here because we forgot to correct it during trainning.
+                    voxel_length=torch.tensor(9.05 / voxel_size, device=cnn_features.device), 
+                    k=self.patch_size_list[scale_idx]
+                ) # (C, N)
+                
+                merged_feat = (voxel_feature).transpose(0, 1) # (N, C)
                 
                 gaussian_features = self.gaussian_features_predictor(
                     feature=merged_feat, 
@@ -662,5 +656,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
         combined_gaussians.others["current_loss"] = torch.stack(batch_losses[1])
         combined_gaussians.others["offset_loss"] = torch.stack(batch_losses[2])
         combined_gaussians.others["color_loss"] = torch.stack(batch_losses[3])
+        
+        combined_gaussians.others["bbox"] = bbox
         
         return combined_gaussians
