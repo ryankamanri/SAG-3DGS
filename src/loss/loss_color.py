@@ -6,12 +6,12 @@ from torch import Tensor
 from ..dataset.types import BatchedExample
 from ..model.decoder.decoder import DecoderOutput
 from ..model.types import EncoderOutput
-from .loss import Loss
+from .loss import Loss, LossCfg
 
 
 @dataclass
-class LossColorCfg:
-    weight: float
+class LossColorCfg(LossCfg):
+    pass
 
 @dataclass
 class LossColorCfgWrapper:
@@ -28,4 +28,4 @@ class LossColor(Loss[LossColorCfg, LossColorCfgWrapper]):
     ) -> Float[Tensor, ""]:
         if gaussians.others == {}: return torch.tensor(0., device="cuda")
         color_loss = Tensor(gaussians.others["color_loss"]).mean()
-        return self.cfg.weight * color_loss
+        return color_loss

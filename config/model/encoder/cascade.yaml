@@ -5,10 +5,11 @@ cas_mvsnet_use_backbone: true
 cas_mvsnet_load_to_backbone: false
 cas_mvsnet_ndepth: [48, 32, 8]
 positional_encoding_num_frequencies: 2
-feature_channels: 96
+feature_channels: 48
 transformer_layers: 1
 transformer_num_head: 4
 no_ffn: False
 ffn_dim_expansion: 1
-voxel_size_list: [16, 32, 64, 128, 256, 512]
-patch_size_list: [36, 25, 16, 9, 4, 1]
+max_voxels_foreach_processing: 1000000
+voxel_size_list: [16, 32, 64, 128, 256, 512, 1024]
+patch_size_list: [49, 36, 25, 16, 9, 4, 1]

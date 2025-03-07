@@ -139,13 +139,15 @@ class ModelWrapper(LightningModule):
         self.log("train/psnr_probabilistic", psnr_probabilistic.mean())
 
         # Compute and log loss.
-        total_loss = 0
+        total_loss, total_weight = 0., 0.
         loss_str = ""
         for loss_fn in self.losses:
             loss = loss_fn.forward(output, batch, gaussians, self.global_step)
             self.log(f"loss/{loss_fn.name}", loss)
-            total_loss = total_loss + loss
-            loss_str += f"{loss_fn.name}: {loss}; "
+            total_loss = total_loss + loss * loss_fn.cfg.weight
+            total_weight += loss_fn.cfg.weight
+            loss_str += f"{loss_fn.name}: {loss:.6} * {loss_fn.cfg.weight}; "
+        total_loss /= total_weight
         self.log("loss/total", total_loss)
 
         if (

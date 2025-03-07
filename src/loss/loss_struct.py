@@ -6,12 +6,11 @@ from torch import Tensor
 from ..dataset.types import BatchedExample
 from ..model.decoder.decoder import DecoderOutput
 from ..model.types import EncoderOutput
-from .loss import Loss
+from .loss import Loss, LossCfg
 
 
 @dataclass
-class LossStructCfg:
-    weight: float
+class LossStructCfg(LossCfg):
     weight_existence_loss: float
     weight_offset_loss: float
     weight_gaussian_struct_loss: float
@@ -38,7 +37,7 @@ class LossStruct(Loss[LossStructCfg, LossStructCfgWrapper]):
         sorted_scale = scales.sort(dim=2).values
         gaussian_struct_loss = (1 - (sorted_scale[..., 1] / sorted_scale[..., 2]).mean(dim=1)).mean() ** 2
         
-        return self.cfg.weight * (
+        return (
             self.cfg.weight_existence_loss * existence_loss +
             self.cfg.weight_offset_loss * offset_loss +
             self.cfg.weight_gaussian_struct_loss * gaussian_struct_loss)
