@@ -17,6 +17,7 @@ def reflect_views(views: AnyViews) -> AnyViews:
     return {
         **views,
         "image": views["image"].flip(-1),
+        "alpha": views["alpha"].flip(-1), 
         "extrinsics": reflect_extrinsics(views["extrinsics"]),
     }
 

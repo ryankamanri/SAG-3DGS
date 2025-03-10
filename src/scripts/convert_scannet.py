@@ -45,12 +45,10 @@ def load_images(example_path: Path) -> dict[int, UInt8[Tensor, "..."]]:
     """Load JPG images as raw bytes (do not decode)."""
     images_dict = {}
     
-    cur_id = 0
     for image_path in example_path.iterdir():
         cur_image_name = image_path
         img_bin = load_raw(cur_image_name)
-        images_dict[cur_id] = img_bin
-        cur_id += 1
+        images_dict[int(cur_image_name.stem)] = img_bin
     
     return images_dict
 
@@ -66,7 +64,7 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
     
     intrinsic = np.loadtxt(metadata_path / "intrinsic" / "intrinsic_color.txt").astype(np.float32)[:3,:3]
 
-    for _, idx in enumerate(images.keys()):
+    for idx, key in enumerate(images.keys()):
         
         w, h = Image.open(BytesIO(images[idx].numpy().tobytes())).size
         focal = [intrinsic[0, 0], intrinsic[1, 1]]
@@ -87,7 +85,7 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
         saved_fy = fy / h
         saved_cx = cx / w
         saved_cy = cy / h
-        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 1.0, 10.0]
+        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 2.0, 6.0]
 
         camera.extend(w2c[:3].flatten().tolist())
         cameras.append(np.array(camera))

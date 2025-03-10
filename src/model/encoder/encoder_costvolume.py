@@ -233,9 +233,13 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
                 "b v r srf spp xyz -> b (v r srf spp) xyz",
             ),
             rearrange(
-                gaussians.covariances,
-                "b v r srf spp i j -> b (v r srf spp) i j",
-            ),
+                gaussians.scales, 
+                "b v r srf spp xyz -> b (v r srf spp) xyz"
+            ), 
+            rearrange(
+                gaussians.rotations, 
+                "b v r srf spp xyzw -> b (v r srf spp) xyzw"
+            ), 
             rearrange(
                 gaussians.harmonics,
                 "b v r srf spp c d_sh -> b (v r srf spp) c d_sh",
@@ -267,3 +271,8 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
     def sampler(self):
         # hack to make the visualizer work
         return None
+    
+    def configure_optimizers(self, cfg):
+        return [
+            {'params': self.parameters(), 'lr': cfg.lr}
+        ]
