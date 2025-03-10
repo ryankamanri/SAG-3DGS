@@ -107,7 +107,7 @@ class CasMVSNetModule(nn.Module):
         depth_values = depth_values.flip(dims=(2,)) # start from near to far.
         return proj_mat, depth_values
         
-    def forward(self, imgs, extrinsics, intrinsics, nears, fars, is_trainning: bool):
+    def forward(self, imgs, masks, extrinsics, intrinsics, nears, fars, is_trainning: bool):
         proj_mat, depth_values = self.preprocess(imgs, extrinsics, intrinsics, nears, fars)
         b, v, c, h, w = imgs.shape
         
@@ -153,8 +153,8 @@ class CasMVSNetModule(nn.Module):
             assert b == 1
             import open3d
             pcd = open3d.geometry.PointCloud()
-            pcd.points = open3d.utility.Vector3dVector(prob_vertices.permute(0, 1, 3, 4, 2).reshape(b*v*h*w, 4)[..., :3].detach().cpu())
-            pcd.colors = open3d.utility.Vector3dVector(imgs.permute(0, 1, 3, 4, 2).reshape(b*v*h*w, 3).detach().cpu())
+            pcd.points = open3d.utility.Vector3dVector(prob_vertices.permute(0, 1, 3, 4, 2)[masks][..., :3].detach().cpu())
+            pcd.colors = open3d.utility.Vector3dVector(imgs.permute(0, 1, 3, 4, 2)[masks].detach().cpu())
             open3d.visualization.draw_geometries([pcd])      
         
         result.registed_pcd = PointCloudResult(xyz_batches=vertices, rgb_batches=vertices_color)

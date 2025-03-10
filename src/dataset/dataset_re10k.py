@@ -151,15 +151,15 @@ class DatasetRE10k(IterableDataset):
                 context_images = [
                     example["images"][index.item()] for index in context_indices
                 ]
-                context_images = self.convert_images(context_images)
+                context_images, context_alphas = self.convert_images(context_images)
                 target_images = [
                     example["images"][index.item()] for index in target_indices
                 ]
-                target_images = self.convert_images(target_images)
+                target_images, target_alphas = self.convert_images(target_images)
                 
-                fine_tune_images = self.convert_images([
+                fine_tune_images, fine_tune_alphas = self.convert_images([
                     example["images"][index.item()] for index in fine_tune_indices
-                ]) if fine_tune_indices != None else None
+                ]) if fine_tune_indices != None else (None, None)
                 
 
                 # Skip the example if the images don't have the right shape.
@@ -193,9 +193,8 @@ class DatasetRE10k(IterableDataset):
                     "context": {
                         "extrinsics": extrinsics[context_indices],
                         "intrinsics": intrinsics[context_indices],
-                        "origin_image": context_images, # add origin image for pcd generation
-                        "origin_intrinsics": intrinsics[context_indices],
                         "image": context_images,
+                        "alpha": context_alphas, 
                         "near": nears[context_indices] / nf_scale,
                         "far": fars[context_indices] / nf_scale,
                         "index": context_indices,
@@ -204,6 +203,7 @@ class DatasetRE10k(IterableDataset):
                         "extrinsics": extrinsics[fine_tune_indices], 
                         "intrinsics": intrinsics[fine_tune_indices], 
                         "image": fine_tune_images, 
+                        "alpha": fine_tune_alphas, 
                         "near": nears[fine_tune_indices] / nf_scale,
                         "far": fars[fine_tune_indices] / nf_scale,
                         "index": fine_tune_indices,
@@ -212,6 +212,7 @@ class DatasetRE10k(IterableDataset):
                         "extrinsics": extrinsics[target_indices],
                         "intrinsics": intrinsics[target_indices],
                         "image": target_images,
+                        "alpha": target_alphas, 
                         "near": nears[target_indices] / nf_scale,
                         "far": fars[target_indices] / nf_scale,
                         "index": target_indices,
@@ -252,12 +253,15 @@ class DatasetRE10k(IterableDataset):
     def convert_images(
         self,
         images: list[UInt8[Tensor, "..."]],
-    ) -> Float[Tensor, "batch 3 height width"]:
-        torch_images = []
+    ) -> tuple[Float[Tensor, "batch 3 height width"], Float[Tensor, "batch height width"]]:
+        torch_images, torch_alphas = [], []
         for image in images:
-            image = Image.open(BytesIO(image.numpy().tobytes()))
-            torch_images.append(self.to_tensor(image)[:3]) # (rgb) without (a)
-        return torch.stack(torch_images)
+            image = self.to_tensor(Image.open(BytesIO(image.numpy().tobytes()))) # remove head binaries
+            c, h, w = image.shape
+            torch_images.append(image[:3]) # (rgb) without (a)
+            torch_alphas.append(image[-1] if c == 4 else torch.ones(h, w, device=image.device)) # a
+            
+        return torch.stack(torch_images), torch.stack(torch_alphas)
 
     def get_bound(
         self,

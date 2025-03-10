@@ -213,6 +213,19 @@ def hash_query(coordinates: torch.Tensor, hash_table: torch.Tensor):
     
     return hash_table[:, hash_index]
     
+def flat_3d_coordinates(coor: torch.Tensor, little_endian=False):
+    """
+    ### Flat 3d coordinates into 1d-tensor. 
+    #### Note that max element < 10000.
+    
+    input:
+        `coor`: Tensor(*B, N, 3)
+    output:
+        Tensor(*B, N, dtype=long)
+    """
+    coor_l = coor.long()
+    if little_endian: return coor_l[..., 0] + coor_l[..., 1] * 10000 + coor_l[..., 2] * 100000000
+    else: return coor_l[..., 2] + coor_l[..., 1] * 10000 + coor_l[..., 0] * 100000000
     
 def isin_3d_coordinates(coor_1: torch.Tensor, coor_2: torch.Tensor, return_inverse=False):
     """
@@ -225,11 +238,8 @@ def isin_3d_coordinates(coor_1: torch.Tensor, coor_2: torch.Tensor, return_inver
         [N1] bool
         [N2] bool if `return_inverse`
     """
-    coor_1 = coor_1.long()
-    coor_2 = coor_2.long()
-    
-    coor_1_flat = coor_1[:, 0] + coor_1[:, 1] * 10000 + coor_1[:, 2] * 100000000
-    coor_2_flat = coor_2[:, 0] + coor_2[:, 1] * 10000 + coor_2[:, 2] * 100000000
+    coor_1_flat = flat_3d_coordinates(coor_1)
+    coor_2_flat = flat_3d_coordinates(coor_2)
     
     if return_inverse:
         return torch.isin(coor_1_flat, coor_2_flat), torch.isin(coor_2_flat, coor_1_flat)
@@ -256,9 +266,9 @@ def create_local_coordinates(voxel_size: int, last_voxel_size: int = 0, last_coo
     seg_times = voxel_size // last_voxel_size
     seg_times_candidates = torch.arange(seg_times, dtype=torch.int, device="cuda")
     d_x, d_y, d_z = torch.meshgrid(seg_times_candidates, seg_times_candidates, seg_times_candidates)
-    d_grid = torch.stack((d_x, d_y, d_z), dim=-1).view(-1, 3) # (seg_times^3, 1, 3)
+    d_grid = torch.stack((d_x, d_y, d_z), dim=-1).view(-1, 3) # (seg_times^3, 3)
     
-    result = (last_coordinates * seg_times).view(-1, 1, 3) + d_grid # (seg_times^3, N, 3)
+    result = (last_coordinates * seg_times).view(-1, 1, 3) + d_grid # (N, seg_times^3, 3)
     return result.view(-1, 3).unique(sorted=True, dim=0) # use unique to sort index
 
 
@@ -326,7 +336,7 @@ def combine_batch_gaussians(batch_gaussians: list[EncoderOutput]) -> EncoderOutp
     combined_gaussian.others["append_size_list"] = append_size_list
     return combined_gaussian
 
-def voxel_down_sample(pcd: torch.Tensor, voxel_indices: torch.Tensor):
+def voxel_down_sample(pcd: torch.Tensor, voxel_indices: torch.Tensor, need_sort=True):
     """
     input:
         pcd: [N, C]
@@ -336,11 +346,9 @@ def voxel_down_sample(pcd: torch.Tensor, voxel_indices: torch.Tensor):
         downsampled_pcd: [N', C]
         unique_voxel_indices: [N', 3]
     """
-    
-    # Radix-sort-like method to sort pcd by 3d (ijk) indices.
-    indices = None
-    for i in reversed(range(voxel_indices.shape[1])):
-        indices = voxel_indices[:, i].sort().indices
+    if need_sort:
+        flat_voxel_indices = flat_3d_coordinates(voxel_indices)
+        indices = flat_voxel_indices.sort().indices
         voxel_indices = voxel_indices[indices]
         pcd = pcd[indices]
     
@@ -420,6 +428,7 @@ def compute_struct_loss(
         existence_loss, offset_loss, color_loss
     
     #### Note that assume coordinates contains all points.
+    #### Note that the downsampled pcd must align the gaussians
     """
     # Note that Gaussians are no longer in ndc space! we should convert means into ndc space.
     get_opacity = lambda mask: gaussians.opacities[mask.unsqueeze(0)]
@@ -467,11 +476,8 @@ def identify_is_current_scale(point_coordinates: torch.Tensor, local_coordinates
     output: mask Tensor(N2) with type `bool`
     """
     # use int64 to avoid data overflow
-    point_coordinates = point_coordinates.long()
-    local_coordinates = local_coordinates.long()
-    
-    point_coordinates_flat = point_coordinates[:, 0] + point_coordinates[:, 1] * 10000 + point_coordinates[:, 2] * 100000000
-    voxel_coordinates_flat = local_coordinates[:, 0] + local_coordinates[:, 1] * 10000 + local_coordinates[:, 2] * 100000000
+    point_coordinates_flat = flat_3d_coordinates(point_coordinates)
+    voxel_coordinates_flat = flat_3d_coordinates(local_coordinates)
     
     has_point_coordinates_flat, counts = point_coordinates_flat.unique(return_counts=True) # (N3)
     
@@ -498,7 +504,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
     def configure_optimizers(self, cfg):
         return self.gaussian_features_predictor.configure_optimizers(cfg)
         
-    def forward(self, cnn_features: torch.Tensor, cas_module_result: CasMVSNetModuleResult, extrinsics: torch.Tensor, intrinsics: torch.Tensor, nears: torch.Tensor, fars: torch.Tensor):
+    def forward(self, cnn_features: torch.Tensor, cas_module_result: CasMVSNetModuleResult, masks: torch.Tensor, extrinsics: torch.Tensor, intrinsics: torch.Tensor, nears: torch.Tensor, fars: torch.Tensor):
         b, v, c, h, w = cnn_features.shape
         far = fars[0, 0]
         is_trainning = cnn_features.grad_fn != None
@@ -532,7 +538,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 
             prob_pcd_xyz = prob_pcd.vertices[batch, :, :3] # (V, 3, H, W)
             prob_pcd_xyz_ndc = bbox.transform_ndc(prob_pcd_xyz, batch, xyz_shape=(1, 3, 1, 1))
-            prob_pcd_xyz_ndc_reshaped = prob_pcd_xyz_ndc.permute(0, 2, 3, 1).reshape(v*h*w, 3) # (N, 3)
+            prob_pcd_xyz_ndc_reshaped = prob_pcd_xyz_ndc.permute(0, 2, 3, 1)[masks[batch]] # (N, 3)
             max_resolution_voxel_size = self.voxel_size_list[-1]
             max_resolution_prob_pcd, max_resolution_prob_pcd_indices = voxel_down_sample(
                 prob_pcd_xyz_ndc_reshaped, 

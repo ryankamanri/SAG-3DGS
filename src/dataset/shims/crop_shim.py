@@ -79,10 +79,12 @@ def rescale_and_crop(
 
 
 def apply_crop_shim_to_views(views: AnyViews, shape: tuple[int, int]) -> AnyViews:
-    images, intrinsics = rescale_and_crop(views["image"], views["intrinsics"], shape)
+    rgb_images, intrinsics = rescale_and_crop(views["image"], views["intrinsics"], shape)
+    alpha_images, _ = rescale_and_crop(views["alpha"].unsqueeze(1).repeat(1, 3, 1, 1), views["intrinsics"], shape)
     return {
         **views,
-        "image": images,
+        "image": rgb_images,
+        "alpha": alpha_images[:, 0], 
         "intrinsics": intrinsics,
     }
 
