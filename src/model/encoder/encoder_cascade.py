@@ -34,6 +34,8 @@ class EncoderCascadeCfg:
     cas_mvsnet_use_backbone: bool
     cas_mvsnet_load_to_backbone: bool
     cas_mvsnet_ndepth: list[int]
+    cas_mvsnet_geo_max_dist: float
+    cas_mvsnet_geo_max_depth_diff: float
     positional_encoding_num_frequencies: int
     feature_channels: int
     transformer_layers: int
@@ -55,6 +57,8 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         self.cas_mvsnet_module = CasMVSNetModule(
             cas_mvsnet_ckpt_path=cfg.cas_mvsnet_ckpt_path, 
             ndepths=cfg.cas_mvsnet_ndepth, 
+            geo_max_dist=cfg.cas_mvsnet_geo_max_dist, 
+            geo_max_depth_diff=cfg.cas_mvsnet_geo_max_depth_diff, 
             use_backbone=cfg.cas_mvsnet_use_backbone, 
             load_to_backbone=cfg.cas_mvsnet_load_to_backbone
             )
@@ -120,7 +124,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         features = self.feature_extractor(imgs) # (B, V, C, H, W)
         is_trainning = features.grad_fn != None
         cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, masks, extrinsics, intrinsics, nears, fars, is_trainning)
-        gaussians: EncoderOutput = self.gaussian_adapter_module(features, cas_module_result, masks, extrinsics, intrinsics, nears, fars)
+        gaussians: EncoderOutput = self.gaussian_adapter_module(imgs, features, cas_module_result, masks, extrinsics, intrinsics, nears, fars)
         gaussians.others["cas_module_result"] = cas_module_result
         gaussians.others["nears"] = nears
         gaussians.others["fars"] = fars

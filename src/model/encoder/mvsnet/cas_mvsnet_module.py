@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import torch
 from torch import nn
-from ..mvsnet import CascadeMVSNet, generate_point_cloud_from_depth_maps, generate_depth_map_based_point_cloud
+from ..mvsnet import CascadeMVSNet, generate_point_cloud_from_depth_maps, generate_depth_map_based_point_cloud, generate_geometric_mask
 
 
 
@@ -30,12 +30,14 @@ class ViewBasedPointCloudResult:
     """
         vertices: Tensor(B, V, 4, H, W)
         vertices_confidence: Tensor(B, V, H, W)
+        vertices_geometry_mask: Tensor(B, V, H, W)
     """
     vertices: torch.Tensor
     vertices_confidence: torch.Tensor
+    vertices_geometry_mask: torch.Tensor
     
 def empty_probalility_point_cloud_result():
-    return ViewBasedPointCloudResult(torch.tensor(0), torch.tensor(0))
+    return ViewBasedPointCloudResult(torch.tensor(0), torch.tensor(0), torch.tensor(0))
 
 @dataclass
 class CasMVSNetModuleResult:
@@ -48,9 +50,11 @@ def empty_cas_mvsnet_module_result():
 
 class CasMVSNetModule(nn.Module):
 
-    def __init__(self, cas_mvsnet_ckpt_path, ndepths=[48, 32, 8], use_backbone=True, load_to_backbone=False) -> None:
+    def __init__(self, cas_mvsnet_ckpt_path, ndepths=[48, 32, 8], geo_max_dist=0.001, geo_max_depth_diff=0.001, use_backbone=True, load_to_backbone=False) -> None:
         super().__init__()
         self.ndepths = ndepths
+        self.geo_max_dist = geo_max_dist
+        self.geo_max_depth_diff = geo_max_depth_diff
         self.use_backbone = use_backbone
         print(f"loading checkpoint from {cas_mvsnet_ckpt_path}...")
         # initialize pretrained mvsnet
@@ -107,16 +111,16 @@ class CasMVSNetModule(nn.Module):
         depth_values = depth_values.flip(dims=(2,)) # start from near to far.
         return proj_mat, depth_values
         
-    def forward(self, imgs, masks, extrinsics, intrinsics, nears, fars, is_trainning: bool):
+    def forward(self, imgs, img_masks, extrinsics, intrinsics, nears, fars, is_trainning: bool):
         proj_mat, depth_values = self.preprocess(imgs, extrinsics, intrinsics, nears, fars)
         b, v, c, h, w = imgs.shape
         
         result = empty_cas_mvsnet_module_result()
         
         pretrained_depths_est = [] # depth map list
-        pretrained_photometric_confidences = []
         backbone_depths_est = []
         backbone_photometric_confidences = []
+        backbone_geo_masks = []
         
         pretrained_outputs_list = []
         if is_trainning:
@@ -134,7 +138,6 @@ class CasMVSNetModule(nn.Module):
             if is_trainning:
                 pretrained_outputs = pretrained_outputs_list[vi]
                 pretrained_depths_est.append(pretrained_outputs["depth"])
-                pretrained_photometric_confidences.append(pretrained_outputs["photometric_confidence"])
                 
             backbone_outputs = backbone_outputs_list[vi]
             backbone_depths_est.append(backbone_outputs["depth"])
@@ -145,13 +148,18 @@ class CasMVSNetModule(nn.Module):
         vertices, vertices_color = [], []
         if is_trainning:
             with torch.no_grad():            
-                vertices, vertices_color = generate_point_cloud_from_depth_maps(imgs, extrinsics, intrinsics, pretrained_depths_est, pretrained_photometric_confidences)
+                vertices, vertices_color = generate_point_cloud_from_depth_maps(imgs, extrinsics, intrinsics, pretrained_depths_est, depth_values, max_dist=self.geo_max_dist, max_depth_diff=self.geo_max_depth_diff)
+                for vi in range(v):
+                    backbone_geo_mask, _ = generate_geometric_mask(imgs, extrinsics, intrinsics, backbone_depths_est, depth_values, 
+                                                                ref_idx=vi, max_dist=self.geo_max_dist, max_depth_diff=self.geo_max_depth_diff)
+                    backbone_geo_masks.append(backbone_geo_mask)
             
         prob_vertices = generate_depth_map_based_point_cloud(backbone_depths_est, extrinsics, intrinsics)
         
         if False:
             assert b == 1
             import open3d
+            masks = torch.logical_and(img_masks, torch.stack(backbone_geo_masks, dim=1)) if len(backbone_geo_masks) > 0 else img_masks
             pcd = open3d.geometry.PointCloud()
             pcd.points = open3d.utility.Vector3dVector(prob_vertices.permute(0, 1, 3, 4, 2)[masks][..., :3].detach().cpu())
             pcd.colors = open3d.utility.Vector3dVector(imgs.permute(0, 1, 3, 4, 2)[masks].detach().cpu())
@@ -160,6 +168,7 @@ class CasMVSNetModule(nn.Module):
         result.registed_pcd = PointCloudResult(xyz_batches=vertices, rgb_batches=vertices_color)
         result.registed_prob_pcd = ViewBasedPointCloudResult(
             vertices=prob_vertices, 
-            vertices_confidence=torch.stack(backbone_photometric_confidences, dim=1))
+            vertices_confidence=torch.stack(backbone_photometric_confidences, dim=1), 
+            vertices_geometry_mask=torch.stack(backbone_geo_masks, dim=1) if len(backbone_geo_masks) > 0 else torch.tensor(0))
         
         return result

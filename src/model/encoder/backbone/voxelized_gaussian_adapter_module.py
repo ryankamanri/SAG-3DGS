@@ -368,7 +368,8 @@ def voxel_down_sample(pcd: torch.Tensor, voxel_indices: torch.Tensor, need_sort=
 
 @torch.no_grad()
 def downsample_pcd(
-    pcd: PointCloudResult, 
+    xyz_ndc: torch.Tensor, 
+    rgb: torch.Tensor, 
     voxel_size_list: list[int], 
     bbox: BoundingBox, 
     batch_idx: int):
@@ -381,10 +382,6 @@ def downsample_pcd(
         classified_pcd_list: [(n, iiixyzrgb) * 3]
 
     """
-
-    xyz = pcd.xyz_batches[batch_idx][:, :3]
-    rgb = pcd.rgb_batches[batch_idx]
-    xyz_ndc = bbox.transform_ndc(xyz, batch_idx, xyz_shape=(1, 3))
     xyzrgb = torch.cat((xyz_ndc, rgb), dim=1)
 
     downsampled_pcd_list = [] 
@@ -441,7 +438,7 @@ def compute_struct_loss(
 
     may_exist_voxels_mask = isin_3d_coordinates(local_coordinates, may_exist_coordinates)
     must_exist_voxels_mask, must_exist_points_mask = isin_3d_coordinates(local_coordinates, downsampled_pcd[:, :3].int(), return_inverse=True)
-    
+    must_accurate_voxels_mask = isin_3d_coordinates(single_point_coordinates, downsampled_pcd[:, :3].int())
     # compute existence loss, offset loss and color loss
     existence_loss, existence_n = 0., 0
     
@@ -450,6 +447,8 @@ def compute_struct_loss(
     # i.e., a Gaussian opacity of 1 for voxels where the point is present and 0 for voxels where the point is absent, 
     # and set the loss based on the distance weight.
     must_empty_voxels_mask = torch.logical_not(may_exist_voxels_mask)
+    inaccurate_voxels_mask = torch.logical_not(must_accurate_voxels_mask)
+    inaccurate_voxel_num = inaccurate_voxels_mask.sum()
     
     # Due to the characteristics of LoD, for non-minimum resolution voxels, 
     # the distance from the voxel to the nearest point can be estimated based on the voxel size. 
@@ -464,9 +463,11 @@ def compute_struct_loss(
     predicted_color = get_color(must_exist_voxels_mask)
     exist_points = downsampled_pcd[must_exist_points_mask]
     
-    offset_loss = (exist_points[:, 3:6] - predicted_means).norm(dim=1).sum() / math.sqrt(3)
+    offset_loss = (exist_points[:, 3:6] - predicted_means).norm(dim=1).sum() * voxel_size_list[scale_idx] / math.sqrt(3) # devide diagonal length to normalize
+    offset_loss += inaccurate_voxel_num
     color_loss = (exist_points[:, 6:] - predicted_color).norm(p=1, dim=1).sum() / 3
-    offset_n = color_n = must_exist_points_mask.sum()
+    color_loss += inaccurate_voxel_num
+    offset_n = color_n = must_exist_points_mask.sum() + inaccurate_voxel_num
     
     # loss normalization
     if existence_n != 0: existence_loss /= existence_n
@@ -524,7 +525,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
     def configure_optimizers(self, cfg):
         return self.gaussian_features_predictor.configure_optimizers(cfg)
         
-    def forward(self, cnn_features: torch.Tensor, cas_module_result: CasMVSNetModuleResult, masks: torch.Tensor, extrinsics: torch.Tensor, intrinsics: torch.Tensor, nears: torch.Tensor, fars: torch.Tensor):
+    def forward(self, imgs: torch.Tensor, cnn_features: torch.Tensor, cas_module_result: CasMVSNetModuleResult, img_masks: torch.Tensor, extrinsics: torch.Tensor, intrinsics: torch.Tensor, nears: torch.Tensor, fars: torch.Tensor):
         b, v, c, h, w = cnn_features.shape
         far = fars[0, 0]
         is_trainning = cnn_features.grad_fn != None
@@ -548,17 +549,12 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
             gaussians = empty_encoder_output(d_sh=SH_DEGREE ** 2)
             gaussians.others["scales"] = torch.zeros(b, 0, 3, device=cnn_features.device)
             
-            if is_trainning:
-                downsampled_pcds = downsample_pcd(
-                    pcd=cas_module_result.registed_pcd, 
-                    voxel_size_list=self.voxel_size_list, 
-                    bbox=bbox, 
-                    batch_idx=batch
-                )
                 
             prob_pcd_xyz = prob_pcd.vertices[batch, :, :3] # (V, 3, H, W)
+            prob_pcd_rgb = imgs[batch] # (V, 3, H, W)
             prob_pcd_xyz_ndc = bbox.transform_ndc(prob_pcd_xyz, batch, xyz_shape=(1, 3, 1, 1))
-            prob_pcd_xyz_ndc_reshaped = prob_pcd_xyz_ndc.permute(0, 2, 3, 1)[masks[batch]] # (N, 3)
+            prob_pcd_xyz_ndc_reshaped = prob_pcd_xyz_ndc.permute(0, 2, 3, 1)[img_masks[batch]] # (N, 3)
+            prob_pcd_rgb_reshaped = prob_pcd_rgb.permute(0, 2, 3, 1)[img_masks[batch]] # (N, 3)
             max_resolution_voxel_size = self.voxel_size_list[-1]
             max_resolution_prob_pcd_xyz, max_resolution_prob_pcd_indices = voxel_down_sample(
                 prob_pcd_xyz_ndc_reshaped, 
@@ -567,6 +563,25 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                     voxel_size=max_resolution_voxel_size # max resolution 
                 )
             ) # (N', 6), (N', 3)
+            
+            if is_trainning:
+                with torch.no_grad():
+                    prob_pcd_geo_mask_reshaped = prob_pcd.vertices_geometry_mask[batch][img_masks[batch]] # (N)
+                    all_rectified_xyz_ndc = torch.cat((
+                        bbox.transform_ndc(cas_module_result.registed_pcd.xyz_batches[batch][:, :3], batch, xyz_shape=(1, 3)), 
+                        prob_pcd_xyz_ndc_reshaped[prob_pcd_geo_mask_reshaped]
+                    ), dim=0) # (N'', 3)
+                    all_rectified_rgb = torch.cat((
+                        cas_module_result.registed_pcd.rgb_batches[batch], 
+                        prob_pcd_rgb_reshaped[prob_pcd_geo_mask_reshaped]
+                    ), dim=0) # (N'', 3)
+                    downsampled_pcds = downsample_pcd(
+                        xyz_ndc=all_rectified_xyz_ndc, 
+                        rgb=all_rectified_rgb, 
+                        voxel_size_list=self.voxel_size_list, 
+                        bbox=bbox, 
+                        batch_idx=batch
+                    )
                 
             for scale_idx in range(self.voxel_size_count):
                 # TODO: Create multi-scale voxel according to points.
@@ -637,7 +652,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         batch=batch
                     )
                     total_existence_loss += existence_loss
-                    total_offset_loss += offset_loss / (1 / voxel_size * math.sqrt(3)) # devide diagonal length to normalize
+                    total_offset_loss += offset_loss
                     total_color_loss += color_loss
                 
                 # Append current gaussians

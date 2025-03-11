@@ -76,7 +76,17 @@ def reproject_with_depth(depth_ref, intrinsics_ref, extrinsics_ref, depth_src, i
     return depth_reprojected, x_reprojected, y_reprojected, x_src, y_src
 
 
-def check_geometric_consistency(depth_ref, intrinsics_ref, extrinsics_ref, depth_src, intrinsics_src, extrinsics_src):
+def check_geometric_consistency(
+    depth_ref: torch.Tensor, 
+    intrinsics_ref: torch.Tensor, 
+    extrinsics_ref: torch.Tensor, 
+    depth_src: torch.Tensor, 
+    intrinsics_src: torch.Tensor, 
+    extrinsics_src: torch.Tensor,
+    depth_values: torch.Tensor, 
+    max_dist=0.001, 
+    max_depth_diff=0.001):
+    
     width, height = depth_ref.shape[2], depth_ref.shape[1]
     x_ref, y_ref = torch.meshgrid(torch.arange(0, width, device="cuda"), torch.arange(0, height, device="cuda"), indexing='xy')
     
@@ -90,81 +100,80 @@ def check_geometric_consistency(depth_ref, intrinsics_ref, extrinsics_ref, depth
     relative_depth_diff = depth_diff / depth_ref
 
     # mask = torch.logical_and(dist < 1, relative_depth_diff < 0.01)
-    mask = torch.logical_and(dist < (width + height) / 500, relative_depth_diff < 0.01)
+    mask = torch.logical_and(dist < ((width + height) / 2) * max_dist, relative_depth_diff < (depth_values.max() - depth_values.min()) * max_depth_diff)
     depth_reprojected[~mask] = 0
 
     return mask, depth_reprojected, x2d_src, y2d_src
 
 
-def colored_icp_registration(
-    source: o3d.geometry.PointCloud, 
-    target: o3d.geometry.PointCloud, 
-    voxel_radius = [0.04, 0.02, 0.01], 
-    max_iter = [50, 30, 14]
-    ):
-    current_transformation = np.identity(4)
-    
-    for scale in range(len(voxel_radius)):
-        iter = max_iter[scale]
-        radius = voxel_radius[scale]
-        # print([iter, radius, scale])
-    
-        # print("3-1. 下采样的点云的体素大小： %.2f" % radius)
-        source_down = source.voxel_down_sample(radius)
-        target_down = target.voxel_down_sample(radius)
-    
-        # print("3-2. 法向量估计.")
-        source_down.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius * 2, max_nn=30))
-        target_down.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius * 2, max_nn=30))
-    
-        # print("3-3. 应用彩色点云配准")
-        try:        
-            result_icp = o3d.pipelines.registration.registration_colored_icp(
-                source_down, target_down, radius, current_transformation,
-                o3d.pipelines.registration.TransformationEstimationForColoredICP(),
-                o3d.pipelines.registration.ICPConvergenceCriteria(relative_fitness=1e-6,
-                                                                relative_rmse=1e-6,
-                                                                max_iteration=iter))
-        except RuntimeError as e:
-            pass
-            
-        current_transformation = result_icp.transformation
-        # print(result_icp)
-
-    return result_icp
-
-
-def global_point_cloud_registration(vertices: list[list[torch.Tensor]], vertices_color: list[list[torch.Tensor]], b, v):
+def generate_geometric_mask(
+    imgs: torch.Tensor, 
+    extrinsics: torch.Tensor, 
+    intrinsics: torch.Tensor, 
+    depths_est: list[torch.Tensor], 
+    depth_values: torch.Tensor, 
+    ref_idx=0, 
+    max_dist=0.001, 
+    max_depth_diff=0.001):
     """
-    # DEPRECATED
-    from J. Park, Q.-Y. Zhou, V. Koltun, Colored Point Cloud Registration Revisited, ICCV 2017
+    ### Generate geometric mask for a given reference image and a set of source images
+    Note that an averaged reprojected depth will be returned.
+    """
+    b, v, c, h, w = imgs.shape
+    all_srcview_depth_ests = []
+    all_srcview_x = []
+    all_srcview_y = []
+    all_srcview_geomask = []
+    ref_img, ref_depth_est, ref_intrinsics, ref_extrinsics = imgs[:, ref_idx, :, :, :], depths_est[ref_idx], intrinsics[:, ref_idx, :, :], extrinsics[:, ref_idx, :, :]
+    geo_mask_sum = torch.zeros_like(ref_depth_est, dtype=int)
     
-    input:
-        `vertices`: `[[(npoints, 4) * V] * B]`
-        `vertices_color`: `[[(npoints, 3) * V] * B]`
-        `b`: batch size
-        `v`: num of view >=2
+    for src_idx in range(v):
+        if src_idx == ref_idx: continue
         
-    output: `[(npoints_sum, 4) * B], [(npoints_sum, 3) * B]`
+        geo_mask, depth_reprojected, x2d_src, y2d_src = check_geometric_consistency(
+            ref_depth_est, ref_intrinsics, ref_extrinsics,
+            depths_est[src_idx], intrinsics[:, src_idx, :, :], extrinsics[:, src_idx, :, :], 
+            depth_values=depth_values, max_dist=max_dist, max_depth_diff=max_depth_diff)
+        
+        geo_mask_sum += geo_mask
+        all_srcview_depth_ests.append(depth_reprojected)
+        all_srcview_x.append(x2d_src)
+        all_srcview_y.append(y2d_src)
+        all_srcview_geomask.append(geo_mask)
+        pass
+    
+    depth_est_averaged = (sum(all_srcview_depth_ests) + depths_est[ref_idx]) / (geo_mask_sum + 1)
+    # at least half of source views matched
+    geo_mask = geo_mask_sum >= v // 2
+    
+    if False:
+        import cv2
+        far = 10
+        def interp_to_show(img):
+            return F.interpolate(img.unsqueeze(0).unsqueeze(0), size=(h, w), mode='bilinear').squeeze(0).squeeze(0)
+        # convert image color channel: rgb -> bgr
+        ref_img_bgr = torch.stack((ref_img[:, 2], ref_img[:, 1], ref_img[:, 0]), dim=1)
+        cv2.imshow('ref_img', np.array(ref_img_bgr[0].transpose(0, 1).transpose(1, 2).detach().cpu()))
+        cv2.imshow('ref_depth', np.array(interp_to_show(ref_depth_est[0]).detach().cpu()) / far)
+        cv2.imshow('ref_depth * photo_mask', np.array(interp_to_show(ref_depth_est[0] * photo_mask[0]).detach().cpu()) / far)
+        cv2.imshow('ref_depth * geo_mask', np.array(interp_to_show(ref_depth_est[0] * geo_mask[0]).detach().cpu()) / far)
+        cv2.imshow('ref_depth * mask', np.array(interp_to_show(ref_depth_est[0] * final_mask[0]).detach().cpu()) / far)
+        # cv2.waitKey(0)
+
+    return geo_mask, depth_est_averaged
+
+def generate_point_cloud_from_depth_maps(
+    imgs: torch.Tensor, 
+    extrinsics: torch.Tensor, 
+    intrinsics: torch.Tensor, 
+    depths_est: list[torch.Tensor], 
+    depth_values: torch.Tensor, 
+    max_dist=0.001, 
+    max_depth_diff=0.001):
+    """
+    ### generete point cloud from depth maps, only points with geometry consistency will be selected.
     """
     
-    for batch_idx in range(b):
-        # build open3d point cloud class list(per view).
-        pcd_list = []
-        for view_idx in range(v):
-            pcd = o3d.geometry.PointCloud()
-            pcd.points = open3d.utility.Vector3dVector(vertices[batch_idx][view_idx][:, :3].detach().cpu())
-            pcd.colors = open3d.utility.Vector3dVector(vertices_color[batch_idx][view_idx].detach().cpu())
-            pcd_list.append(pcd)
-            
-        for source_idx in range(v-1):
-            for target_idx in range(source_idx+1, v):
-                if source_idx == target_idx: continue
-                result_icp = colored_icp_registration(pcd_list[source_idx], pcd_list[target_idx])
-    pass
-
-
-def generate_point_cloud_from_depth_maps(imgs: torch.Tensor, extrinsics, intrinsics, depths_est, photometric_confidences, use_point_registration=False):
     b, v, c, h, w = imgs.shape
     # the final point cloud list (per batch)
     vertices = [[] for _ in range(b)]
@@ -172,48 +181,15 @@ def generate_point_cloud_from_depth_maps(imgs: torch.Tensor, extrinsics, intrins
     # for every reference image and source image, compute the photometric mask and geometric mask
     # and generate point cloud
     for ref_idx in range(v):
-        all_srcview_depth_ests = []
-        all_srcview_x = []
-        all_srcview_y = []
-        all_srcview_geomask = []
-        
+        geo_mask, depth_est_averaged = generate_geometric_mask(
+            imgs=imgs, 
+            extrinsics=extrinsics, 
+            intrinsics=intrinsics, 
+            depths_est=depths_est, 
+            depth_values=depth_values, 
+            ref_idx=ref_idx, 
+        )
         ref_img, ref_depth_est, ref_intrinsics, ref_extrinsics = imgs[:, ref_idx, :, :, :], depths_est[ref_idx], intrinsics[:, ref_idx, :, :], extrinsics[:, ref_idx, :, :]
-        geo_mask_sum = torch.zeros_like(ref_depth_est, dtype=int)
-        
-        for src_idx in range(v):
-            if src_idx == ref_idx: continue
-            
-            geo_mask, depth_reprojected, x2d_src, y2d_src = check_geometric_consistency(
-                ref_depth_est, ref_intrinsics, ref_extrinsics,
-                depths_est[src_idx], intrinsics[:, src_idx, :, :], extrinsics[:, src_idx, :, :])
-            
-            geo_mask_sum += geo_mask
-            all_srcview_depth_ests.append(depth_reprojected)
-            all_srcview_x.append(x2d_src)
-            all_srcview_y.append(y2d_src)
-            all_srcview_geomask.append(geo_mask)
-            pass
-        
-        depth_est_averaged = (sum(all_srcview_depth_ests) + depths_est[ref_idx]) / (geo_mask_sum + 1)
-        # at least half of source views matched
-        geo_mask = geo_mask_sum >= v // 2
-        photo_mask = photometric_confidences[ref_idx] > 0.8
-        final_mask = torch.logical_and(photo_mask, geo_mask)
-        
-        if False:
-            import cv2
-            far = 10
-            def interp_to_show(img):
-                return F.interpolate(img.unsqueeze(0).unsqueeze(0), size=(h, w), mode='bilinear').squeeze(0).squeeze(0)
-            # convert image color channel: rgb -> bgr
-            ref_img_bgr = torch.stack((ref_img[:, 2], ref_img[:, 1], ref_img[:, 0]), dim=1)
-            cv2.imshow('ref_img', np.array(ref_img_bgr[0].transpose(0, 1).transpose(1, 2).detach().cpu()))
-            cv2.imshow('ref_depth', np.array(interp_to_show(ref_depth_est[0]).detach().cpu()) / far)
-            cv2.imshow('ref_depth * photo_mask', np.array(interp_to_show(ref_depth_est[0] * photo_mask[0]).detach().cpu()) / far)
-            cv2.imshow('ref_depth * geo_mask', np.array(interp_to_show(ref_depth_est[0] * geo_mask[0]).detach().cpu()) / far)
-            cv2.imshow('ref_depth * mask', np.array(interp_to_show(ref_depth_est[0] * final_mask[0]).detach().cpu()) / far)
-            # cv2.waitKey(0)
-        
         # project valid depth to 3d points
         # Note that we filter the valid point at last to facilitate batch parallel processing
         height, width = depth_est_averaged.shape[1:3]
@@ -228,7 +204,7 @@ def generate_point_cloud_from_depth_maps(imgs: torch.Tensor, extrinsics, intrins
         colors = ref_img.view(b, c, -1) # (B, C=3, H*W)
         # colors = torch.rand(c).view(1, c, 1).repeat(b, 1, h*w).cuda() # show point from multi-view
         
-        valid_points = final_mask.reshape(b, -1) # (B, H*W)
+        valid_points = geo_mask.reshape(b, -1) # (B, H*W)
         for b_idx in range(b):
             vertices[b_idx].append(xyz_world.transpose(1, 2)[b_idx][valid_points[b_idx]])
             vertices_color[b_idx].append(colors.transpose(1, 2)[b_idx][valid_points[b_idx]])
