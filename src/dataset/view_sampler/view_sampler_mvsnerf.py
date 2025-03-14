@@ -61,9 +61,22 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
 
         self.id_list = np.unique(self.id_list)
         self.build_remap()
+        
+    def knn_views(
+    self, 
+    tar_extrinsic: Float[Tensor, "4 4"],
+    src_extrinsics: Float[Tensor, "view 4 4"],
+    k=3):
+        tar_point = tar_extrinsic[:3, 3]
+        src_points = src_extrinsics[:, :3, 3]
+        dists = torch.norm(src_points - tar_point, dim=1)
+        _, indices = torch.topk(dists, k, largest=False)
+        return indices
+        
 
     def sample(
         self,
+        idx: int,
         scene: str,
         extrinsics: Float[Tensor, "view 4 4"],
         intrinsics: Float[Tensor, "view 3 3"],
@@ -74,20 +87,31 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
     ]:
         if not scene.startswith("dtu"): # 
             scene_name = scene[scene.index("_") + 1:]
+            test_id = torch.tensor(self.test_pairs[f"{scene_name}_test"][idx])
+            train_ids = torch.tensor(self.test_pairs[f"{scene_name}_train"])
+            
+            test_extrinsic, train_extrinsics = extrinsics[test_id], extrinsics[train_ids]
+            context_indices = self.knn_views(test_extrinsic, train_extrinsics, self.num_context_views)
+            
             return (
-                (torch.tensor(self.test_pairs[f"{scene_name}_train"]))[:self.num_context_views], 
-                (torch.tensor(self.test_pairs[f"{scene_name}_test"]))[:self.num_target_views]
+                context_indices, 
+                torch.tensor([test_id])
             )
         
         # DTU
         image_count = len(self.metas)
         light_count = 7
+        light_idx = 3
         
         if self.stage == 'test':
-            light_idx = 3
+            test_id = torch.tensor(self.test_pairs[f"dtu_test"][idx])
+            train_ids = torch.tensor(self.test_pairs[f"dtu_train"])
+            
+            test_extrinsic, train_extrinsics = extrinsics[test_id * light_count + light_idx], extrinsics[train_ids * light_count + light_idx]
+            context_indices = train_ids[self.knn_views(test_extrinsic, train_extrinsics, self.num_context_views)]
             return (
-                (torch.tensor(self.test_pairs["dtu_train"]) * light_count + light_idx)[:self.num_context_views], 
-                (torch.tensor(self.test_pairs["dtu_test"]) * light_count + light_idx)[:self.num_target_views]
+                context_indices * light_count + light_idx, 
+                torch.tensor([test_id]) * light_count + light_idx
             )
         
         light_idx, target_view, src_views = self.metas[random.randint(0, image_count - 1)]
@@ -99,7 +123,7 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
             torch.tensor([target_view * light_count + light_idx])
         )
         
-    def sample_fine_tune(self, scene, extrinsics, intrinsics, device = ..., **kwargs):
+    def sample_fine_tune(self, idx: int, scene, extrinsics, intrinsics, device = ..., **kwargs):
         if self.stage != 'test': return None
         if scene.startswith('dtu'): # DTU
             light_count, light_idx = 7, 3
@@ -117,4 +141,4 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
 
     @property
     def num_target_views(self) -> int:
-        return self.cfg.num_target_views_test if self.stage == 'test' else self.cfg.num_target_views_train
+        return 1

@@ -659,7 +659,7 @@ class ModelWrapper(LightningModule):
 
         # Color-map the result.
         def depth_map(result):
-            near = result[result > 0][:16_000_000].quantile(0.01).log()
+            near = result[result >= 0][:16_000_000].quantile(0.01).log()
             far = result.view(-1)[:16_000_000].quantile(0.99).log()
             result = result.log()
             result = 1 - (result - near) / (far - near)

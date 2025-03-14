@@ -366,9 +366,8 @@ class VoxelToPointTransformer(nn.Module):
                 k=k
             ) # (B, C, V), (B, C, V, K), (B, V, K, 3(bhw))
             
-            knn_weights = 1.0 / torch.norm(point_xyz[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]] \
-                - voxel_xyz_slice.permute(0, 2, 1).unsqueeze(-2).repeat(1, 1, k, 1), dim=-1) # (B, V, K, 3) -> (B, V, K)
-            
+            knn_weights = torch.exp(-(torch.norm(point_xyz[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]] \
+                - voxel_xyz_slice.permute(0, 2, 1).unsqueeze(-2).repeat(1, 1, k, 1), dim=-1)) / voxel_length) # (B, V, K, 3) -> (B, V, K)
             voxel_based_confidences = confidences[knn_byx[..., 0], knn_byx[..., 1], knn_byx[..., 2]] # (B, V, K)
             
             source = interpolated_features.permute(0, 2, 1) # (B, V, C)

@@ -45,6 +45,7 @@ class EncoderCascadeCfg:
     max_voxels_foreach_processing: int
     voxel_size_list: list[int]
     patch_size_list: list[int]
+    predict_sh_degree: int
 
 
 class EncoderCascade(Encoder[EncoderCascadeCfg]):
@@ -79,7 +80,8 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             transformer=self.transformer, 
             feature_channels=self.feature_channels, 
             voxel_size_list=cfg.voxel_size_list, 
-            patch_size_list=cfg.patch_size_list
+            patch_size_list=cfg.patch_size_list, 
+            sh_degree=cfg.predict_sh_degree
         )
         
         print(cfg)

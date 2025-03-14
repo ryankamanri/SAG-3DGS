@@ -10,15 +10,11 @@ from ...types import IConfigureOptimizers
 SH_DEGREE = 4
 GAUSSIAN_FEATURE_CHANNELS = 11 + 3 * SH_DEGREE ** 2
 
-SLICE_DELTA_MEANS = slice(0, 3)
-SLICE_QUATERNION = slice(3, 7)
-SLICE_SCALE = slice(7, 10)
-SLICE_OPACITY = slice(10, 11)
-SLICE_SHS_D1 = slice(11, 14) # sh degree 1
-SLICE_SHS_D2 = slice(14, 11 + 3 * 2 ** 2)
-SLICE_SHS_D3 = slice(11 + 3 * 2 ** 2, 11 + 3 * 3 ** 2)
-SLICE_SHS_D4 = slice(11 + 3 * 3 ** 2, 11 + 3 * 4 ** 2)
-SLICE_SHS = slice(11, GAUSSIAN_FEATURE_CHANNELS)
+CHANNEL_RGB = 3
+CHANNEL_DELTA_MEANS = 3
+CHANNEL_QUATERNION = 4
+CHANNEL_SCALE = 3
+CHANNEL_OPACITY = 1
 
 C0 = 0.28209479177387814
 def RGB2SH(rgb):
@@ -120,98 +116,93 @@ class BoundingBox:
     pass
 
 class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
-    def __init__(self, input_dim):
+    def __init__(self, input_dim, sh_degree):
         super().__init__()
+        assert sh_degree < 4
+        self.sh_degree = sh_degree
         self.input_dim = input_dim
         
+        self.gaussian_scale_min = 0.1
+        self.gaussian_scale_max = 10.0
         self.delta_means_activation = lambda x, voxel_size: (torch.sigmoid(x) - 0.5) / voxel_size
-        self.scaling_activation = lambda x, voxel_size: torch.sigmoid(x) / voxel_size
+        self.scaling_activation = lambda x, voxel_size: (self.gaussian_scale_min + (self.gaussian_scale_max - self.gaussian_scale_min) * torch.sigmoid(x)) / voxel_size
         self.quaternion_activation = lambda x: x
         self.opacity_activation = lambda x: torch.sigmoid(x)
-        self.color_activation = lambda x: RGB2SH(torch.sigmoid(x))
-        self.shs_d2_activation = lambda x: x / 5
-        self.shs_d3_activation = lambda x: x / 25
-        self.shs_d4_activation = lambda x: x / 125
+        self.shs_activation = [lambda x : x] + [
+            lambda x: x / (5 ** (i + 1)) for i in range(1, sh_degree + 1)
+        ]
         
-        self.delta_means_predictor = nn.Linear(input_dim, SLICE_DELTA_MEANS.stop - SLICE_DELTA_MEANS.start)
-        self.quaternion_predictor = nn.Linear(input_dim, SLICE_QUATERNION.stop - SLICE_QUATERNION.start)
-        self.scale_predictor = nn.Linear(input_dim, SLICE_SCALE.stop - SLICE_SCALE.start)
-        self.opacity_predictor = nn.Linear(input_dim, SLICE_OPACITY.stop - SLICE_OPACITY.start)
-        self.shs_d1_predictor = nn.Linear(input_dim, SLICE_SHS_D1.stop - SLICE_SHS_D1.start)
-        self.shs_d2_predictor = nn.Linear(input_dim, SLICE_SHS_D2.stop - SLICE_SHS_D2.start)
-        self.shs_d3_predictor = nn.Linear(input_dim, SLICE_SHS_D3.stop - SLICE_SHS_D3.start)
-        self.shs_d4_predictor = nn.Linear(input_dim, SLICE_SHS_D4.stop - SLICE_SHS_D4.start)
+        def make_predictor(out_dim):
+            return nn.Sequential(
+                nn.Linear(input_dim, input_dim // 2),
+                nn.ReLU(),
+                nn.Linear(input_dim // 2, input_dim // 4),
+                nn.ReLU(),
+                nn.Linear(input_dim // 4, out_dim)
+            )
+        
+        self.delta_means_predictor = make_predictor(CHANNEL_DELTA_MEANS)
+        self.quaternion_predictor = make_predictor(CHANNEL_QUATERNION)
+        self.scale_predictor = make_predictor(CHANNEL_SCALE)
+        self.opacity_predictor = make_predictor(CHANNEL_OPACITY)
+        self.shs_predictor = nn.ModuleList([
+            make_predictor(CHANNEL_RGB * (2 * i + 1)) for i in range(sh_degree + 1)
+        ])
         
         # init parameters
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_normal(p)
-        # init opacity from sigmoid(-5) (nearly 0).
-        nn.init.constant_(self.opacity_predictor.bias, -5)
         pass
     
 
         
-    def forward(self, feature: torch.Tensor, voxel_size: int):
+    def forward(self, feature: torch.Tensor, voxel_center: torch.Tensor, voxel_size: int, bbox: BoundingBox, batch: int) -> EncoderOutput:
         # input / output feature (N, C)
         delta_means = self.delta_means_predictor(feature)
         quaternion = self.quaternion_predictor(feature)
-        scale = self.scale_predictor(feature)
+        scales = self.scale_predictor(feature)
         opacity = self.opacity_predictor(feature)
-        shs_d1 = self.shs_d1_predictor(feature)
-        shs_d2 = self.shs_d2_predictor(feature)
-        shs_d3 = self.shs_d3_predictor(feature)
-        shs_d4 = self.shs_d4_predictor(feature)
+        shs = [sh_predictor(feature) for sh_predictor in self.shs_predictor]
+        shs_activation = [sh_activation(sh) for sh, sh_activation in zip(shs, self.shs_activation)]
         
-        return torch.cat((
-            self.delta_means_activation(delta_means, voxel_size), 
-            self.quaternion_activation(quaternion), 
-            self.scaling_activation(scale, voxel_size), 
-            self.opacity_activation(opacity), 
-            self.color_activation(shs_d1), 
-            self.shs_d2_activation(shs_d2), 
-            self.shs_d3_activation(shs_d3), 
-            self.shs_d4_activation(shs_d4)
-        ), dim=-1)
+        
+        activated_delta_means = self.delta_means_activation(delta_means, voxel_size)
+        activated_quaternion = self.quaternion_activation(quaternion)
+        activated_scales = self.scaling_activation(scales, voxel_size)
+        activated_opacities = self.opacity_activation(opacity)
+        activated_shs = torch.cat(shs_activation, dim=-1)
+         
+        # convert means and scales from ndc space to real world.
+        means: torch.Tensor = bbox.transform_from_ndc(activated_delta_means + voxel_center, batch, xyz_shape=(1, 3)) # (N, 3)
+        scales: torch.Tensor = activated_scales * bbox.size[batch]
+        rotations: torch.Tensor = activated_quaternion
+        harmonics: torch.Tensor = activated_shs # (N, 3*d^2)
+        opacities: torch.Tensor = activated_opacities # (N, 1)
+        
+        b, dim, d_sh = 1, 3, (self.sh_degree + 1) ** 2
+        n, c = feature.shape
+        gaussians = EncoderOutput(
+            means=means.view(b, n, dim), 
+            scales=scales.view(b, n, dim),  # (B, N, 3)
+            rotations=rotations.view(b, n, 4), 
+            harmonics=harmonics.view(b, n, d_sh, 3).transpose(2, 3), # note that (d_sh, 3) in features
+            opacities=opacities.view(b, n)
+        )
+        
+        return gaussians
         
     def configure_optimizers(self, cfg):
         return [
             {'params': self.delta_means_predictor.parameters(), 'lr': cfg.delta_means_lr}, 
             {'params': self.quaternion_predictor.parameters(), 'lr': cfg.quaternion_lr}, 
             {'params': self.scale_predictor.parameters(), 'lr': cfg.scale_lr}, 
-            {'params': self.opacity_predictor.parameters(), 'lr': cfg.opacity_lr}, 
-            {'params': self.shs_d1_predictor.parameters(), 'lr': cfg.shs_d1_lr}, 
-            {'params': self.shs_d2_predictor.parameters(), 'lr': cfg.shs_d2_lr}, 
-            {'params': self.shs_d3_predictor.parameters(), 'lr': cfg.shs_d3_lr}, 
-            {'params': self.shs_d4_predictor.parameters(), 'lr': cfg.shs_d4_lr}
+            {'params': self.opacity_predictor.parameters(), 'lr': cfg.opacity_lr}
+        ] + [  # add more shs
+            {'params': shs.parameters(), 'lr': lr} for shs, lr in zip(self.shs_predictor, cfg.shs_lr)
         ]
     pass
 
-def bitwise_xor(x: torch.Tensor, dim: int):
-    assert dim < len(x.shape)
-    if x.shape[dim] == 1: return x
-    slices = torch.unbind(x, dim=dim)
-    result = slices[0]
-    for slice in slices[1:]:
-        result = torch.bitwise_xor(result, slice)
-    return result
-
-def hash_query(coordinates: torch.Tensor, hash_table: torch.Tensor):
-    """
-    input:
-        `x`: [N, 3] int
-        `hash_table`: [C, T]
-        
-    output:
-        [C, N]
-    """
-    PI_1, PI_2, PI_3 = 1, 2654435761, 805459861 # from Instant-NGP
-    
-    primes = torch.tensor([PI_1, PI_2, PI_3], device=coordinates.device)
-    
-    hash_index = bitwise_xor(coordinates * primes, dim=-1) % hash_table.shape[1] # (N)
-    
-    return hash_table[:, hash_index]
     
 def flat_3d_coordinates(coor: torch.Tensor, little_endian=False):
     """
@@ -271,34 +262,6 @@ def create_local_coordinates(voxel_size: int, last_voxel_size: int = 0, last_coo
     result = (last_coordinates * seg_times).view(-1, 1, 3) + d_grid # (N, seg_times^3, 3)
     return result.view(-1, 3).unique(sorted=True, dim=0) # use unique to sort index
 
-
-def create_gaussians_from_features(gaussian_features: torch.Tensor, coordinates: torch.Tensor, voxel_size: int, bbox: BoundingBox, batch: int) -> EncoderOutput:
-    """
-    input:
-        gaussian_features: [C, N]
-        coordinates: [N, 3]
-        extrinsic: [V, 4, 4]
-        far: 1
-    """
-    voxel_center = bbox.compute_ndc(coordinates.permute(1, 0), voxel_size)
-    b, n, dim, d_sh = 1, coordinates.shape[0], 3, SH_DEGREE ** 2
-    
-    # convert means and scales from ndc space to real world.
-    means: torch.Tensor = bbox.transform_from_ndc(gaussian_features[SLICE_DELTA_MEANS] + voxel_center, batch, xyz_shape=(3, 1)) # (3, N)
-    scales: torch.Tensor = gaussian_features[SLICE_SCALE] * bbox.size[batch]
-    rotations: torch.Tensor = gaussian_features[SLICE_QUATERNION]
-    harmonics: torch.Tensor = gaussian_features[SLICE_SHS] # (d^2, N)
-    opacities: torch.Tensor = gaussian_features[SLICE_OPACITY] # (1, N)
-    
-    gaussians = EncoderOutput(
-        means=means.permute(1, 0).view(b, n, dim), 
-        scales=scales.permute(1, 0).view(b, n, dim),  # (B, N, 3)
-        rotations=rotations.permute(1, 0).view(b, n, 4), 
-        harmonics=harmonics.permute(1, 0).view(b, n, d_sh, 3).transpose(2, 3), # note that (d_sh, 3) in features
-        opacities=opacities.permute(1, 0).view(b, n)
-    )
-    
-    return gaussians
 
 
 def combine_batch_gaussians(batch_gaussians: list[EncoderOutput]) -> EncoderOutput:
@@ -510,7 +473,7 @@ def identify_is_current_scale(point_coordinates: torch.Tensor, local_coordinates
 
 class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
 
-    def __init__(self, transformer: VoxelToPointTransformer, feature_channels=192, voxel_size_list=[32, 128, 512], patch_size_list=[3, 2, 1]) -> None:
+    def __init__(self, transformer: VoxelToPointTransformer, feature_channels=192, voxel_size_list=[32, 128, 512], patch_size_list=[3, 2, 1], sh_degree=3) -> None:
         super().__init__()
         self.transformer = transformer
         self.voxel_size_count = len(voxel_size_list)
@@ -518,7 +481,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
         self.patch_size_list = patch_size_list
         assert len(patch_size_list) == len(voxel_size_list)
 
-        self.gaussian_features_predictor = GaussianFeaturesPredictor(input_dim=feature_channels)
+        self.gaussian_features_predictor = GaussianFeaturesPredictor(input_dim=feature_channels, sh_degree=sh_degree)
         
         pass
     
@@ -625,19 +588,12 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 
                 merged_feat = (voxel_feature).transpose(0, 1) # (N, C)
                 
-                gaussian_features = self.gaussian_features_predictor(
+                current_gaussians = self.gaussian_features_predictor.forward(
                     feature=merged_feat, 
-                    voxel_size=voxel_size) # (N, 15)
-                
-                gaussian_features = gaussian_features.transpose(0, 1) # (15, N)
-                
-                current_gaussians = create_gaussians_from_features(
-                    gaussian_features=gaussian_features, 
-                    coordinates=local_coordinates, 
+                    voxel_center=centers_ndc,
                     voxel_size=voxel_size, 
                     bbox=bbox, 
-                    batch=batch
-                )
+                    batch=batch) # (N, 15)
                 
                 if is_trainning:
                     # compute losses

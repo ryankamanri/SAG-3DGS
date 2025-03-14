@@ -43,6 +43,7 @@ class ViewSamplerEvaluation(ViewSampler[ViewSamplerEvaluationCfg]):
 
     def sample(
         self,
+        idx: int,
         scene: str,
         extrinsics: Float[Tensor, "view 4 4"],
         intrinsics: Float[Tensor, "view 3 3"],

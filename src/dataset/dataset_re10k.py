@@ -129,12 +129,13 @@ class DatasetRE10k(IterableDataset):
 
                 try:
                     context_indices, target_indices = self.view_sampler.sample(
+                        run_idx % times_per_scene, 
                         scene,
                         extrinsics,
                         intrinsics,
                     )
                     
-                    fine_tune_indices = self.view_sampler.sample_fine_tune(scene, extrinsics, intrinsics)
+                    fine_tune_indices = self.view_sampler.sample_fine_tune(run_idx % times_per_scene, scene, extrinsics, intrinsics)
                         
                     # reverse the context
                     # context_indices = torch.flip(context_indices, dims=[0])

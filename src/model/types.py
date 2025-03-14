@@ -45,10 +45,7 @@ class OptimizerCfg:
     quaternion_lr: float
     scale_lr: float
     opacity_lr: float
-    shs_d1_lr: float
-    shs_d2_lr: float
-    shs_d3_lr: float
-    shs_d4_lr: float
+    shs_lr: list[float]
 
 @dataclass
 class FineTuneCfg:

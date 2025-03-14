@@ -35,6 +35,7 @@ class ViewSampler(ABC, Generic[T]):
     @abstractmethod
     def sample(
         self,
+        idx: int,
         scene: str,
         extrinsics: Float[Tensor, "view 4 4"],
         intrinsics: Float[Tensor, "view 3 3"],
@@ -48,6 +49,7 @@ class ViewSampler(ABC, Generic[T]):
     
     def sample_fine_tune(
         self,
+        idx: int,
         scene: str,
         extrinsics: Float[Tensor, "view 4 4"],
         intrinsics: Float[Tensor, "view 3 3"],

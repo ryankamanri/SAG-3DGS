@@ -18,7 +18,7 @@ mode: train
 dataset:
   overfit_to_scene: null
   train_times_per_scene: 4
-  test_times_per_scene: 1
+  test_times_per_scene: 4
 
 data_loader:
   # Avoid having to spin up new processes to print out visualizations.
@@ -46,10 +46,7 @@ optimizer:
   quaternion_lr: 2.e-4
   scale_lr: 1.e-4
   opacity_lr: 5.e-4
-  shs_d1_lr: 5.e-4
-  shs_d2_lr: 1.e-4
-  shs_d3_lr: 2.e-5
-  shs_d4_lr: 4.e-6
+  shs_lr: [5.e-4, 1.e-4, 2.e-5, 4.e-6]
 
 checkpointing:
   load: null
