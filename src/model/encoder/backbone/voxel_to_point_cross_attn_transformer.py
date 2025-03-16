@@ -212,6 +212,7 @@ def nearest_patch(yx: torch.Tensor, hw: torch.Tensor, patch_size=4):
 
 def compute_voxel_interpolate_and_knn_features(
     cnn_features: torch.Tensor, 
+    depths: torch.Tensor,
     extrinsics: torch.Tensor, 
     intrinsics: torch.Tensor, 
     voxel_xyz: torch.Tensor, 
@@ -220,12 +221,14 @@ def compute_voxel_interpolate_and_knn_features(
     """
     input:
         cnn_features: [B, C, H, W]
+        depth: [B, H, W]
         extrinsics: [B, 4, 4]
         intrinsics: [B, 3, 3]
         voxel_xyz: [B, N, 3]
 
     output: 
         interpolate_features: [B, C, N]
+        interpolate_dist: [B, N]
         knn_features: [B, C, N, K]
         knn_byx: [B, N, K, 3(bhw)]
     """
@@ -233,7 +236,7 @@ def compute_voxel_interpolate_and_knn_features(
     n = voxel_xyz.shape[1]
     voxel_xyz = F.pad(voxel_xyz, pad=(0, 1), value=1) # (B, N, 4)
     voxel_xyz = voxel_xyz.permute(0, 2, 1) # (B, 4, N)
-    voxel_centers_uvd = torch.matmul(intrinsics, torch.matmul(extrinsics, voxel_xyz)[:, :3]) # (B, 4, N) -> (B, 3, N)
+    voxel_centers_uvd = torch.matmul(intrinsics, torch.matmul(torch.linalg.inv(extrinsics), voxel_xyz)[:, :3]) # (B, 4, N) -> (B, 3, N)
     voxel_centers_uv = (voxel_centers_uvd[:, :2] / voxel_centers_uvd[:, 2:]).permute(0, 2, 1) # (B, 3, N) -> (B, N, 2)
     # knn features
     if False: # use knn method, slowly
@@ -274,7 +277,9 @@ def compute_voxel_interpolate_and_knn_features(
     voxel_centers_uv[..., 1] -= 1
     
     interpolated_feat = F.grid_sample(cnn_features, voxel_centers_uv.unsqueeze(-2), padding_mode="border")
-    return interpolated_feat.view(b, c, -1), knn_features, knn_byx
+    interpolated_depth = F.grid_sample(depths.unsqueeze(1), voxel_centers_uv.unsqueeze(-2), padding_mode="border").view(b, n) # (B, C=1, N, 1) -> (B, N)
+    interpolated_dist = torch.abs(interpolated_depth - voxel_centers_uvd[:, 2]) # (B, N)
+    return interpolated_feat.view(b, c, -1), interpolated_dist, knn_features, knn_byx
 
 
 
@@ -316,11 +321,11 @@ class VoxelToPointTransformer(nn.Module):
     def forward(
         self,
         cnn_features: torch.Tensor,
+        depths: torch.Tensor,
         extrinsics: torch.Tensor, 
         intrinsics: torch.Tensor, 
         point_xyz: torch.Tensor, 
         voxel_xyz: torch.Tensor, 
-        voxel_xyz_origin: torch.Tensor, # match the extrinsics and intrinsics
         point_ijk: torch.Tensor, 
         voxel_ijk: torch.Tensor, 
         confidences: torch.Tensor, 
@@ -328,12 +333,13 @@ class VoxelToPointTransformer(nn.Module):
         k=16
     ):
         # Note that `B` is number of views.
+        # Note that all extrinsics & locations are in ndc space.
         # cnn_features: [B, C, H, W]
+        # depths: [B, H, W]
         # extrinsics: [B, 4, 4]
         # intrinsics: [B, 3, 3]
         # point_xyz: [B, 3, H, W]
         # voxel_xyz: [3, V]
-        # voxel_xyz_origin: [3, V]
         # point_ijk: [B, 3, H, W]
         # voxel_ijk: [3, V] 
         # voxel_length: Tensor(1)
@@ -352,22 +358,23 @@ class VoxelToPointTransformer(nn.Module):
         
         for si in SliceIterator(0, v, self.max_voxels_foreach_processing):
             vi = si.stop - si.start
-            voxel_xyz_slice, voxel_xyz_origin_slice, voxel_ijk_slice = \
+            voxel_xyz_slice, voxel_ijk_slice = \
                 voxel_xyz[:, si].unsqueeze(0).repeat(b, 1, 1), \
-                voxel_xyz_origin[:, si].unsqueeze(0).repeat(b, 1, 1), \
                 voxel_ijk[:, si].unsqueeze(0).repeat(b, 1, 1)
             
         
-            interpolated_features, knn_features, knn_byx = compute_voxel_interpolate_and_knn_features(
+            interpolated_features, interpolated_dist, knn_features, knn_byx = compute_voxel_interpolate_and_knn_features(
                 cnn_features=cnn_features, 
+                depths=depths,
                 extrinsics=extrinsics, 
                 intrinsics=intrinsics, 
-                voxel_xyz=voxel_xyz_origin_slice.permute(0, 2, 1), 
+                voxel_xyz=voxel_xyz_slice.permute(0, 2, 1), 
                 k=k
-            ) # (B, C, V), (B, C, V, K), (B, V, K, 3(bhw))
+            ) # (B, C, V), (B, V), (B, C, V, K), (B, V, K, 3(bhw))
             
-            knn_weights = torch.exp(-(torch.norm(point_xyz[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]] \
-                - voxel_xyz_slice.permute(0, 2, 1).unsqueeze(-2).repeat(1, 1, k, 1), dim=-1)) / voxel_length) # (B, V, K, 3) -> (B, V, K)
+            knn_weights = voxel_length / (torch.norm(point_xyz[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]] \
+                - voxel_xyz_slice.permute(0, 2, 1).unsqueeze(-2).repeat(1, 1, k, 1), dim=-1) + 1e-6) # (B, V, K, 3) -> (B, V, K)
+            
             voxel_based_confidences = confidences[knn_byx[..., 0], knn_byx[..., 1], knn_byx[..., 2]] # (B, V, K)
             
             source = interpolated_features.permute(0, 2, 1) # (B, V, C)
@@ -380,13 +387,6 @@ class VoxelToPointTransformer(nn.Module):
                 self.d_model_pe
             ).permute(0, 2, 1).reshape(b, vi, k, c)
             
-            # Add voxel size encoding
-            voxel_size_encoding = voxel_positional_encoding(
-                ijk=voxel_length.view(1, 1, 1), 
-                d_model=self.d_model // 2
-            )
-            source = source + voxel_size_encoding.permute(0, 2, 1).repeat(b, vi, 1)
-            target = target + voxel_size_encoding.permute(0, 2, 1).repeat(b, vi*k, 1).view(b, vi, k, c)
         
             for i, layer in enumerate(self.layers):
                 source = layer(
@@ -395,8 +395,8 @@ class VoxelToPointTransformer(nn.Module):
                     knn_weights, 
                     voxel_based_confidences, 
                 )
-            
-            merged_source_slice_list.append(source.mean(dim=0)) # (SI, C)
+            view_weights = torch.softmax(voxel_length / (interpolated_dist + 1e-6), dim=0).unsqueeze(-1) # (B, VI, 1)
+            merged_source_slice_list.append(torch.sum(source * view_weights, dim=0)) # (VI, C)
             del source
         
         return torch.cat(merged_source_slice_list, dim=0).transpose_(0, 1) # (C, V)

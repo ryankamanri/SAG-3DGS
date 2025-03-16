@@ -42,7 +42,7 @@ def reproject_with_depth(depth_ref, intrinsics_ref, extrinsics_ref, depth_src, i
     ref_homogeneous = torch.stack((x_ref, y_ref, ones), dim=1)
     xyz_ref = torch.matmul(torch.linalg.inv(intrinsics_ref), ref_homogeneous * depth_ref.reshape(batch, 1, -1).repeat(1, 3, 1)) # (B, C, H*W)
     # source 3D space
-    xyz_src = torch.matmul(torch.matmul(extrinsics_src, torch.linalg.inv(extrinsics_ref)),
+    xyz_src = torch.matmul(torch.matmul(torch.linalg.inv(extrinsics_src), extrinsics_ref),
                         torch.cat((xyz_ref, ones.unsqueeze(1)), dim=1))[:, :3, :] # (B, 3, H*W)
     # source view x, y
     K_xyz_src = torch.matmul(intrinsics_src, xyz_src)
@@ -64,7 +64,7 @@ def reproject_with_depth(depth_ref, intrinsics_ref, extrinsics_ref, depth_src, i
     xyz_src = torch.matmul(torch.linalg.inv(intrinsics_src),
                         torch.cat((xy_src, ones.unsqueeze(1)), dim=1) * sampled_depth_src.reshape(batch, 1, -1).repeat(1, 3, 1))
     # reference 3D space
-    xyz_reprojected = torch.matmul(torch.matmul(extrinsics_ref, torch.linalg.inv(extrinsics_src)),
+    xyz_reprojected = torch.matmul(torch.matmul(torch.linalg.inv(extrinsics_ref), extrinsics_src),
                                 torch.cat((xyz_src, ones.unsqueeze(1)), dim=1))[:, :3, :]
     # source view x, y, depth
     depth_reprojected = xyz_reprojected[:, 2, :].reshape([batch, height, width])
@@ -199,7 +199,7 @@ def generate_point_cloud_from_depth_maps(
         # x, y, depth = x[valid_points], y[valid_points], depth_est_averaged[valid_points]
         uvd_ref = (torch.stack((x, y, torch.ones_like(x)), dim=1) * depth_est_averaged.unsqueeze(1)).view(b, 3, -1)
         xyz_ref = torch.matmul(torch.linalg.inv(ref_intrinsics), uvd_ref)
-        xyz_world = torch.matmul(torch.linalg.inv(ref_extrinsics),
+        xyz_world = torch.matmul(ref_extrinsics,
                             torch.cat((xyz_ref, torch.ones_like(x.view(b, 1, -1))), dim=1)) # (B, 4, H*W)
         colors = ref_img.view(b, c, -1) # (B, C=3, H*W)
         # colors = torch.rand(c).view(1, c, 1).repeat(b, 1, h*w).cuda() # show point from multi-view
@@ -249,7 +249,7 @@ def generate_depth_map_based_point_cloud(
 
     uvd_ref = (torch.stack((x, y, torch.ones_like(x)), dim=2) * depths_est.unsqueeze(2)).view(b*v, 3, -1) # (B, V, 3, H, W) -> # (B*V, 3, H*W)
     xyz_ref = torch.matmul(torch.linalg.inv(intrinsics), uvd_ref) # (B*V, 3, H*W)
-    xyz_world = torch.matmul(torch.linalg.inv(extrinsics),
+    xyz_world = torch.matmul(extrinsics,
                         torch.cat((xyz_ref, torch.ones(b * v, 1, h * w, device=depths_est.device)), dim=1)) # (B*V, 4, H*W)
 
     return xyz_world.view(b, v, 4, h, w)
