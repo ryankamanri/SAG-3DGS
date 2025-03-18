@@ -81,7 +81,7 @@ class CasMVSNetModule(nn.Module):
         # multi-stage proj_mats
         # proj_matrices (B, V, 2(intr & extr), 4, 4)
         proj_matrices = torch.zeros(b, v, 2, 4, 4, device="cuda")
-        proj_matrices[..., 0, :, :] = extrinsics
+        proj_matrices[..., 0, :, :] = extrinsics.inverse()
         proj_matrices[..., 1, :3, :3] = cloned_intrinsics
         
         stage2_pjmats = proj_matrices.clone()

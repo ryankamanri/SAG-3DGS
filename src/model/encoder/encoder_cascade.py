@@ -22,7 +22,7 @@ from .mvsnet.cas_mvsnet_module import CasMVSNetModule, CasMVSNetModuleResult
 from .backbone.feature_extractor import FeatureNet
 from ..encodings.positional_encoding import camera_positional_encoding
 from .backbone.multi_costvolume_transformer_module import MultiCostVolumeTransformerModule
-from .backbone.voxelized_gaussian_adapter_module import VoxelizedGaussianAdapterModule, GAUSSIAN_FEATURE_CHANNELS
+from .backbone.voxelized_gaussian_adapter_module import VoxelizedGaussianAdapterModule
 from .backbone.voxel_to_point_cross_attn_transformer import VoxelToPointTransformer
 
 
@@ -102,16 +102,13 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             alphas = alphas[..., :-(w % 32)]
         b, v, c, h, w = imgs.shape # update h and w
         
-        # convert extrinsics c2w -> w2c
-        extrinsics = c2w_extrinsics.inverse()
-        
         # intrinsics adapt to img size
         intrinsics = normalized_intrinsics.clone()
         intrinsics[..., 0, :] *= w
         intrinsics[..., 1, :] *= h
         
         masks = alphas > 0.9
-        return imgs, masks, extrinsics, intrinsics, nears, fars
+        return imgs, masks, c2w_extrinsics, intrinsics, nears, fars
 
     def forward(
         self,
