@@ -146,7 +146,7 @@ class CasMVSNetModule(nn.Module):
             result.ref_view_result_list.append(ReferenceViewResult(imgs[:, vi], pretrained_outputs, backbone_outputs))
         
         vertices, vertices_color = [], []
-        if is_trainning:
+        if False: # no longer need to generate point cloud
             with torch.no_grad():            
                 vertices, vertices_color = generate_point_cloud_from_depth_maps(imgs, extrinsics, intrinsics, pretrained_depths_est, depth_values, max_dist=self.geo_max_dist, max_depth_diff=self.geo_max_depth_diff)
                 for vi in range(v):
