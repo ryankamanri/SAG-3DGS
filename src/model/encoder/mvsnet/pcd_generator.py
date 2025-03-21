@@ -188,6 +188,8 @@ def generate_point_cloud_from_depth_maps(
             depths_est=depths_est, 
             depth_values=depth_values, 
             ref_idx=ref_idx, 
+            max_dist=max_dist, 
+            max_depth_diff=max_depth_diff
         )
         ref_img, ref_depth_est, ref_intrinsics, ref_extrinsics = imgs[:, ref_idx, :, :, :], depths_est[ref_idx], intrinsics[:, ref_idx, :, :], extrinsics[:, ref_idx, :, :]
         # project valid depth to 3d points

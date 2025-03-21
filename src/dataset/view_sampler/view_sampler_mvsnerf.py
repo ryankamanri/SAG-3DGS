@@ -27,7 +27,8 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
     
     def __init__(self, cfg, stage, is_overfitting, cameras_are_circular, step_tracker):
         super().__init__(cfg, stage, is_overfitting, cameras_are_circular, step_tracker)
-        self.build_metas()
+        # self.build_metas()
+        self.metas = None
         self.test_pairs = torch.load(cfg.test_pairs_path)
     
     def build_remap(self):
@@ -91,7 +92,7 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
             train_ids = torch.tensor(self.test_pairs[f"{scene_name}_train"])
             
             test_extrinsic, train_extrinsics = extrinsics[test_id], extrinsics[train_ids]
-            context_indices = self.knn_views(test_extrinsic, train_extrinsics, self.num_context_views)
+            context_indices = train_ids[self.knn_views(test_extrinsic, train_extrinsics, self.num_context_views)]
             
             return (
                 context_indices, 
@@ -99,7 +100,7 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
             )
         
         # DTU
-        image_count = len(self.metas)
+        image_count = 49
         light_count = 7
         light_idx = 3
         
@@ -114,9 +115,24 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
                 torch.tensor([test_id]) * light_count + light_idx
             )
         
+        # light_idx, target_view, src_views = self.metas[random.randint(0, image_count - 1)]
+
+        # ids = torch.randperm(5)[:self.num_context_views]
+        
+        if not self.metas:  
+            extrinsics_ = extrinsics[::light_count] # 49 views
+            self.metas = []
+            for id in range(49):
+                extrinsic = extrinsics_[id]
+                knn_extr = self.knn_views(extrinsic, extrinsics_, k=self.num_context_views+1)
+                self.metas.append((light_idx, id, knn_extr[1:]))
+        
         light_idx, target_view, src_views = self.metas[random.randint(0, image_count - 1)]
 
-        ids = torch.randperm(5)[:self.num_context_views]
+        if random.random() < 0.1: # follow MVSGaussian
+            src_views = torch.cat((torch.tensor([target_view]), src_views))
+        
+        ids = torch.randperm(src_views.numel())[:self.num_context_views]
         
         return (
             torch.tensor([src_views[i] * light_count + light_idx for i in ids], device=device), 

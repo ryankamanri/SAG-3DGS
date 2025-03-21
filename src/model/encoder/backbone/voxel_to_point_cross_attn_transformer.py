@@ -324,8 +324,6 @@ class VoxelToPointTransformer(nn.Module):
         intrinsics: torch.Tensor, 
         point_xyz: torch.Tensor, 
         voxel_xyz: torch.Tensor, 
-        point_ijk: torch.Tensor, 
-        voxel_ijk: torch.Tensor, 
         confidences: torch.Tensor, 
         voxel_length: torch.Tensor, 
         k=16
@@ -354,10 +352,7 @@ class VoxelToPointTransformer(nn.Module):
         
         for si in SliceIterator(0, v, self.max_voxels_foreach_processing):
             vi = si.stop - si.start
-            voxel_xyz_slice, voxel_ijk_slice = \
-                voxel_xyz[:, si].unsqueeze(0).repeat(b, 1, 1), \
-                voxel_ijk[:, si].unsqueeze(0).repeat(b, 1, 1)
-            
+            voxel_xyz_slice = voxel_xyz[:, si].unsqueeze(0).repeat(b, 1, 1)
         
             interpolated_features, interpolated_dist, knn_features, knn_byx = compute_voxel_interpolate_and_knn_features(
                 cnn_features=cnn_features, 
@@ -376,9 +371,9 @@ class VoxelToPointTransformer(nn.Module):
             target = knn_features.permute(0, 2, 3, 1) # (B, V, K, C)
             
             # position encoding
-            source = source + voxel_positional_encoding(voxel_ijk_slice, self.d_model_pe).permute(0, 2, 1)
+            source = source + voxel_positional_encoding(voxel_xyz_slice, self.d_model_pe).permute(0, 2, 1)
             target = target + voxel_positional_encoding(
-                point_ijk[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]].view(b, -1, 3).permute(0, 2, 1), 
+                point_xyz[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]].view(b, -1, 3).permute(0, 2, 1), 
                 self.d_model_pe
             ).permute(0, 2, 1).reshape(b, vi, k, c)
             

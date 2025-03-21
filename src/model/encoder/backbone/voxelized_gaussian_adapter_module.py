@@ -571,17 +571,13 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 # compute ndc
                 centers_ndc = bbox.compute_ndc(local_coordinates, voxel_size)
                 
-                prob_pcd_ijk = bbox.compute_voxel_indices(prob_pcd_xyz_ndc, voxel_size) # (V, 3, H, W)
-                
-                voxel_feature: torch.Tensor = self.transformer(
+                voxel_feature: torch.Tensor = self.transformer.forward(
                     cnn_features=cnn_features[batch], # (V, C, H, W)
                     depths=depth_ndc,
                     extrinsics=extrinsic_ndc, 
                     intrinsics=intrinsics[batch], 
                     point_xyz=prob_pcd_xyz_ndc, # (V, 3, H, W)
                     voxel_xyz=centers_ndc.transpose(0, 1), # (3, N)
-                    point_ijk=prob_pcd_ijk, 
-                    voxel_ijk=local_coordinates.transpose(0, 1), # (3, N)
                     confidences=prob_pcd.vertices_confidence[batch],  # (V, H, W)
                     voxel_length=torch.tensor(1 / voxel_size, device=cnn_features.device), 
                     k=self.patch_size_list[scale_idx]
