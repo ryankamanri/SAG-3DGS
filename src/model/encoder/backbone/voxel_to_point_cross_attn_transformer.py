@@ -277,7 +277,7 @@ def compute_voxel_interpolate_and_knn_features(
     interpolated_feat = F.grid_sample(cnn_features, voxel_centers_uv.unsqueeze(-2), padding_mode="border")
     interpolated_depth = F.grid_sample(depths.unsqueeze(1), voxel_centers_uv.unsqueeze(-2), padding_mode="border").view(b, n) # (B, C=1, N, 1) -> (B, N)
     interpolated_dist = torch.abs(interpolated_depth - voxel_centers_uvd[:, 2]) # (B, N)
-    return interpolated_feat.view(b, c, -1), interpolated_dist, knn_features, knn_byx
+    return interpolated_feat.view(b, c, -1), interpolated_dist, knn_features, knn_byx, voxel_centers_uvd[:, 2] # (B, C, N), (B, N), (B, C, N, K), (B, N, K, 3(bhw)), (B, N)
 
 
 
@@ -299,6 +299,18 @@ class VoxelToPointTransformer(nn.Module):
         self.d_model_pe = d_model // 6
         self.nhead = nhead
         self.max_voxels_foreach_processing = max_voxels_foreach_processing
+        self.feat_enhancer = nn.Linear(d_model+3+3, d_model) # merge direction and rgb features
+        
+        self.scale_weights_predictor = nn.Sequential(
+            nn.Linear(1, 4), 
+            nn.Linear(4, 8), 
+            nn.GELU(),
+            nn.Linear(8, 16), 
+            nn.Linear(16, 32),
+            nn.GELU(),
+            nn.Linear(32, d_model),
+            nn.GELU()
+        )
 
         self.layers = nn.ModuleList(
             [
@@ -315,9 +327,29 @@ class VoxelToPointTransformer(nn.Module):
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
+                
+    def enhance_features(
+        self, 
+        imgs: torch.Tensor, # (B, 3, H, W)
+        features: torch.Tensor, # (B, C, H, W)
+        point_xyz: torch.Tensor, # (B, 3, H, W)
+        extrinsics: torch.Tensor # (B, 4, 4)
+        ):
+        
+        b, c, h, w = features.shape
+        cam_points = extrinsics[:, :3, 3].view(-1, 3, 1, 1) # (B, 3, 1, 1)
+        point_to_cam = cam_points - point_xyz # (B, 3, H, W)
+        point_to_cam = point_to_cam / torch.norm(point_to_cam, dim=1, keepdim=True) # (B, 3, H, W)
+        
+        enhanced_features = self.feat_enhancer(
+            torch.cat((features, point_to_cam, imgs), dim=1).permute(0, 2, 3, 1).reshape(b*h*w, c+3+3)
+        ).reshape(b, h, w, c).permute(0, 3, 1, 2)
+        
+        return enhanced_features
 
     def forward(
         self,
+        imgs: torch.Tensor, 
         cnn_features: torch.Tensor,
         depths: torch.Tensor,
         extrinsics: torch.Tensor, 
@@ -329,6 +361,7 @@ class VoxelToPointTransformer(nn.Module):
         k=16
     ):
         # Note that `B` is number of views.
+        # imgs: [B, 3, H, W]
         # cnn_features: [B, C, H, W]
         # extrinsics: [B, 4, 4]
         # intrinsics: [B, 3, 3]
@@ -345,6 +378,9 @@ class VoxelToPointTransformer(nn.Module):
         
         if v == 0: return torch.zeros(c, v, device=cnn_features.device)
         
+        # enhance features
+        cnn_features = self.enhance_features(imgs, cnn_features, point_xyz, extrinsics)
+        
         # process voxels for multi times if vixel is too much.
         # and merge feature from all views.
         
@@ -354,7 +390,7 @@ class VoxelToPointTransformer(nn.Module):
             vi = si.stop - si.start
             voxel_xyz_slice = voxel_xyz[:, si].unsqueeze(0).repeat(b, 1, 1)
         
-            interpolated_features, interpolated_dist, knn_features, knn_byx = compute_voxel_interpolate_and_knn_features(
+            interpolated_features, interpolated_dist, knn_features, knn_byx, voxel_depths = compute_voxel_interpolate_and_knn_features(
                 cnn_features=cnn_features, 
                 depths=depths,
                 extrinsics=extrinsics, 
@@ -370,12 +406,11 @@ class VoxelToPointTransformer(nn.Module):
             source = interpolated_features.permute(0, 2, 1) # (B, V, C)
             target = knn_features.permute(0, 2, 3, 1) # (B, V, K, C)
             
-            # position encoding
-            source = source + voxel_positional_encoding(voxel_xyz_slice, self.d_model_pe).permute(0, 2, 1)
-            target = target + voxel_positional_encoding(
-                point_xyz[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]].view(b, -1, 3).permute(0, 2, 1), 
-                self.d_model_pe
-            ).permute(0, 2, 1).reshape(b, vi, k, c)
+            # voxel size embedding
+            voxel_scale = voxel_length / voxel_depths # (B, V)
+            voxel_size_emb = self.scale_weights_predictor(voxel_scale.unsqueeze(-1)) # (B, V, C)
+            source *= voxel_size_emb
+            target *= voxel_size_emb.view(b, vi, 1, c)
             
         
             for i, layer in enumerate(self.layers):

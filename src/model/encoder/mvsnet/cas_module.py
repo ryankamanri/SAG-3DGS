@@ -499,10 +499,10 @@ class RefineNet(nn.Module):
         self.res = ConvBnReLU(32, 1)
 
     def forward(self, img, depth_init):
-        concat = F.cat((img, depth_init), dim=1)
+        concat = torch.cat((img, depth_init.unsqueeze(1)), dim=1)
         depth_residual = self.res(self.conv3(self.conv2(self.conv1(concat))))
         depth_refined = depth_init + depth_residual
-        return depth_refined
+        return depth_refined.squeeze(1)
 
 
 def depth_regression(p, depth_values):

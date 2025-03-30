@@ -104,7 +104,7 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
         light_count = 7
         light_idx = 3
         
-        if self.stage == 'test':
+        if self.stage != 'train':
             test_id = torch.tensor(self.test_pairs[f"dtu_test"][idx])
             train_ids = torch.tensor(self.test_pairs[f"dtu_train"])
             
@@ -124,7 +124,7 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
             self.metas = []
             for id in range(49):
                 extrinsic = extrinsics_[id]
-                knn_extr = self.knn_views(extrinsic, extrinsics_, k=self.num_context_views+1)
+                knn_extr = self.knn_views(extrinsic, extrinsics_, k=self.num_context_views+2)
                 self.metas.append((light_idx, id, knn_extr[1:]))
         
         light_idx, target_view, src_views = self.metas[random.randint(0, image_count - 1)]

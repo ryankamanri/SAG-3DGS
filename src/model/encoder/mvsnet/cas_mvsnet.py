@@ -116,7 +116,7 @@ class CascadeMVSNet(nn.Module):
             self.refine_network = RefineNet()
         self.DepthNet = DepthNet(return_prob_volume=return_prob_volume, return_photometric_confidence=return_photometric_confidence)
 
-    def backbone(self, features: list, proj_matrices, depth_values, imgs_shape: tuple):
+    def backbone(self, ref_img: torch.Tensor, features: list, proj_matrices, depth_values, imgs_shape: tuple):
         outputs = {}
         depth, cur_depth = None, None
         cur_period = 1
@@ -157,8 +157,8 @@ class CascadeMVSNet(nn.Module):
 
         # depth map refinement
         if self.refine:
-            refined_depth = self.refine_network(torch.cat((imgs[:, 0], depth), 1))
-            outputs["refined_depth"] = refined_depth
+            refined_depth = self.refine_network(ref_img, depth)
+            outputs["depth"] = refined_depth
 
         return outputs
     
@@ -173,7 +173,7 @@ class CascadeMVSNet(nn.Module):
 
         outputs_list = []
         for vi in range(v):
-            outputs = self.backbone(features, proj_matrices, depth_values[:, vi, :], imgs.shape)
+            outputs = self.backbone(imgs[:, vi], features, proj_matrices, depth_values[:, vi, :], imgs.shape)
             outputs_list.append(outputs)
             # switch to next image
             features.append(features.pop(0))

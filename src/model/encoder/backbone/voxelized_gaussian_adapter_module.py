@@ -493,6 +493,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
         is_trainning = cnn_features.grad_fn != None
         batch_gaussians = []
         batch_losses = [[], [], [], []] # total_existence_loss, total_current_loss, total_offset_loss, total_color_loss
+        pcd = cas_module_result.registed_pcd
         prob_pcd = cas_module_result.registed_prob_pcd
         
         bbox = BoundingBox(
@@ -531,14 +532,22 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
             
             if is_trainning:
                 with torch.no_grad():
+                    pcd_xyz = pcd.vertices[batch, :, :3] # (V, 3, H, W)
+                    pcd_xyz_ndc = bbox.transform_ndc(pcd_xyz, batch, xyz_shape=(1, 3, 1, 1))
+                    pcd_xyz_ndc_reshaped = pcd_xyz_ndc.permute(0, 2, 3, 1)[img_masks[batch]] # (N, 3)
+                    pcd_geo_mask_reshaped = pcd.vertices_geometry_mask[batch][img_masks[batch]] # (N)
+                    pcd_confidence_reshaped = pcd.vertices_confidence[batch][img_masks[batch]] # (N)
+                    pcd_mask_reshaped = torch.logical_and(pcd_geo_mask_reshaped, pcd_confidence_reshaped > 0.8)
                     prob_pcd_geo_mask_reshaped = prob_pcd.vertices_geometry_mask[batch][img_masks[batch]] # (N)
+                    prob_pcd_confidence_reshaped = prob_pcd.vertices_confidence[batch][img_masks[batch]] # (N)
+                    prob_pcd_mask_reshaped = torch.logical_and(prob_pcd_geo_mask_reshaped, prob_pcd_confidence_reshaped > 0.8)
                     all_rectified_xyz_ndc = torch.cat((
-                        bbox.transform_ndc(cas_module_result.registed_pcd.xyz_batches[batch][:, :3], batch, xyz_shape=(1, 3)), 
-                        prob_pcd_xyz_ndc_reshaped[prob_pcd_geo_mask_reshaped]
+                        pcd_xyz_ndc_reshaped[pcd_mask_reshaped], 
+                        prob_pcd_xyz_ndc_reshaped[prob_pcd_mask_reshaped]
                     ), dim=0) # (N'', 3)
                     all_rectified_rgb = torch.cat((
-                        cas_module_result.registed_pcd.rgb_batches[batch], 
-                        prob_pcd_rgb_reshaped[prob_pcd_geo_mask_reshaped]
+                        prob_pcd_rgb_reshaped[pcd_mask_reshaped], 
+                        prob_pcd_rgb_reshaped[prob_pcd_mask_reshaped]
                     ), dim=0) # (N'', 3)
                     downsampled_pcds = downsample_pcd(
                         xyz_ndc=all_rectified_xyz_ndc, 
@@ -547,6 +556,12 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         bbox=bbox, 
                         batch_idx=batch
                     )
+                    if False:
+                        import open3d
+                        pcd = open3d.geometry.PointCloud()
+                        pcd.points = open3d.utility.Vector3dVector(pcd_xyz_ndc_reshaped.detach().cpu())
+                        pcd.colors = open3d.utility.Vector3dVector(prob_pcd_rgb_reshaped.detach().cpu())
+                        open3d.visualization.draw_geometries([pcd])
                 
             for scale_idx in range(self.voxel_size_count):
                 # TODO: Create multi-scale voxel according to points.
@@ -572,6 +587,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 centers_ndc = bbox.compute_ndc(local_coordinates, voxel_size)
                 
                 voxel_feature: torch.Tensor = self.transformer.forward(
+                    imgs=imgs[batch],
                     cnn_features=cnn_features[batch], # (V, C, H, W)
                     depths=depth_ndc,
                     extrinsics=extrinsic_ndc, 
