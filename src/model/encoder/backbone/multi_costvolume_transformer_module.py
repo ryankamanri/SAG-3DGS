@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import torch
 from torch import nn
-from ..mvsnet import CascadeMVSNet, generate_point_cloud_from_depth_maps
+from ..mvsnet import CascadeMVSNet
 from .multiview_transformer import MultiViewFeatureTransformer
 from ..mvsnet.cas_mvsnet_module import CasMVSNetModuleResult
 from ..mvsnet.cas_module import Deconv2d

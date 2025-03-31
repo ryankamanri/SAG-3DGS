@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import torch
 from torch import nn
-from ..mvsnet import CascadeMVSNet, generate_point_cloud_from_depth_maps, generate_depth_map_based_point_cloud, generate_geometric_mask
+from ..mvsnet import CascadeMVSNet, generate_depth_map_based_point_cloud, generate_geometric_mask
 
 
 
@@ -112,8 +112,9 @@ class CasMVSNetModule(nn.Module):
         depth_values = depth_values.flip(dims=(2,)) # start from near to far.
         return proj_mat, depth_values
         
-    def forward(self, imgs, img_masks, extrinsics, intrinsics, nears, fars, is_trainning: bool):
+    def forward(self, imgs, img_masks, extrinsics, intrinsics, nears, fars):
         proj_mat, depth_values = self.preprocess(imgs, extrinsics, intrinsics, nears, fars)
+        near_fars = torch.stack([nears, fars], dim=-1) # (B, V, 2)
         b, v, c, h, w = imgs.shape
         
         result = empty_cas_mvsnet_module_result()
@@ -126,19 +127,21 @@ class CasMVSNetModule(nn.Module):
         backbone_geo_masks = []
         
         pretrained_outputs_list = []
-        if is_trainning:
+        if self.training:
             with torch.no_grad(): # necessary to reduce the memory
                 pretrained_outputs_list = self.pretrained_cas_mvsnet(imgs, proj_mat, depth_values) # depth and photometric_confidence
         
         if self.use_backbone:
             backbone_outputs_list = self.backbone_cas_mvsnet(imgs, proj_mat, depth_values)
+        elif not self.training:
+            backbone_outputs_list = self.pretrained_cas_mvsnet(imgs, proj_mat, depth_values)
         else:
             backbone_outputs_list = pretrained_outputs_list
             
         # for every reference image, the mvsnet will generate a depth map and a photometric confidence map
         for vi in range(v):
             pretrained_outputs = {}
-            if is_trainning:
+            if self.training:
                 pretrained_outputs = pretrained_outputs_list[vi]
                 pretrained_depths_est.append(pretrained_outputs["depth"])
                 pretrained_photometric_confidences.append(pretrained_outputs["photometric_confidence"])
@@ -149,13 +152,13 @@ class CasMVSNetModule(nn.Module):
             
             result.ref_view_result_list.append(ReferenceViewResult(imgs[:, vi], pretrained_outputs, backbone_outputs))
         
-        if is_trainning:
+        if self.training:
             with torch.no_grad():            
                 vertices = generate_depth_map_based_point_cloud(pretrained_depths_est, extrinsics, intrinsics)
                 for vi in range(v):
-                    pretrained_geo_mask, _ = generate_geometric_mask(imgs, extrinsics, intrinsics, pretrained_depths_est, depth_values,
+                    pretrained_geo_mask, _ = generate_geometric_mask(imgs, extrinsics, intrinsics, pretrained_depths_est, near_fars,
                                                                      ref_idx=vi, max_dist=self.geo_max_dist, max_depth_diff=self.geo_max_depth_diff)
-                    backbone_geo_mask, _ = generate_geometric_mask(imgs, extrinsics, intrinsics, backbone_depths_est, depth_values, 
+                    backbone_geo_mask, _ = generate_geometric_mask(imgs, extrinsics, intrinsics, backbone_depths_est, near_fars, 
                                                                 ref_idx=vi, max_dist=self.geo_max_dist, max_depth_diff=self.geo_max_depth_diff)
                     pretrained_geo_masks.append(pretrained_geo_mask)
                     backbone_geo_masks.append(backbone_geo_mask)

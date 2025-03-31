@@ -83,7 +83,7 @@ def check_geometric_consistency(
     depth_src: torch.Tensor, 
     intrinsics_src: torch.Tensor, 
     extrinsics_src: torch.Tensor,
-    depth_values: torch.Tensor, 
+    near_fars: torch.Tensor, # (B, 2)
     max_dist=0.001, 
     max_depth_diff=0.001):
     
@@ -100,7 +100,7 @@ def check_geometric_consistency(
     relative_depth_diff = depth_diff / depth_ref
 
     # mask = torch.logical_and(dist < 1, relative_depth_diff < 0.01)
-    mask = torch.logical_and(dist < ((width + height) / 2) * max_dist, relative_depth_diff < (depth_values.max() - depth_values.min()) * max_depth_diff)
+    mask = torch.logical_and(dist < ((width + height) / 2) * max_dist, relative_depth_diff < (near_fars[:, 1].view(-1, 1, 1) - near_fars[:, 0].view(-1, 1, 1)) * max_depth_diff)
     depth_reprojected[~mask] = 0
 
     return mask, depth_reprojected, x2d_src, y2d_src
@@ -111,7 +111,7 @@ def generate_geometric_mask(
     extrinsics: torch.Tensor, 
     intrinsics: torch.Tensor, 
     depths_est: list[torch.Tensor], 
-    depth_values: torch.Tensor, 
+    near_fars: torch.Tensor, # (B, V, 2)
     ref_idx=0, 
     max_dist=0.001, 
     max_depth_diff=0.001):
@@ -133,7 +133,7 @@ def generate_geometric_mask(
         geo_mask, depth_reprojected, x2d_src, y2d_src = check_geometric_consistency(
             ref_depth_est, ref_intrinsics, ref_extrinsics,
             depths_est[src_idx], intrinsics[:, src_idx, :, :], extrinsics[:, src_idx, :, :], 
-            depth_values=depth_values, max_dist=max_dist, max_depth_diff=max_depth_diff)
+            near_fars=near_fars[:, src_idx], max_dist=max_dist, max_depth_diff=max_depth_diff)
         
         geo_mask_sum += geo_mask
         all_srcview_depth_ests.append(depth_reprojected)
@@ -171,6 +171,7 @@ def generate_point_cloud_from_depth_maps(
     max_dist=0.001, 
     max_depth_diff=0.001):
     """
+    # DEPRECATED
     ### generete point cloud from depth maps, only points with geometry consistency will be selected.
     """
     
@@ -186,7 +187,7 @@ def generate_point_cloud_from_depth_maps(
             extrinsics=extrinsics, 
             intrinsics=intrinsics, 
             depths_est=depths_est, 
-            depth_values=depth_values, 
+            near_fars=depth_values, 
             ref_idx=ref_idx, 
             max_dist=max_dist, 
             max_depth_diff=max_depth_diff
@@ -199,7 +200,7 @@ def generate_point_cloud_from_depth_maps(
         x, y = x.unsqueeze(0).repeat(b, 1, 1), y.unsqueeze(0).repeat(b, 1, 1)
         # print("valid_points", valid_points.sum())
         # x, y, depth = x[valid_points], y[valid_points], depth_est_averaged[valid_points]
-        uvd_ref = (torch.stack((x, y, torch.ones_like(x)), dim=1) * depth_est_averaged.unsqueeze(1)).view(b, 3, -1)
+        uvd_ref = (torch.stack((x, y, torch.ones_like(x)), dim=1) * ref_depth_est.unsqueeze(1)).view(b, 3, -1)
         xyz_ref = torch.matmul(torch.linalg.inv(ref_intrinsics), uvd_ref)
         xyz_world = torch.matmul(ref_extrinsics,
                             torch.cat((xyz_ref, torch.ones_like(x.view(b, 1, -1))), dim=1)) # (B, 4, H*W)

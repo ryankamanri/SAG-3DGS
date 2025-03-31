@@ -73,4 +73,4 @@ class LossSSIM(Loss[LossSSIMCfg, LossSSIMCfgWrapper]):
         global_step: int,
     ) -> Float[Tensor, ""]:
         
-        return ssim(batch["target"]["image"].squeeze(1), prediction.color.squeeze(1))
+        return (1. - ssim(batch["target"]["image"].squeeze(1), prediction.color.squeeze(1)))
