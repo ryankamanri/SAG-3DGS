@@ -121,8 +121,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     ) -> EncoderOutput:
         imgs, masks, extrinsics, intrinsics, nears, fars = self.preprocess(context)
         features = self.feature_extractor(imgs) # (B, V, C, H, W)
-        is_trainning = features.grad_fn != None
-        cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, masks, extrinsics, intrinsics, nears, fars, is_trainning)
+        cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, masks, extrinsics, intrinsics, nears, fars)
         gaussians: EncoderOutput = self.gaussian_adapter_module(imgs, features, cas_module_result, masks, extrinsics, intrinsics, nears, fars)
         gaussians.others["cas_module_result"] = cas_module_result
         gaussians.others["nears"] = nears

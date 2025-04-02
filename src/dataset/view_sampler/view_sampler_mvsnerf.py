@@ -87,7 +87,7 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
         Int64[Tensor, " target_view"],  # indices for target views
     ]:
         if not scene.startswith("dtu"): # 
-            scene_name = scene[scene.index("_") + 1:]
+            scene_name = scene[scene.index("_")+1:-3]
             test_id = torch.tensor(self.test_pairs[f"{scene_name}_test"][idx])
             train_ids = torch.tensor(self.test_pairs[f"{scene_name}_train"])
             
@@ -145,7 +145,7 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
             light_count, light_idx = 7, 3
             return (torch.tensor(self.test_pairs["dtu_train"]) * light_count + light_idx)
         if scene.startswith('tandt') or scene.startswith('ns') or scene.startswith('llff') or scene.startswith('scannet'):
-            scene_name = scene[scene.index("_") + 1:]
+            scene_name = scene[scene.index("_")+1:-3]
             return torch.tensor(self.test_pairs[f"{scene_name}_train"])
         # TODO: add other datasets.
         
