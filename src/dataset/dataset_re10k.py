@@ -3,8 +3,11 @@ from dataclasses import dataclass
 from functools import cached_property
 from io import BytesIO
 from pathlib import Path
+import re
 from typing import Literal
 
+import cv2
+import numpy as np
 import torch
 import torchvision.transforms as tf
 from einops import rearrange, repeat
@@ -20,6 +23,42 @@ from .shims.crop_shim import apply_crop_shim
 from .types import Stage
 from .view_sampler import ViewSampler
 
+def read_pfm(filename):
+    file = open(filename, 'rb')
+    color = None
+    width = None
+    height = None
+    scale = None
+    endian = None
+
+    header = file.readline().decode('utf-8').rstrip()
+    if header == 'PF':
+        color = True
+    elif header == 'Pf':
+        color = False
+    else:
+        raise Exception('Not a PFM file.')
+
+    dim_match = re.match(r'^(\d+)\s(\d+)\s$', file.readline().decode('utf-8'))
+    if dim_match:
+        width, height = map(int, dim_match.groups())
+    else:
+        raise Exception('Malformed PFM header.')
+
+    scale = float(file.readline().rstrip())
+    if scale < 0:  # little-endian
+        endian = '<'
+        scale = -scale
+    else:
+        endian = '>'  # big-endian
+
+    data = np.fromfile(file, endian + 'f')
+    shape = (height, width, 3) if color else (height, width)
+
+    data = np.reshape(data, shape)
+    data = np.flipud(data)
+    file.close()
+    return data, scale
 
 @dataclass
 class DatasetRE10kCfg(DatasetCfgCommon):
@@ -122,10 +161,8 @@ class DatasetRE10k(IterableDataset):
                 example = chunk[run_idx // times_per_scene]
 
                 extrinsics, intrinsics, nears, fars = self.convert_poses(example["cameras"])
-                if times_per_scene > 1:  # specifically for DTU
-                    scene = f"{self.cfg.name}_{example['key']}_{(run_idx % times_per_scene):02d}"
-                else:
-                    scene = f"{self.cfg.name}_{example['key']}"
+
+                scene = f"{self.cfg.name}_{example['key']}_{(run_idx % times_per_scene):02d}"
 
                 try:
                     context_indices, target_indices = self.view_sampler.sample(
@@ -161,6 +198,17 @@ class DatasetRE10k(IterableDataset):
                 fine_tune_images, fine_tune_alphas = self.convert_images([
                     example["images"][index.item()] for index in fine_tune_indices
                 ]) if fine_tune_indices != None else (None, None)
+                
+                # load depth from pfm file
+                if False: # self.cfg.name == "dtu":
+                    pfm_path = Path("C:/Users/97448/plus/repos/datasets/dtu/data/mvs_training/dtu/Depths_raw") / example['key'][:example['key'].index("_")]
+                    context_depth_maps = [read_pfm(str(pfm_path / f"depth_map_{(index // 7).item():04d}.pfm"))[0] for index in context_indices]
+                    # downsample to 512 * 640
+                    context_depth_maps = [cv2.resize(depth_map, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST) for depth_map in context_depth_maps]
+                    context_depth_maps = [depth_map[44:556, 80:720] for depth_map in context_depth_maps]
+                    context_depth_maps = torch.stack([torch.from_numpy(depth_map.copy()) for depth_map in context_depth_maps], dim=0)
+                    # donwscale to 1/ 200
+                    context_depth_maps = context_depth_maps / 200.0
                 
 
                 # Skip the example if the images don't have the right shape.
