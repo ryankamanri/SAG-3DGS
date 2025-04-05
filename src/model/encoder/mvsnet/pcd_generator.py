@@ -105,7 +105,7 @@ def check_geometric_consistency(
 
     return mask, depth_reprojected, x2d_src, y2d_src
 
-
+@torch.no_grad()
 def generate_geometric_mask(
     imgs: torch.Tensor, 
     extrinsics: torch.Tensor, 
