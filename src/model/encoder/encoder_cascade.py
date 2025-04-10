@@ -178,7 +178,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         ################################################### from mvsplat
         stage_vertices, stage_features, stage_masks = [], [], []
         for i in range(self.current_idx):
-            with torch.set_grad_enabled(i == self.current_idx - 1): # only the last stage is trainable
+            with torch.set_grad_enabled(self.training and i == self.current_idx - 1): # only the last stage is trainable
                 trans_features, cnn_features = self.backbones[i](
                     context["image"],
                     attn_splits=self.cfg.multiview_trans_attn_split,

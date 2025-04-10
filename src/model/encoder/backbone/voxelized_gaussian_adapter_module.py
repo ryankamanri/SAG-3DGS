@@ -125,7 +125,7 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         self.delta_means_activation = lambda x, voxel_size: (torch.sigmoid(x) - 0.5) / voxel_size
         self.scaling_activation = lambda x, voxel_size: (self.gaussian_scale_min + (self.gaussian_scale_max - self.gaussian_scale_min) * torch.sigmoid(x - 5)) / voxel_size
         self.quaternion_activation = lambda x: x
-        self.opacity_activation = lambda x: torch.sigmoid(x)
+        self.opacity_activation = lambda x: torch.sigmoid(x - 5)
         self.activated_shs = [lambda x : x] + [
             lambda x: x / (5 ** (i + 1)) for i in range(1, sh_degree + 1)
         ]
@@ -532,7 +532,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
             depth_ndc = depths[batch] / bbox.size[batch]
                 
             for scale_idx in range(current_stage):
-                with torch.set_grad_enabled(scale_idx == current_stage - 1):
+                with torch.set_grad_enabled(self.training and scale_idx == current_stage - 1):
                     vertices = stage_vertices[scale_idx] # (B, V, 3, H, W)
                     features = stage_features[scale_idx] # (B, V, C, H, W)
                     masks = stage_masks[scale_idx] # (B, V, H, W)
@@ -635,7 +635,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         total_color_loss += color_loss
                     
                     has_gaussian = current_gaussians.opacities.squeeze(0) > self.min_opacity # (N)
-                    print(f"Regressed gaussians: {has_gaussian.sum()}")
+                    # print(f"Regressed gaussians: {has_gaussian.sum()}")
                     # next level
                     # update current local coordinates
                     local_coordinates = local_coordinates[has_gaussian]
@@ -643,6 +643,8 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                     
                     if scale_idx == current_stage - 1:
                         gaussians = current_gaussians
+                    else:
+                        del current_gaussians
                     
 
             

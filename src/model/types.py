@@ -46,6 +46,7 @@ class OptimizerCfg:
     scale_lr: float
     opacity_lr: float
     shs_lr: list[float]
+    stage_begin_steps: list[int]
 
 @dataclass
 class FineTuneCfg:

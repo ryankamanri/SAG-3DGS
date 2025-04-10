@@ -47,6 +47,7 @@ optimizer:
   scale_lr: 1.e-4
   opacity_lr: 5.e-4
   shs_lr: [5.e-4, 1.e-4, 2.e-5, 4.e-6]
+  stage_begin_steps: [0, 100000, 200000, 300000]
 
 checkpointing:
   load: null

@@ -1,7 +1,7 @@
 name: cascade
 
 cas_mvsnet_ckpt_path: pretrained/casmvsnet_smooth_000015.ckpt
-cas_mvsnet_use_backbone: true
+cas_mvsnet_use_backbone: false
 cas_mvsnet_load_to_backbone: false
 cas_mvsnet_ndepth: [48, 32, 8]
 cas_mvsnet_geo_max_dist: 0.01
@@ -14,7 +14,7 @@ no_ffn: False
 ffn_dim_expansion: 4
 max_voxels_foreach_processing: 1000000
 voxel_size_list: [64, 128, 256]
-voxel_size_begin_steps: [0, 80000, 150000, 300000]
+voxel_size_begin_steps: [0, 100000, 200000, 300000]
 patch_size_list: [1, 1, 1]
 predict_sh_degree: 2
 

@@ -719,22 +719,28 @@ class ModelWrapper(LightningModule):
             {'params': self.losses.parameters(), 'lr': self.optimizer_cfg.lr}, 
             {'params': self.decoder.parameters(), 'lr': self.optimizer_cfg.lr}
         ] + self.encoder.configure_optimizers(self.optimizer_cfg))
-        if self.optimizer_cfg.cosine_lr:
-            warm_up = torch.optim.lr_scheduler.OneCycleLR(
-                            optimizer, self.optimizer_cfg.lr,
-                            self.trainer.max_steps + 10,
-                            pct_start=0.01,
-                            cycle_momentum=False,
-                            anneal_strategy='cos',
-                        )
-        else:
-            warm_up_steps = self.optimizer_cfg.warm_up_steps
-            warm_up = torch.optim.lr_scheduler.LinearLR(
+        
+        # multi-stage learning rate scheduler
+        warm_up = torch.optim.lr_scheduler.SequentialLR(
                 optimizer,
-                1 / warm_up_steps,
-                1,
-                total_iters=warm_up_steps,
-        )
+                schedulers=[torch.optim.lr_scheduler.OneCycleLR(
+                        optimizer, self.optimizer_cfg.lr,
+                        self.optimizer_cfg.stage_begin_steps[i+1] - self.optimizer_cfg.stage_begin_steps[i],
+                        pct_start=0.01,
+                        cycle_momentum=False,
+                        anneal_strategy='cos',
+                    ) for i in range(len(self.optimizer_cfg.stage_begin_steps) - 1)],
+                milestones=self.optimizer_cfg.stage_begin_steps[1:-1],
+            )
+        
+        #     warm_up_steps = self.optimizer_cfg.warm_up_steps
+        #     warm_up = torch.optim.lr_scheduler.LinearLR(
+        #         optimizer,
+        #         1 / warm_up_steps,
+        #         1,
+        #         total_iters=warm_up_steps,
+        # )
+
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
