@@ -46,6 +46,7 @@ class EncoderCascadeCfg:
     ffn_dim_expansion: int
     max_voxels_foreach_processing: int
     voxel_size_list: list[int]
+    voxel_size_begin_steps: list[int]
     patch_size_list: list[int]
     predict_sh_degree: int
     # params for multi-view depth predictor
@@ -71,6 +72,9 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     def __init__(self, cfg: EncoderCascadeCfg) -> None:
         super().__init__(cfg)
         self.cfg = cfg
+        self.voxel_size_list = cfg.voxel_size_list
+        self.voxel_size_begin_steps = cfg.voxel_size_begin_steps
+        self.current_idx = 0
         self.cas_mvsnet_module = CasMVSNetModule(
             cas_mvsnet_ckpt_path=cfg.cas_mvsnet_ckpt_path, 
             ndepths=cfg.cas_mvsnet_ndepth, 
@@ -81,7 +85,6 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             )
         
         self.feature_channels = cfg.feature_channels
-        self.feature_extractor = FeatureNet()
         
         # from mvsplat
         self.backbone = BackboneMultiview(
@@ -160,7 +163,8 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     ) -> EncoderOutput:
         imgs, masks, extrinsics, intrinsics, nears, fars = self.preprocess(context)
         b, v, c, h, w = imgs.shape
-        # features = self.feature_extractor(imgs) # (B, V, C, H, W)
+        if global_step >= self.voxel_size_begin_steps[self.current_idx]:
+            self.current_idx += 1
         cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, masks, extrinsics, intrinsics, nears, fars)
         ################################################### from mvsplat
         trans_features, cnn_features = self.backbone(
@@ -206,7 +210,15 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         
         
         ##########################################################
-        gaussians: EncoderOutput = self.gaussian_adapter_module(imgs, features, cas_module_result, masks, extrinsics, intrinsics, nears, fars)
+        gaussians: EncoderOutput = self.gaussian_adapter_module(
+            imgs, 
+            features, 
+            self.current_idx, 
+            cas_module_result, 
+            masks, 
+            extrinsics, 
+            intrinsics, 
+            nears, fars)
         gaussians.others["cas_module_result"] = cas_module_result
         gaussians.others["nears"] = nears
         gaussians.others["fars"] = fars
@@ -220,7 +232,6 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     
     def configure_optimizers(self, cfg):
         return [
-            {'params': self.feature_extractor.parameters(), 'lr': cfg.lr}, 
             {'params': self.cas_mvsnet_module.parameters(), 'lr': cfg.lr}, 
             {'params': self.backbone.parameters(), 'lr': cfg.lr},
             {'params': self.depth_predictor.parameters(), 'lr': cfg.lr}, 

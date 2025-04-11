@@ -125,7 +125,7 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         self.delta_means_activation = lambda x, voxel_size: (torch.sigmoid(x) - 0.5) / voxel_size
         self.scaling_activation = lambda x, voxel_size: (self.gaussian_scale_min + (self.gaussian_scale_max - self.gaussian_scale_min) * torch.sigmoid(x - 5)) / voxel_size
         self.quaternion_activation = lambda x: x
-        self.opacity_activation = lambda x: torch.sigmoid(x)
+        self.opacity_activation = lambda x: torch.sigmoid(x - 5)
         self.activated_shs = [lambda x : x] + [
             lambda x: x / (5 ** (i + 1)) for i in range(1, sh_degree + 1)
         ]
@@ -487,7 +487,16 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
     def configure_optimizers(self, cfg):
         return self.gaussian_features_predictor.configure_optimizers(cfg)
         
-    def forward(self, imgs: torch.Tensor, cnn_features: torch.Tensor, cas_module_result: CasMVSNetModuleResult, img_masks: torch.Tensor, extrinsics: torch.Tensor, intrinsics: torch.Tensor, nears: torch.Tensor, fars: torch.Tensor):
+    def forward(self, 
+                imgs: torch.Tensor, 
+                cnn_features: torch.Tensor, 
+                current_stage: int, 
+                cas_module_result: CasMVSNetModuleResult, 
+                img_masks: torch.Tensor, 
+                extrinsics: torch.Tensor, 
+                intrinsics: torch.Tensor, 
+                nears: torch.Tensor, 
+                fars: torch.Tensor):
         b, v, c, h, w = cnn_features.shape
         far = fars[0, 0]
         is_trainning = cnn_features.grad_fn != None
@@ -563,7 +572,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         pcd.colors = open3d.utility.Vector3dVector(prob_pcd_rgb_reshaped.detach().cpu())
                         open3d.visualization.draw_geometries([pcd])
                 
-            for scale_idx in range(self.voxel_size_count):
+            for scale_idx in range(current_stage):
                 # TODO: Create multi-scale voxel according to points.
                 voxel_size = self.voxel_size_list[scale_idx]
                 local_coordinates = create_local_coordinates(
