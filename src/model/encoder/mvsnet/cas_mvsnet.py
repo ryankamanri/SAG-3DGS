@@ -6,9 +6,9 @@ from .cas_module import *
 Align_Corners_Range = False
 
 class DepthNet(nn.Module):
-    def __init__(self, return_prob_volume=False, return_photometric_confidence=False):
+    def __init__(self, return_volume=False, return_photometric_confidence=False):
         super(DepthNet, self).__init__()
-        self.return_prob_volume = return_prob_volume
+        self.return_volume = return_volume
         self.return_photometric_confidence = return_photometric_confidence
 
     def forward(self, stage_idx, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None):
@@ -61,8 +61,10 @@ class DepthNet(nn.Module):
         result = {}
         result["depth"] = depth
         
-        if self.return_prob_volume:
-            result["prob_volume"] = prob_volume
+        if self.return_volume:
+            volume_context = volume_sum.div_(num_views)
+            feature_volume = torch.cat((volume_variance, volume_context), dim=1)
+            result["volume"] = feature_volume
         
         if not self.return_photometric_confidence:
             return result
@@ -80,7 +82,7 @@ class DepthNet(nn.Module):
 
 class CascadeMVSNet(nn.Module):
     def __init__(self, refine=False, ndepths=[48, 32, 8], depth_interals_ratio=[4, 2, 1], share_cr=False,
-                 grad_method="detach", arch_mode="fpn", cr_base_chs=[8, 8, 8], return_prob_volume=False, return_photometric_confidence=False):
+                 grad_method="detach", arch_mode="fpn", cr_base_chs=[8, 8, 8], return_volume=False, return_photometric_confidence=False):
         super(CascadeMVSNet, self).__init__()
         self.refine = refine
         self.share_cr = share_cr
@@ -114,7 +116,7 @@ class CascadeMVSNet(nn.Module):
                                                       for i in range(self.num_stage)])
         if self.refine:
             self.refine_network = RefineNet()
-        self.DepthNet = DepthNet(return_prob_volume=return_prob_volume, return_photometric_confidence=return_photometric_confidence)
+        self.DepthNet = DepthNet(return_volume=return_volume, return_photometric_confidence=return_photometric_confidence)
 
     def backbone(self, ref_img: torch.Tensor, features: list, proj_matrices, depth_values, imgs_shape: tuple):
         outputs = {}
@@ -138,7 +140,7 @@ class CascadeMVSNet(nn.Module):
                                                 align_corners=Align_Corners_Range).squeeze(1)
             else:
                 cur_depth = depth_values
-            depth_range_samples, cur_period = get_depth_range_samples(cur_depth=cur_depth,
+            depth_range_samples, cur_period, near_far_inv = get_depth_range_samples(cur_depth=cur_depth,
                                                         cur_period=cur_period, 
                                                         ndepth=self.ndepths[stage_idx],
                                                         device=depth_values.device,
@@ -151,6 +153,7 @@ class CascadeMVSNet(nn.Module):
 
             depth = outputs_stage['depth']
             outputs_stage["depth_range_samples"] = depth_range_samples
+            outputs_stage["depth_near_far_inv"] = near_far_inv
 
             outputs["stage{}".format(stage_idx + 1)] = outputs_stage
             outputs.update(outputs_stage)

@@ -299,7 +299,6 @@ class VoxelToPointTransformer(nn.Module):
         self.d_model_pe = d_model // 6
         self.nhead = nhead
         self.max_voxels_foreach_processing = max_voxels_foreach_processing
-        self.feat_enhancer = nn.Linear(d_model+3+3, d_model) # merge direction and rgb features
         
         self.scale_weights_predictor = nn.Sequential(
             nn.Linear(1, 4), 
@@ -328,24 +327,6 @@ class VoxelToPointTransformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
                 
-    def enhance_features(
-        self, 
-        imgs: torch.Tensor, # (B, 3, H, W)
-        features: torch.Tensor, # (B, C, H, W)
-        point_xyz: torch.Tensor, # (B, 3, H, W)
-        extrinsics: torch.Tensor # (B, 4, 4)
-        ):
-        
-        b, c, h, w = features.shape
-        cam_points = extrinsics[:, :3, 3].view(-1, 3, 1, 1) # (B, 3, 1, 1)
-        point_to_cam = cam_points - point_xyz # (B, 3, H, W)
-        point_to_cam = point_to_cam / torch.norm(point_to_cam, dim=1, keepdim=True) # (B, 3, H, W)
-        
-        enhanced_features = self.feat_enhancer(
-            torch.cat((features, point_to_cam, imgs), dim=1).permute(0, 2, 3, 1).reshape(b*h*w, c+3+3)
-        ).reshape(b, h, w, c).permute(0, 3, 1, 2)
-        
-        return enhanced_features
 
     def forward(
         self,
@@ -377,9 +358,6 @@ class VoxelToPointTransformer(nn.Module):
         assert k == 1 or k == 4 or k == 9 or k == 16 or k == 25 or k == 36 or k == 49 # 1^2 to 6^2
         
         if v == 0: return torch.zeros(c, v, device=cnn_features.device)
-        
-        # enhance features
-        cnn_features = self.enhance_features(imgs, cnn_features, point_xyz, extrinsics)
         
         # process voxels for multi times if vixel is too much.
         # and merge feature from all views.

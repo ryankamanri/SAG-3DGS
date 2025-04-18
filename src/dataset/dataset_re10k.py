@@ -242,6 +242,8 @@ class DatasetRE10k(IterableDataset):
                     "context": {
                         "extrinsics": extrinsics[context_indices],
                         "intrinsics": intrinsics[context_indices],
+                        "target_extrinsics": extrinsics[target_indices],
+                        "target_intrinsics": intrinsics[target_indices],
                         "image": context_images,
                         "alpha": context_alphas, 
                         "near": nears[context_indices] / nf_scale,

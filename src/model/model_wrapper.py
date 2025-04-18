@@ -390,32 +390,55 @@ class ModelWrapper(LightningModule):
                 self.test_step_outputs[f"ssim_ft"] = []
             if f"lpips_ft" not in self.test_step_outputs:
                 self.test_step_outputs[f"lpips_ft"] = []
-
-            self.test_step_outputs[f"psnr"].append(
-                compute_psnr(rgb_gt, rgb).mean().item()
-            )
-            self.test_step_outputs[f"ssim"].append(
-                compute_ssim(rgb_gt, rgb).mean().item()
-            )
-            self.test_step_outputs[f"lpips"].append(
-                compute_lpips(rgb_gt, rgb).mean().item()
-            )
-            self.test_step_outputs[f"psnr_ft"].append(
-                compute_psnr(rgb_gt, rgb_ft).mean().item()
-            )
-            self.test_step_outputs[f"ssim_ft"].append(
-                compute_ssim(rgb_gt, rgb_ft).mean().item()
-            )
-            self.test_step_outputs[f"lpips_ft"].append(
-                compute_lpips(rgb_gt, rgb_ft).mean().item()
-            )
+                
+            psnr = compute_psnr(rgb_gt, rgb).mean().item()
+            ssim = compute_ssim(rgb_gt, rgb).mean().item()
+            lpips = compute_lpips(rgb_gt, rgb).mean().item()
+            psnr_ft = compute_psnr(rgb_gt, rgb_ft).mean().item()
+            ssim_ft = compute_ssim(rgb_gt, rgb_ft).mean().item()
+            lpips_ft = compute_lpips(rgb_gt, rgb_ft).mean().item()
+            
+            self.test_step_outputs[f"psnr"].append(psnr)
+            self.test_step_outputs[f"ssim"].append(ssim)
+            self.test_step_outputs[f"lpips"].append(lpips)
+            self.test_step_outputs[f"psnr_ft"].append(psnr_ft)
+            self.test_step_outputs[f"ssim_ft"].append(ssim_ft)
+            self.test_step_outputs[f"lpips_ft"].append(lpips_ft)
             
             print()
             print(f"Evaluate scene {batch['scene']}: ")
-            print(f"PSNR(origin/ft): {compute_psnr(rgb_gt, rgb).mean().item()}/{compute_psnr(rgb_gt, rgb_ft).mean().item()}")
-            print(f"SSIM(origin/ft): {compute_ssim(rgb_gt, rgb).mean().item()}/{compute_ssim(rgb_gt, rgb_ft).mean().item()}")
-            print(f"LPIPS(origin/ft): {compute_lpips(rgb_gt, rgb).mean().item()}/{compute_lpips(rgb_gt, rgb_ft).mean().item()}")
+            print(f"PSNR(origin/ft): {psnr}/{psnr_ft}")
+            print(f"SSIM(origin/ft): {ssim}/{ssim_ft}")
+            print(f"LPIPS(origin/ft): {lpips}/{lpips_ft}")
             print()
+            
+            # append scene results
+            if "scene_result" not in self.test_step_outputs:
+                self.test_step_outputs["scene_result"] = {}
+            scene_name = scene[:-3] # remove test view id
+            if scene_name not in self.test_step_outputs["scene_result"]:
+                self.test_step_outputs["scene_result"][scene_name] = {}
+                
+            if "psnr" not in self.test_step_outputs["scene_result"][scene_name]:
+                self.test_step_outputs["scene_result"][scene_name]["psnr"] = []
+            if "ssim" not in self.test_step_outputs["scene_result"][scene_name]:
+                self.test_step_outputs["scene_result"][scene_name]["ssim"] = []
+            if "lpips" not in self.test_step_outputs["scene_result"][scene_name]:
+                self.test_step_outputs["scene_result"][scene_name]["lpips"] = []
+            if "psnr_ft" not in self.test_step_outputs["scene_result"][scene_name]:
+                self.test_step_outputs["scene_result"][scene_name]["psnr_ft"] = []
+            if "ssim_ft" not in self.test_step_outputs["scene_result"][scene_name]:
+                self.test_step_outputs["scene_result"][scene_name]["ssim_ft"] = []
+            if "lpips_ft" not in self.test_step_outputs["scene_result"][scene_name]:
+                self.test_step_outputs["scene_result"][scene_name]["lpips_ft"] = []
+                
+            self.test_step_outputs["scene_result"][scene_name]["psnr"].append(psnr)
+            self.test_step_outputs["scene_result"][scene_name]["ssim"].append(ssim)
+            self.test_step_outputs["scene_result"][scene_name]["lpips"].append(lpips)
+            self.test_step_outputs["scene_result"][scene_name]["psnr_ft"].append(psnr_ft)
+            self.test_step_outputs["scene_result"][scene_name]["ssim_ft"].append(ssim_ft)
+            self.test_step_outputs["scene_result"][scene_name]["lpips_ft"].append(lpips_ft)
+            
 
     def on_test_end(self) -> None:
         name = get_cfg()["wandb"]["name"]
@@ -424,6 +447,14 @@ class ModelWrapper(LightningModule):
         if self.test_cfg.compute_scores:
             self.benchmarker.dump_memory(out_dir / "peak_memory.json")
             self.benchmarker.dump(out_dir / "benchmark.json")
+            
+            for scene_name in self.test_step_outputs["scene_result"]:
+                for metric_name, metric_scores in self.test_step_outputs["scene_result"][scene_name].items():
+                    avg_scores = sum(metric_scores) / len(metric_scores)
+                    saved_scores[metric_name] = avg_scores
+                    print(f"{scene_name}: {metric_name} {avg_scores}")
+                    metric_scores.clear()
+            self.test_step_outputs.pop("scene_result")
 
             for metric_name, metric_scores in self.test_step_outputs.items():
                 avg_scores = sum(metric_scores) / len(metric_scores)

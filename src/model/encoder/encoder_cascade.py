@@ -7,6 +7,8 @@ from jaxtyping import Float
 from torch import Tensor, nn
 from collections import OrderedDict
 
+from .backbone.costvolume_sampler import CostvolumeSampler
+
 from ...dataset.shims.bounds_shim import apply_bounds_shim
 from ...dataset.shims.patch_shim import apply_patch_shim
 from ...dataset.types import BatchedExample, DataShim
@@ -85,12 +87,33 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             )
         
         self.feature_channels = cfg.feature_channels
+        self.do_enhance_feat = True
         
         # from mvsplat
         self.backbone = BackboneMultiview(
             feature_channels=cfg.feature_channels,
             downscale_factor=cfg.downscale_factor
         )
+        
+        self.upsampler = nn.Sequential(
+            nn.Conv2d(cfg.feature_channels, cfg.feature_channels, 3, 1, 1),
+            nn.Upsample(
+                scale_factor=4,
+                mode="bilinear",
+                align_corners=True,
+            ),
+            nn.GELU(),
+        )
+        
+        self.feat_enhancer = nn.Sequential(
+            nn.Linear(self.feature_channels+3+3+1+3, 2 * self.feature_channels),
+            nn.Linear(2 * self.feature_channels, 2 * self.feature_channels),
+            nn.GELU(), 
+            nn.Linear(2 * self.feature_channels, self.feature_channels),
+            nn.GELU(), 
+            nn.Linear(self.feature_channels, self.feature_channels),
+            nn.GELU()
+        )# merge direction and rgb features
         
         self.depth_predictor = DepthPredictorMultiView(
             feature_channels=cfg.feature_channels,
@@ -117,8 +140,14 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             max_voxels_foreach_processing=cfg.max_voxels_foreach_processing
         )
         
+        self.costvolume_sampler = CostvolumeSampler(
+            max_voxels_foreach_processing=cfg.max_voxels_foreach_processing,
+            costvolume_feature_channels=64 # 8 * 4 * 2
+        )
+        
         self.gaussian_adapter_module = VoxelizedGaussianAdapterModule(
             transformer=self.transformer, 
+            costvolume_sampler=self.costvolume_sampler,
             feature_channels=self.feature_channels, 
             voxel_size_list=cfg.voxel_size_list, 
             patch_size_list=cfg.patch_size_list, 
@@ -127,6 +156,32 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         
         print(cfg)
         print("Do NOT forget to register the lr for every module in `configure_optimizers`!")
+        
+    def enhance_features(
+        self, 
+        imgs: torch.Tensor, # (B, V, 3, H, W)
+        features: torch.Tensor, # (B, V, C, H, W)
+        point_xyz: torch.Tensor, # (B, V, 3, H, W)
+        extrinsics: torch.Tensor, # (B, V, 4, 4)
+        tar_extrinsic: torch.Tensor, # (B, 4, 4)
+        ):
+        
+        b, v, c, h, w = features.shape
+        cam_points = extrinsics[:, :, :3, 3].view(b, -1, 3, 1, 1) # (B, V, 3, 1, 1)
+        tar_cam_point = tar_extrinsic[:, :3, 3].view(b, 1, 3, 1, 1) # (B, 1, 3, 1, 1)
+        
+        point_to_cam = cam_points - point_xyz # (B, V, 3, H, W)
+        point_to_cam = point_to_cam / torch.norm(point_to_cam, dim=2, keepdim=True) # (B, V, 3, H, W)
+        point_to_tar_cam = tar_cam_point - point_xyz # (B, V, 3, H, W)
+        point_to_tar_cam = point_to_tar_cam / torch.norm(point_to_tar_cam, dim=2, keepdim=True) # (B, V, 3, H, W)
+        dir_disp = point_to_tar_cam - point_to_cam # (B, V, 3, H, W)
+        dir_disp_dot = torch.sum(point_to_tar_cam * point_to_cam, dim=2, keepdim=True) # (B, V, 1, H, W)
+        
+        enhanced_features = self.feat_enhancer(
+            torch.cat((features, point_to_cam, dir_disp, dir_disp_dot, imgs), dim=2).permute(0, 1, 3, 4, 2).reshape(b*v*h*w, c+3+3+1+3)
+        ).reshape(b, v, h, w, c).permute(0, 1, 4, 2, 3)
+        
+        return enhanced_features
         
     def preprocess(self, context):
         imgs : torch.Tensor = context["image"] # (B, V, C, H, W), or get the origin size image by context["origin_image"]
@@ -167,53 +222,63 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             self.current_idx += 1
         cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, masks, extrinsics, intrinsics, nears, fars)
         ################################################### from mvsplat
-        trans_features, cnn_features = self.backbone(
+        trans_features = self.backbone(
             context["image"],
             attn_splits=self.cfg.multiview_trans_attn_split,
-            return_cnn_features=True,
+            return_cnn_features=False,
             epipolar_kwargs=None,
-        )
+        )[0]
+        
+        if self.do_enhance_feat:
+            tar_extrinsics = context["target_extrinsics"]
+            assert tar_extrinsics.shape == (b, 1, 4, 4), "You must ensure the target view is UNIQUE while using the enhanced features"
+            _, _, cf, _, _ = trans_features.shape
+            trans_features = self.upsampler(trans_features.view(b*v, cf, h//4, w//4)).view(b, v, cf, h, w) # (B, V, C, H, W)
+            trans_features = self.enhance_features(
+                imgs, trans_features, cas_module_result.registed_prob_pcd.vertices[:, :, :3], extrinsics, tar_extrinsics.squeeze(1),
+            )
 
-        # Sample depths from the resulting features.
-        in_feats = trans_features
-        extra_info = {}
-        extra_info['images'] = rearrange(context["image"], "b v c h w -> (v b) c h w")
-        extra_info["scene_names"] = scene_names
-        gpp = self.cfg.gaussians_per_pixel
-        depths, densities, raw_gaussians = self.depth_predictor(
-            in_feats,
-            context["intrinsics"],
-            context["extrinsics"],
-            context["near"],
-            context["far"],
-            gaussians_per_pixel=gpp,
-            deterministic=deterministic,
-            extra_info=extra_info,
-            cnn_features=cnn_features,
-        ) # (B, V, H*W, 1, 1), (B, V, H*W, 1, 1), (B, V, H*W, C)
+        # # Sample depths from the resulting features.
+        # in_feats = trans_features
+        # extra_info = {}
+        # extra_info['images'] = rearrange(context["image"], "b v c h w -> (v b) c h w")
+        # extra_info["scene_names"] = scene_names
+        # gpp = self.cfg.gaussians_per_pixel
+        # depths, densities, raw_gaussians = self.depth_predictor(
+        #     in_feats,
+        #     context["intrinsics"],
+        #     context["extrinsics"],
+        #     context["near"],
+        #     context["far"],
+        #     gaussians_per_pixel=gpp,
+        #     deterministic=deterministic,
+        #     extra_info=extra_info,
+        #     cnn_features=cnn_features,
+        # ) # (B, V, H*W, 1, 1), (B, V, H*W, 1, 1), (B, V, H*W, C)
         
         
-        features = rearrange(raw_gaussians, "b v (h w) c -> b v c h w", h=h, w=w)
-        depths = rearrange(depths, "b v (h w) 1 1 -> b v h w", h=h, w=w)
-        depths = list(torch.unbind(depths, dim=1)) # (B, H, W) * V
-        vertices = generate_depth_map_based_point_cloud(depths, extrinsics, intrinsics) # (B, V, 4, H, W)
-        near_fars = torch.stack([nears, fars], dim=-1) # (B, V, 2)
-        geo_mask = []
-        for vi in range(v):
-            geo_mask.append(generate_geometric_mask(imgs, extrinsics, intrinsics, depths, near_fars, 
-                                                    ref_idx=vi, max_depth_diff=self.cfg.cas_mvsnet_geo_max_depth_diff,
-                                                    max_dist=self.cfg.cas_mvsnet_geo_max_dist)[0])
+        # features = rearrange(raw_gaussians, "b v (h w) c -> b v c h w", h=h, w=w)
+        # depths = rearrange(depths, "b v (h w) 1 1 -> b v h w", h=h, w=w)
+        # depths = list(torch.unbind(depths, dim=1)) # (B, H, W) * V
+        # vertices = generate_depth_map_based_point_cloud(depths, extrinsics, intrinsics) # (B, V, 4, H, W)
+        # near_fars = torch.stack([nears, fars], dim=-1) # (B, V, 2)
+        # geo_mask = []
+        # for vi in range(v):
+        #     geo_mask.append(generate_geometric_mask(imgs, extrinsics, intrinsics, depths, near_fars, 
+        #                                             ref_idx=vi, max_depth_diff=self.cfg.cas_mvsnet_geo_max_depth_diff,
+        #                                             max_dist=self.cfg.cas_mvsnet_geo_max_dist)[0])
         
-        cas_module_result.registed_prob_pcd.vertices = vertices
-        cas_module_result.registed_prob_pcd.vertices_confidence = torch.ones(b, v, h, w, device=imgs.device) # (B, V, H, W)
-        cas_module_result.registed_prob_pcd.vertices_geometry_mask = torch.stack(geo_mask, dim=1) if len(geo_mask) > 0 else torch.tensor(0) # (B, V, H, W)
+        # cas_module_result.registed_prob_pcd.vertices = vertices
+        # cas_module_result.registed_prob_pcd.vertices_confidence = torch.ones(b, v, h, w, device=imgs.device) # (B, V, H, W)
+        # cas_module_result.registed_prob_pcd.vertices_geometry_mask = torch.stack(geo_mask, dim=1) if len(geo_mask) > 0 else torch.tensor(0) # (B, V, H, W)
         
+        features = trans_features
         
         ##########################################################
-        gaussians: EncoderOutput = self.gaussian_adapter_module(
+        gaussians: EncoderOutput = self.gaussian_adapter_module.forward(
             imgs, 
             features, 
-            self.current_idx, 
+            self.current_idx if self.training else len(self.voxel_size_list), 
             cas_module_result, 
             masks, 
             extrinsics, 
@@ -222,7 +287,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         gaussians.others["cas_module_result"] = cas_module_result
         gaussians.others["nears"] = nears
         gaussians.others["fars"] = fars
-        gaussians.others["depths"] = depths
+        # gaussians.others["depths"] = depths
         return gaussians
 
     @property

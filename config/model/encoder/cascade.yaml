@@ -1,7 +1,7 @@
 name: cascade
 
 cas_mvsnet_ckpt_path: pretrained/casmvsnet_smooth_000015.ckpt
-cas_mvsnet_use_backbone: false
+cas_mvsnet_use_backbone: true
 cas_mvsnet_load_to_backbone: false
 cas_mvsnet_ndepth: [48, 32, 8]
 cas_mvsnet_geo_max_dist: 0.01
@@ -29,4 +29,4 @@ gaussians_per_pixel: 1
 depth_unet_feat_dim: 64
 depth_unet_attn_res: []
 depth_unet_channel_mult: [1, 1, 1]
-multiview_trans_attn_split: 2
+multiview_trans_attn_split: 4

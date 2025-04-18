@@ -1,7 +1,10 @@
+from typing import Callable
 import torch
 from torch import nn
 import torch.nn.functional as F
 import math
+
+from ..backbone.costvolume_sampler import CostvolumeSampler
 from .voxel_to_point_cross_attn_transformer import VoxelToPointTransformer
 from ..mvsnet.cas_mvsnet_module import CasMVSNetModuleResult, PointCloudResult
 from ...types import EncoderOutput, empty_encoder_output
@@ -114,11 +117,12 @@ class BoundingBox:
     pass
 
 class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
-    def __init__(self, input_dim, sh_degree):
+    def __init__(self, voxel_feat_dim, volume_feat_dim, sh_degree):
         super().__init__()
         assert sh_degree < 4
         self.sh_degree = sh_degree
-        self.input_dim = input_dim
+        self.voxel_feat_dim = voxel_feat_dim
+        self.voxel_volume_feat_dim = voxel_feat_dim + volume_feat_dim
         
         self.gaussian_scale_min = 0.1
         self.gaussian_scale_max = 10.0
@@ -130,21 +134,22 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
             lambda x: x / (5 ** (i + 1)) for i in range(1, sh_degree + 1)
         ]
         
-        def make_predictor(out_dim):
+        def make_predictor(in_dim, out_dim):
             return nn.Sequential(
-                nn.Linear(input_dim, input_dim // 2),
-                nn.ReLU(),
-                nn.Linear(input_dim // 2, input_dim // 4 if input_dim // 4 > out_dim else out_dim),
-                nn.ReLU(),
-                nn.Linear(input_dim // 4 if input_dim // 4 > out_dim else out_dim, out_dim)
+                nn.Linear(in_dim, in_dim // 2),
+                nn.GELU(),
+                nn.Linear(in_dim // 2, in_dim // 4 if in_dim // 4 > out_dim else out_dim),
+                nn.GELU(),
+                nn.Linear(in_dim // 4 if in_dim // 4 > out_dim else out_dim, out_dim), 
+                nn.GELU()
             )
         
-        self.delta_means_predictor = make_predictor(CHANNEL_DELTA_MEANS)
-        self.quaternion_predictor = make_predictor(CHANNEL_QUATERNION)
-        self.scale_predictor = make_predictor(CHANNEL_SCALE)
-        self.opacity_predictor = make_predictor(CHANNEL_OPACITY)
+        self.delta_means_predictor = make_predictor(self.voxel_feat_dim, CHANNEL_DELTA_MEANS)
+        self.quaternion_predictor = make_predictor(self.voxel_volume_feat_dim, CHANNEL_QUATERNION)
+        self.scale_predictor = make_predictor(self.voxel_volume_feat_dim, CHANNEL_SCALE)
+        self.opacity_predictor = make_predictor(self.voxel_volume_feat_dim, CHANNEL_OPACITY)
         self.shs_predictor = nn.ModuleList([
-            make_predictor(CHANNEL_RGB * (2 * i + 1)) for i in range(sh_degree + 1)
+            make_predictor(self.voxel_volume_feat_dim, CHANNEL_RGB * (2 * i + 1)) for i in range(sh_degree + 1)
         ])
         
         # init parameters
@@ -155,9 +160,17 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
     
 
         
-    def forward(self, feature: torch.Tensor, voxel_center: torch.Tensor, voxel_size: int, bbox: BoundingBox, batch: int) -> EncoderOutput:
+    def forward(self, feature: torch.Tensor, voxel_center: torch.Tensor, voxel_size: int, bbox: BoundingBox, batch: int, costvolume_sampler_callback: Callable[[torch.Tensor], torch.Tensor]) -> EncoderOutput:
         # input / output feature (N, C)
         delta_means = self.delta_means_predictor(feature)
+        activated_delta_means = self.delta_means_activation(delta_means, voxel_size)
+        # convert means and scales from ndc space to real world.
+        means: torch.Tensor = bbox.transform_from_ndc(activated_delta_means + voxel_center, batch, xyz_shape=(1, 3)) # (N, 3)
+        
+        volume_feature = costvolume_sampler_callback(means)
+        # merge voxel & volume features
+        feature = torch.cat((feature, volume_feature), dim=-1) # (N, C + C')
+        
         quaternion = self.quaternion_predictor(feature)
         scales = self.scale_predictor(feature)
         opacity = self.opacity_predictor(feature)
@@ -171,8 +184,6 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         activated_opacities = self.opacity_activation(opacity)
         activated_shs = torch.cat(activated_shs, dim=-1)
          
-        # convert means and scales from ndc space to real world.
-        means: torch.Tensor = bbox.transform_from_ndc(activated_delta_means + voxel_center, batch, xyz_shape=(1, 3)) # (N, 3)
         scales: torch.Tensor = activated_scales * bbox.size[batch]
         rotations: torch.Tensor = activated_quaternion
         harmonics: torch.Tensor = activated_shs # (N, 3*d^2)
@@ -471,16 +482,17 @@ def identify_is_current_scale(point_coordinates: torch.Tensor, local_coordinates
 
 class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
 
-    def __init__(self, transformer: VoxelToPointTransformer, feature_channels=192, voxel_size_list=[32, 128, 512], patch_size_list=[3, 2, 1], sh_degree=3) -> None:
+    def __init__(self, transformer: VoxelToPointTransformer, costvolume_sampler: CostvolumeSampler, feature_channels=192, voxel_size_list=[32, 128, 512], patch_size_list=[3, 2, 1], sh_degree=3) -> None:
         super().__init__()
         self.transformer = transformer
+        self.costvolume_sampler = costvolume_sampler
         self.voxel_size_count = len(voxel_size_list)
         self.voxel_size_list = voxel_size_list
         self.patch_size_list = patch_size_list
         self.sh_degree = sh_degree
         assert len(patch_size_list) == len(voxel_size_list)
 
-        self.gaussian_features_predictor = GaussianFeaturesPredictor(input_dim=feature_channels, sh_degree=sh_degree)
+        self.gaussian_features_predictor = GaussianFeaturesPredictor(voxel_feat_dim=feature_channels, volume_feat_dim=64, sh_degree=sh_degree)
         
         pass
     
@@ -613,7 +625,16 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                     voxel_center=centers_ndc,
                     voxel_size=voxel_size, 
                     bbox=bbox, 
-                    batch=batch) # (N, 15)
+                    batch=batch, 
+                    costvolume_sampler_callback=lambda means: self.costvolume_sampler.forward(
+                        gaussian_means=means, 
+                        cas_module_result=cas_module_result,
+                        extrinsic=extrinsics[batch], 
+                        intrinsic=intrinsics[batch], 
+                        near=nears[batch],
+                        far=fars[batch],
+                        batch_idx=batch
+                    )) # (N, 15)
                 
                 if is_trainning:
                     # compute losses

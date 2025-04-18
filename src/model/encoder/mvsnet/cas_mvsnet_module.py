@@ -63,9 +63,9 @@ class CasMVSNetModule(nn.Module):
         
         if use_backbone:
             self.pretrained_cas_mvsnet = CascadeMVSNet(refine=self.refine, ndepths=ndepths, return_photometric_confidence=True)
-            self.backbone_cas_mvsnet = CascadeMVSNet(refine=self.refine, ndepths=ndepths, return_prob_volume=True, return_photometric_confidence=True)
+            self.backbone_cas_mvsnet = CascadeMVSNet(refine=self.refine, ndepths=ndepths, return_volume=True, return_photometric_confidence=True)
         else:
-            self.pretrained_cas_mvsnet = CascadeMVSNet(refine=self.refine, ndepths=ndepths, return_prob_volume=True, return_photometric_confidence=True)
+            self.pretrained_cas_mvsnet = CascadeMVSNet(refine=self.refine, ndepths=ndepths, return_volume=True, return_photometric_confidence=True)
             
         self.pretrained_cas_mvsnet.load_state_dict(state_dict["model"])
         self.pretrained_cas_mvsnet.eval()
