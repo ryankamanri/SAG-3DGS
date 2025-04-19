@@ -90,13 +90,14 @@ class CostvolumeSampler(nn.Module):
                 means_uvd_slice[:, 2]), dim=1) # (V, 3, Voxi)
             
             means_uv_invd_slice = means_uvd_slice.clone() # (V, 3, Voxi)
-            means_uv_invd_slice[:, 2] = 1.0 / means_uvd_slice[:, 2] # the depth sample is not linear, so we need to inverse it for linear interpolation
+            means_uv_invd_slice[:, 2] = 1.0 / means_uvd_slice[:, 2] # the depth sample is not linear, so we need to take the reciprocal for linear interpolation
             # because u, v, 1/d are all linear so we use uv_invd to sample features.
+            # note that the depth sample is from far to near, so we need to inverse it (-norm(1/d))
             # normalize
             means_uv_invd_norm_slice = torch.stack((
                 (means_uv_invd_slice[:, 0] / ((w * prop - 1) / 2)) - 1, 
                 (means_uv_invd_slice[:, 1] / ((h * prop - 1) / 2)) - 1, 
-                ((means_uv_invd_slice[:, 2] - far_inv.view(v, 1)) / ((near_inv - far_inv).view(v, 1) / 2)) - 1), dim=1) # (V, 3, Voxi)
+                -(((means_uv_invd_slice[:, 2] - far_inv.view(v, 1)) / ((near_inv - far_inv).view(v, 1) / 2)) - 1)), dim=1) # (V, 3, Voxi)
 
             sampled_feature = F.grid_sample(
                 volumes.view(v, c, d, int(h*prop), int(w*prop)), 
