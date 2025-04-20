@@ -492,7 +492,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
         self.sh_degree = sh_degree
         assert len(patch_size_list) == len(voxel_size_list)
 
-        self.gaussian_features_predictor = GaussianFeaturesPredictor(voxel_feat_dim=feature_channels, volume_feat_dim=64, sh_degree=sh_degree)
+        self.gaussian_features_predictor = GaussianFeaturesPredictor(voxel_feat_dim=feature_channels, volume_feat_dim=feature_channels, sh_degree=sh_degree)
         
         pass
     

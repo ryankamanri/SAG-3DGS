@@ -12,11 +12,20 @@ class CostvolumeSampler(nn.Module):
     def __init__(
         self, 
         max_voxels_foreach_processing: int,
-        costvolume_feature_channels: int
+        costvolume_feature_channels: int, 
+        out_channels: int = 48,
     ):
         super(CostvolumeSampler, self).__init__()
         self.max_voxels_foreach_processing = max_voxels_foreach_processing
         self.feature_channels = costvolume_feature_channels
+        self.feature_enhancer = nn.Sequential(
+            nn.Linear(costvolume_feature_channels, costvolume_feature_channels),
+            nn.GELU(),
+            nn.Linear(costvolume_feature_channels, costvolume_feature_channels),
+            nn.GELU(),
+            nn.Linear(costvolume_feature_channels, costvolume_feature_channels),
+            nn.GELU()
+        )
         self.weight_predictor = nn.Sequential(
             nn.Linear(costvolume_feature_channels+3, costvolume_feature_channels),
             nn.GELU(),
@@ -26,6 +35,12 @@ class CostvolumeSampler(nn.Module):
             nn.Linear(8, 4), 
             nn.Linear(4, 1), 
             nn.GELU()
+        )
+        
+        self.out_predictor = nn.Sequential(
+            nn.Linear(costvolume_feature_channels, costvolume_feature_channels),
+            nn.GELU(),
+            nn.Linear(costvolume_feature_channels, out_channels)
         )
         
     def weight_features(
@@ -106,9 +121,11 @@ class CostvolumeSampler(nn.Module):
                 padding_mode='zeros', 
                 align_corners=True
             ).view(v, c, voxi)
-
+            
+            sampled_feature = self.feature_enhancer(sampled_feature.permute(0, 2, 1)).permute(0, 2, 1) # (V, C, Voxi)
             weighted_features = self.weight_features(sampled_feature, means_slice.squeeze(0), extrinsic) # (V, 1, Voxi)
             sampled_feature = sampled_feature * torch.softmax(weighted_features, dim=0) # (V, C, Voxi)
+            sampled_feature = self.out_predictor(sampled_feature.permute(0, 2, 1)).permute(0, 2, 1) # (V, C, Voxi)
             merged_source_slice_list.append(torch.sum(sampled_feature, dim=0)) # (C, Voxi)
             del sampled_feature
         

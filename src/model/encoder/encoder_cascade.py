@@ -142,7 +142,8 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         
         self.costvolume_sampler = CostvolumeSampler(
             max_voxels_foreach_processing=cfg.max_voxels_foreach_processing,
-            costvolume_feature_channels=64 # 8 * 4 * 2
+            costvolume_feature_channels=64,  # 8 * 4 * 2
+            out_channels=cfg.feature_channels,
         )
         
         self.gaussian_adapter_module = VoxelizedGaussianAdapterModule(
