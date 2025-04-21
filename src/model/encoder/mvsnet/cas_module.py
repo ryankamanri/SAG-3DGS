@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import time
 import sys
+from .multiview_transformer import MultiViewFeatureTransformer
+from .unimatch.utils import split_feature, merge_splits
+from .unimatch.position import PositionEmbeddingSine
 sys.path.append("..")
 
 def init_bn(module):
@@ -347,6 +350,28 @@ class DeConv2dFuse(nn.Module):
         return x
 
 
+def feature_add_position_list(features_list, attn_splits, feature_channels):
+    pos_enc = PositionEmbeddingSine(num_pos_feats=feature_channels // 2)
+
+    if attn_splits > 1:  # add position in splited window
+        features_splits = [
+            split_feature(x, num_splits=attn_splits) for x in features_list
+        ]
+
+        position = pos_enc(features_splits[0])
+        features_splits = [x + position for x in features_splits]
+
+        out_features_list = [
+            merge_splits(x, num_splits=attn_splits) for x in features_splits
+        ]
+
+    else:
+        position = pos_enc(features_list[0])
+
+        out_features_list = [x + position for x in features_list]
+
+    return out_features_list
+
 class FeatureNet(nn.Module):
     def __init__(self, base_channels, num_stage=3, stride=4, arch_mode="unet"):
         super(FeatureNet, self).__init__()
@@ -375,6 +400,11 @@ class FeatureNet(nn.Module):
         )
 
         self.out1 = nn.Conv2d(base_channels * 4, base_channels * 4, 1, bias=False)
+        # self.attn_splits = 4
+        # self.transformer = MultiViewFeatureTransformer(
+        #     d_model=base_channels * 4,
+        #     no_cross_attn=True
+        # )
         self.out_channels = [4 * base_channels]
 
         if self.arch_mode == 'unet':
@@ -410,6 +440,9 @@ class FeatureNet(nn.Module):
                 self.out_channels.append(base_channels)
 
     def forward(self, x):
+        b, v, _, h, w = x.shape
+        x = x.view(b*v, 3, h, w) # [batch*view, 3, h, w]
+        
         conv0 = self.conv0(x)
         conv1 = self.conv1(conv0)
         conv2 = self.conv2(conv1)
@@ -417,36 +450,41 @@ class FeatureNet(nn.Module):
         intra_feat = conv2
         outputs = {}
         out = self.out1(intra_feat)
-        outputs["stage1"] = out
+        # apply transformer
+        # cur_features_list = feature_add_position_list(
+        #         torch.unbind(intra_feat.view(b, v, self.base_channels*4, h//4, w//4), dim=1), self.attn_splits, self.base_channels * 4)
+        # out = self.transformer(cur_features_list, attn_num_splits=self.attn_splits) # [(B, C, H, W) * V]
+        # out = torch.stack(out, dim=1).view(b*v, self.base_channels*4, h//4, w//4) # (B*V, C, H, W)
+        outputs["stage1"] = out.view(b, v, self.base_channels*4, h//4, w//4)
         if self.arch_mode == "unet":
             if self.num_stage == 3:
                 intra_feat = self.deconv1(conv1, intra_feat)
                 out = self.out2(intra_feat)
-                outputs["stage2"] = out
+                outputs["stage2"] = out.view(b, v, self.base_channels*2, h//2, w//2)
 
                 intra_feat = self.deconv2(conv0, intra_feat)
                 out = self.out3(intra_feat)
-                outputs["stage3"] = out
+                outputs["stage3"] = out.view(b, v, self.base_channels, h, w)
 
             elif self.num_stage == 2:
                 intra_feat = self.deconv1(conv1, intra_feat)
                 out = self.out2(intra_feat)
-                outputs["stage2"] = out
+                outputs["stage2"] = out.view(b, v, self.base_channels*2, h//2, w//2)
 
         elif self.arch_mode == "fpn":
             if self.num_stage == 3:
                 intra_feat = F.interpolate(intra_feat, scale_factor=2, mode="nearest") + self.inner1(conv1)
                 out = self.out2(intra_feat)
-                outputs["stage2"] = out
+                outputs["stage2"] = out.view(b, v, self.base_channels*2, h//2, w//2)
 
                 intra_feat = F.interpolate(intra_feat, scale_factor=2, mode="nearest") + self.inner2(conv0)
                 out = self.out3(intra_feat)
-                outputs["stage3"] = out
+                outputs["stage3"] = out.view(b, v, self.base_channels, h, w)
 
             elif self.num_stage == 2:
                 intra_feat = F.interpolate(intra_feat, scale_factor=2, mode="nearest") + self.inner1(conv1)
                 out = self.out2(intra_feat)
-                outputs["stage2"] = out
+                outputs["stage2"] = out.view(b, v, self.base_channels*2, h//2, w//2)
 
         return outputs
 
@@ -542,26 +580,26 @@ def get_depth_range_samples(cur_depth, cur_period, ndepth, device, shape):
     #return depth_range_samples: (B, D, H, W)
     if cur_depth.dim() == 2:
         b, d = cur_depth.shape
-        cur_depth_inv_min = (1.0 / cur_depth[:, -1]).unsqueeze(-1)  # (B, 1)
-        cur_depth_inv_max = (1.0 / cur_depth[:, 0]).unsqueeze(-1)
+        cur_depth_min = (cur_depth[:, 0]).unsqueeze(-1)  # (B, 1)
+        cur_depth_max = (cur_depth[:, -1]).unsqueeze(-1)
         cur_period = 1.0 / (ndepth - 1) # make depth_range_samples between near and far
 
         # depth_range_samples = cur_depth_min.unsqueeze(1) + (torch.arange(0, ndepth, device=device, dtype=dtype, requires_grad=False).reshape(1, -1) * new_interval.unsqueeze(1)) #(B, D)
-        depth_range_samples = 1.0 / (cur_depth_inv_min + (cur_depth_inv_max - cur_depth_inv_min) * (1 - cur_period * torch.arange(0, ndepth, device=device).reshape(1, -1).repeat(b, 1)))  #(B, D)
+        depth_range_samples = (cur_depth_min + (cur_depth_max - cur_depth_min) * (cur_period * torch.arange(0, ndepth, device=device).reshape(1, -1).repeat(b, 1)))  #(B, D)
         depth_range_samples = depth_range_samples.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, shape[1], shape[2]) #(B, D, H, W)
 
-        near_far_inv = torch.stack((cur_depth_inv_max, cur_depth_inv_min), dim=1).repeat(1, 1, shape[1], shape[2]) # (B, 2, H, W)
+        near_far = torch.stack((cur_depth_min, cur_depth_max), dim=1).repeat(1, 1, shape[1], shape[2]) # (B, 2, H, W)
     else:
         b, h, w = cur_depth.shape
-        cur_depth_inv_min = (1.0 / cur_depth - cur_period / 2).unsqueeze(1) # (B, 1, H, W)
-        cur_depth_inv_max = (1.0 / cur_depth + cur_period / 2).unsqueeze(1)
+        cur_depth_min = (cur_depth - cur_period / 2).unsqueeze(1) # (B, 1, H, W)
+        cur_depth_max = (cur_depth + cur_period / 2).unsqueeze(1)
         cur_period *= 1.0 / (ndepth - 1) # make depth_range_samples between near and far
         
-        depth_range_samples = 1.0 / (cur_depth_inv_min + (cur_depth_inv_max - cur_depth_inv_min) * (1 - cur_period * torch.arange(0, ndepth, device=device).reshape(1, -1, 1, 1).repeat(b, 1, h, w)))  #(B, D, H, W)
+        depth_range_samples = (cur_depth_min + (cur_depth_max - cur_depth_min) * (cur_period * torch.arange(0, ndepth, device=device).reshape(1, -1, 1, 1).repeat(b, 1, h, w)))  #(B, D, H, W)
 
-        near_far_inv = torch.stack((cur_depth_inv_max, cur_depth_inv_min), dim=1) # (B, 2, H, W)
+        near_far = torch.stack((cur_depth_max, cur_depth_min), dim=1) # (B, 2, H, W)
         
-    return depth_range_samples, cur_period, near_far_inv
+    return depth_range_samples, cur_period, near_far
 
 
 

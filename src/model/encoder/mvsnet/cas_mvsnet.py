@@ -118,7 +118,7 @@ class CascadeMVSNet(nn.Module):
             self.refine_network = RefineNet()
         self.DepthNet = DepthNet(return_volume=return_volume, return_photometric_confidence=return_photometric_confidence)
 
-    def backbone(self, ref_img: torch.Tensor, features: list, proj_matrices, depth_values, imgs_shape: tuple):
+    def backbone(self, ref_img: torch.Tensor, features: dict, proj_matrices, depth_values, imgs_shape: tuple):
         outputs = {}
         depth, cur_depth = None, None
         cur_period = 1
@@ -126,7 +126,7 @@ class CascadeMVSNet(nn.Module):
         for stage_idx in range(self.num_stage):
             # print("*********************stage{}*********************".format(stage_idx + 1))
             #stage feature, proj_mats, scales
-            features_stage = [feat["stage{}".format(stage_idx + 1)] for feat in features]
+            features_stage = torch.unbind(features["stage{}".format(stage_idx + 1)], dim=1)
             proj_matrices_stage = proj_matrices["stage{}".format(stage_idx + 1)]
             stage_scale = self.stage_infos["stage{}".format(stage_idx + 1)]["scale"]
 
@@ -140,7 +140,7 @@ class CascadeMVSNet(nn.Module):
                                                 align_corners=Align_Corners_Range).squeeze(1)
             else:
                 cur_depth = depth_values
-            depth_range_samples, cur_period, near_far_inv = get_depth_range_samples(cur_depth=cur_depth,
+            depth_range_samples, cur_period, near_far = get_depth_range_samples(cur_depth=cur_depth,
                                                         cur_period=cur_period, 
                                                         ndepth=self.ndepths[stage_idx],
                                                         device=depth_values.device,
@@ -153,7 +153,7 @@ class CascadeMVSNet(nn.Module):
 
             depth = outputs_stage['depth']
             outputs_stage["depth_range_samples"] = depth_range_samples
-            outputs_stage["depth_near_far_inv"] = near_far_inv
+            outputs_stage["depth_near_far"] = near_far
 
             outputs["stage{}".format(stage_idx + 1)] = outputs_stage
             outputs.update(outputs_stage)
@@ -169,18 +169,19 @@ class CascadeMVSNet(nn.Module):
     def forward(self, imgs, proj_matrices, depth_values):
         b, v, c, h, w = imgs.shape
         # step 1. feature extraction
-        features = []
-        for nview_idx in range(imgs.size(1)):  #imgs shape (B, N, C, H, W)
-            img = imgs[:, nview_idx]
-            features.append(self.feature(img))
+        features = self.feature(imgs) # {'stage1': (B, V, C, H, W), ...}
+        # for nview_idx in range(imgs.size(1)):  #imgs shape (B, N, C, H, W)
+        #     img = imgs[:, nview_idx]
+        #     features.append(self.feature(img))
 
         outputs_list = []
         for vi in range(v):
             outputs = self.backbone(imgs[:, vi], features, proj_matrices, depth_values[:, vi, :], imgs.shape)
             outputs_list.append(outputs)
             # switch to next image
-            features.append(features.pop(0))
+            # features.append(features.pop(0))
             for stage in proj_matrices:
+                features[stage] = features[stage].roll(dims=1, shifts=-1)
                 proj_matrices[stage] = proj_matrices[stage].roll(dims=1, shifts=-1)
         
         return outputs_list

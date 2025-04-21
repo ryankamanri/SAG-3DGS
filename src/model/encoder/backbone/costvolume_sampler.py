@@ -74,13 +74,13 @@ class CostvolumeSampler(nn.Module):
     ):
         vox, _, = gaussian_means.shape
         _, v, _, h, w = cas_module_result.registed_prob_pcd.vertices.shape # (B, V, 4, H, W)
-        stage_volumes, stage_near_far_invs = [], []
+        stage_volumes, stage_near_fars = [], []
         for stage in range(3):
             stage_volumes.append([
                 cas_module_result.ref_view_result_list[vi].backbone["stage{}".format(stage + 1)]["volume"][batch_idx]
                  for vi in range(v)]) # stage_volumes: [[(C, D, H, W) * V] * 3]
-            stage_near_far_invs.append([
-                cas_module_result.ref_view_result_list[vi].backbone["stage{}".format(stage + 1)]["depth_near_far_inv"][batch_idx]
+            stage_near_fars.append([
+                cas_module_result.ref_view_result_list[vi].backbone["stage{}".format(stage + 1)]["depth_near_far"][batch_idx]
                  for vi in range(v)]) # stage_near_far_invs: [[(2, H, W) * V] * 3]
             pass 
         
@@ -94,7 +94,6 @@ class CostvolumeSampler(nn.Module):
             stage = 0 # only one stage
             volumes = torch.stack(stage_volumes[stage], dim=0) # (V, C, D, H, W)
             _, c, d, _, _ = volumes.shape # (V, C, D, H, W)
-            near_inv, far_inv = 1.0 / near, 1.0 / far # (V, 2)
             prop = 1 / (2 ** (2 - stage))
             stage_intrinsics = intrinsic.clone()
             stage_intrinsics[:, :2] *= prop # (V, 3, 3) 4 -> 2 -> 1
@@ -104,19 +103,15 @@ class CostvolumeSampler(nn.Module):
                 means_uvd_slice[:, 1] / means_uvd_slice[:, 2], 
                 means_uvd_slice[:, 2]), dim=1) # (V, 3, Voxi)
             
-            means_uv_invd_slice = means_uvd_slice.clone() # (V, 3, Voxi)
-            means_uv_invd_slice[:, 2] = 1.0 / means_uvd_slice[:, 2] # the depth sample is not linear, so we need to take the reciprocal for linear interpolation
-            # because u, v, 1/d are all linear so we use uv_invd to sample features.
-            # note that the depth sample is from far to near, so we need to inverse it (-norm(1/d))
             # normalize
-            means_uv_invd_norm_slice = torch.stack((
-                (means_uv_invd_slice[:, 0] / ((w * prop - 1) / 2)) - 1, 
-                (means_uv_invd_slice[:, 1] / ((h * prop - 1) / 2)) - 1, 
-                -(((means_uv_invd_slice[:, 2] - far_inv.view(v, 1)) / ((near_inv - far_inv).view(v, 1) / 2)) - 1)), dim=1) # (V, 3, Voxi)
+            means_uvd_norm_slice = torch.stack((
+                (means_uvd_slice[:, 0] / ((w * prop - 1) / 2)) - 1, 
+                (means_uvd_slice[:, 1] / ((h * prop - 1) / 2)) - 1, 
+                (((means_uvd_slice[:, 2] - near.view(v, 1)) / ((far - near).view(v, 1) / 2)) - 1)), dim=1) # (V, 3, Voxi)
 
             sampled_feature = F.grid_sample(
                 volumes.view(v, c, d, int(h*prop), int(w*prop)), 
-                means_uv_invd_norm_slice.permute(0, 2, 1).view(v, 1, 1, voxi, 3),
+                means_uvd_norm_slice.permute(0, 2, 1).view(v, 1, 1, voxi, 3),
                 mode='bilinear', 
                 padding_mode='zeros', 
                 align_corners=True
