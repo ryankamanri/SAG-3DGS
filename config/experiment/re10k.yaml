@@ -36,6 +36,7 @@ dataset:
   far: 100.
   baseline_scale_bounds: false
   make_baseline_1: false
+  test_times_per_scene: 3
 
 test:
   eval_time_skip_steps: 5

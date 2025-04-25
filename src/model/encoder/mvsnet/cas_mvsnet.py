@@ -160,7 +160,7 @@ class CascadeMVSNet(nn.Module):
 
         # depth map refinement
         if self.refine:
-            refined_depth = self.refine_network(ref_img, depth)
+            refined_depth = self.refine_network(ref_img, depth, features, depth_values)
             outputs["depth"] = refined_depth
 
         return outputs

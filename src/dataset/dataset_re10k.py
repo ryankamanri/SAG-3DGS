@@ -62,7 +62,7 @@ def read_pfm(filename):
 
 @dataclass
 class DatasetRE10kCfg(DatasetCfgCommon):
-    name: Literal["dtu", "llff", "tandt", "ns", "scannet"]
+    name: Literal["re10k", "acid", "dtu", "llff", "tandt", "ns", "scannet"]
     roots: list[Path]
     baseline_epsilon: float
     max_fov: float
@@ -161,6 +161,11 @@ class DatasetRE10k(IterableDataset):
                 example = chunk[run_idx // times_per_scene]
 
                 extrinsics, intrinsics, nears, fars = self.convert_poses(example["cameras"])
+                
+                if self.cfg.name == "re10k":
+                    # we need to put extra near & far bounds for re10k
+                    nears = torch.ones_like(nears)
+                    fars = torch.ones_like(fars) * 100.0
 
                 scene = f"{self.cfg.name}_{example['key']}_{(run_idx % times_per_scene):02d}"
 

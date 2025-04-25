@@ -52,17 +52,18 @@ class ViewSamplerEvaluation(ViewSampler[ViewSamplerEvaluationCfg]):
         Int64[Tensor, " context_view"],  # indices for context views
         Int64[Tensor, " target_view"],  # indices for target views
     ]:
+        scene = scene.split("_")[1]
         entry = self.index.get(scene)
         if entry is None:
             raise ValueError(f"No indices available for scene {scene}.")
         context_indices = torch.tensor(entry.context, dtype=torch.int64, device=device)
         target_indices = torch.tensor(entry.target, dtype=torch.int64, device=device)
-        return context_indices, target_indices
+        return context_indices, target_indices[idx:idx+1]
 
     @property
     def num_context_views(self) -> int:
-        return 0
+        return 2
 
     @property
     def num_target_views(self) -> int:
-        return 0
+        return 1

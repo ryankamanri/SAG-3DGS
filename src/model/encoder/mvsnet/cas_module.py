@@ -531,15 +531,35 @@ class CostRegNet(nn.Module):
 class RefineNet(nn.Module):
     def __init__(self):
         super(RefineNet, self).__init__()
-        self.conv1 = ConvBnReLU(4, 32)
-        self.conv2 = ConvBnReLU(32, 32)
-        self.conv3 = ConvBnReLU(32, 32)
-        self.res = ConvBnReLU(32, 1)
+        self.refine_add = nn.Sequential(
+            ConvBnReLU(3+1+32+16+8, 32),
+            ConvBnReLU(32, 32),
+            ConvBnReLU(32, 32),
+            ConvBnReLU(32, 32),
+            ConvBnReLU(32, 1)
+        )
+        self.refine_minus = nn.Sequential(
+            ConvBnReLU(3+1+32+16+8, 32),
+            ConvBnReLU(32, 32),
+            ConvBnReLU(32, 32),
+            ConvBnReLU(32, 32),
+            ConvBnReLU(32, 1)
+        )
 
-    def forward(self, img, depth_init):
-        concat = torch.cat((img, depth_init.unsqueeze(1)), dim=1)
-        depth_residual = self.res(self.conv3(self.conv2(self.conv1(concat))))
-        depth_refined = depth_init + depth_residual
+    def forward(self, img, depth_init, features, depth_values):
+        b, _, h, w = img.shape
+        _, _, c1, h1, w1 = features["stage1"].shape
+        _, _, c2, h2, w2 = features["stage2"].shape
+        _, _, c3, _, _ = features["stage3"].shape
+        
+        stage1_feat = F.interpolate(features["stage1"][:, 0], scale_factor=4)
+        stage2_feat = F.interpolate(features["stage2"][:, 0], scale_factor=2)
+        stage3_feat = features["stage3"][:, 0]
+        
+        concat = torch.cat((img, depth_init.unsqueeze(1), stage1_feat, stage2_feat, stage3_feat), dim=1)
+        depth_add, depth_minus = self.refine_add(concat), self.refine_minus(concat)
+        depth_residual = depth_add - depth_minus
+        depth_refined = depth_init + depth_residual * (depth_values[:, -1] - depth_values[:, 0]).view(b, 1, 1, 1)
         return depth_refined.squeeze(1)
 
 
