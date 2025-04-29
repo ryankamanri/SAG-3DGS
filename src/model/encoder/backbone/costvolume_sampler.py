@@ -18,6 +18,7 @@ class CostvolumeSampler(nn.Module):
         super(CostvolumeSampler, self).__init__()
         self.max_voxels_foreach_processing = max_voxels_foreach_processing
         self.feature_channels = costvolume_feature_channels
+        self.out_channels = out_channels
         self.feature_enhancer = nn.Sequential(
             nn.Linear(costvolume_feature_channels, costvolume_feature_channels),
             nn.GELU(),
@@ -73,6 +74,7 @@ class CostvolumeSampler(nn.Module):
         batch_idx: int
     ):
         vox, _, = gaussian_means.shape
+        if vox == 0: return torch.zeros(vox, self.out_channels, device=gaussian_means.device)
         _, v, _, h, w = cas_module_result.registed_prob_pcd.vertices.shape # (B, V, 4, H, W)
         stage_volumes, stage_near_fars = [], []
         for stage in range(3):

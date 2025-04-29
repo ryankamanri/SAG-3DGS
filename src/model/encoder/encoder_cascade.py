@@ -29,6 +29,7 @@ from .backbone.voxelized_gaussian_adapter_module import VoxelizedGaussianAdapter
 from .backbone.voxel_to_point_cross_attn_transformer import VoxelToPointTransformer
 from .costvolume.depth_predictor_multiview import DepthPredictorMultiView
 from .mvsnet import generate_depth_map_based_point_cloud, generate_geometric_mask
+from .costvolume.ldm_unet.unet import UNetModel
 
 
 @dataclass
@@ -96,24 +97,43 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         )
         
         self.upsampler = nn.Sequential(
-            nn.Conv2d(cfg.feature_channels, cfg.feature_channels, 3, 1, 1),
-            nn.Upsample(
-                scale_factor=4,
-                mode="bilinear",
-                align_corners=True,
-            ),
+            nn.ConvTranspose2d(cfg.feature_channels, cfg.feature_channels, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(cfg.feature_channels),
+            nn.GELU(),
+            nn.ConvTranspose2d(cfg.feature_channels, cfg.feature_channels, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(cfg.feature_channels),
             nn.GELU(),
         )
         
-        self.feat_enhancer = nn.Sequential(
-            nn.Linear(self.feature_channels+3+3+1+3, 2 * self.feature_channels),
-            nn.Linear(2 * self.feature_channels, 2 * self.feature_channels),
-            nn.GELU(), 
-            nn.Linear(2 * self.feature_channels, self.feature_channels),
-            nn.GELU(), 
-            nn.Linear(self.feature_channels, self.feature_channels),
-            nn.GELU()
-        )# merge direction and rgb features
+        self.feat_enhancer = nn.ModuleDict({
+            "conv1": nn.Sequential(
+                nn.Conv2d(self.feature_channels+3+3+1+3, self.feature_channels, kernel_size=1, stride=1, padding=0),
+                nn.GELU(),
+                nn.Conv2d(self.feature_channels, self.feature_channels, kernel_size=1, stride=1, padding=0),
+                nn.GELU()
+            ), # merge direction and rgb features
+            "conv2": nn.Sequential(
+                nn.Conv2d(self.feature_channels+3, self.feature_channels, kernel_size=1, stride=1, padding=0),
+                nn.GELU(),
+                nn.Conv2d(self.feature_channels, self.feature_channels, kernel_size=1, stride=1, padding=0),
+                nn.GELU()
+            ), # merge rgb features
+            "unets": nn.ModuleList([UNetModel(
+                image_size=None, 
+                in_channels=self.feature_channels,
+                model_channels=self.feature_channels,
+                out_channels=self.feature_channels,
+                num_res_blocks=1,
+                attention_resolutions=cfg.depth_unet_attn_res,
+                channel_mult=cfg.depth_unet_channel_mult,
+                num_head_channels=self.feature_channels // 2, 
+                dims=2,
+                postnorm=True, 
+                num_frames=get_cfg().dataset.view_sampler.num_context_views, 
+                use_cross_view_self_attn=True
+            ) for _ in range(2)]),
+        }) 
+        
         
         self.depth_predictor = DepthPredictorMultiView(
             feature_channels=cfg.feature_channels,
@@ -178,11 +198,17 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         dir_disp = point_to_tar_cam - point_to_cam # (B, V, 3, H, W)
         dir_disp_dot = torch.sum(point_to_tar_cam * point_to_cam, dim=2, keepdim=True) # (B, V, 1, H, W)
         
-        enhanced_features = self.feat_enhancer(
-            torch.cat((features, point_to_cam, dir_disp, dir_disp_dot, imgs), dim=2).permute(0, 1, 3, 4, 2).reshape(b*v*h*w, c+3+3+1+3)
-        ).reshape(b, v, h, w, c).permute(0, 1, 4, 2, 3)
         
-        return enhanced_features
+        enhanced_features = self.feat_enhancer["conv1"](
+            torch.cat((features, point_to_cam, dir_disp, dir_disp_dot, imgs), dim=2).reshape(b*v, c+3+3+1+3, h, w)
+        )
+        enhanced_features = self.feat_enhancer["unets"][0](enhanced_features)
+        enhanced_features = self.feat_enhancer["conv2"](
+            torch.cat((enhanced_features, imgs.reshape(b*v, 3, h, w)), dim=1)
+        )
+        enhanced_features = self.feat_enhancer["unets"][1](enhanced_features)
+        
+        return enhanced_features.view(b, v, c, h, w)
         
     def preprocess(self, context):
         imgs : torch.Tensor = context["image"] # (B, V, C, H, W), or get the origin size image by context["origin_image"]

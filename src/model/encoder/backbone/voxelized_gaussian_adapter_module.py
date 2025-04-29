@@ -136,12 +136,13 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         
         def make_predictor(in_dim, out_dim):
             return nn.Sequential(
+                nn.Linear(in_dim, in_dim),
+                nn.GELU(),
                 nn.Linear(in_dim, in_dim // 2),
                 nn.GELU(),
                 nn.Linear(in_dim // 2, in_dim // 4 if in_dim // 4 > out_dim else out_dim),
-                nn.GELU(),
                 nn.Linear(in_dim // 4 if in_dim // 4 > out_dim else out_dim, out_dim), 
-                nn.GELU()
+                # nn.GELU(), # mapping to R
             )
         
         self.delta_means_predictor = make_predictor(self.voxel_feat_dim, CHANNEL_DELTA_MEANS)

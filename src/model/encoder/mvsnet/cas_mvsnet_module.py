@@ -56,7 +56,7 @@ class CasMVSNetModule(nn.Module):
         self.geo_max_dist = geo_max_dist
         self.geo_max_depth_diff = geo_max_depth_diff
         self.use_backbone = use_backbone
-        self.refine = True
+        self.refine = False
         print(f"loading checkpoint from {cas_mvsnet_ckpt_path}...")
         # initialize pretrained mvsnet
         state_dict = torch.load(cas_mvsnet_ckpt_path)

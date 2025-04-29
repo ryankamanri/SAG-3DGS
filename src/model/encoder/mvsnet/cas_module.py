@@ -558,7 +558,7 @@ class RefineNet(nn.Module):
         
         concat = torch.cat((img, depth_init.unsqueeze(1), stage1_feat, stage2_feat, stage3_feat), dim=1)
         depth_add, depth_minus = self.refine_add(concat), self.refine_minus(concat)
-        depth_residual = depth_add - depth_minus
+        depth_residual = (depth_add - depth_minus) / 128 # 128 is the coursest plane interval
         depth_refined = depth_init + depth_residual * (depth_values[:, -1] - depth_values[:, 0]).view(b, 1, 1, 1)
         return depth_refined.squeeze(1)
 
