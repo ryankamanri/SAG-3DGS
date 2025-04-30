@@ -25,17 +25,13 @@ class CostvolumeSampler(nn.Module):
             nn.Linear(costvolume_feature_channels, costvolume_feature_channels),
             nn.GELU(),
             nn.Linear(costvolume_feature_channels, costvolume_feature_channels),
-            nn.GELU()
         )
         self.weight_predictor = nn.Sequential(
             nn.Linear(costvolume_feature_channels+3, costvolume_feature_channels),
             nn.GELU(),
-            nn.Linear(costvolume_feature_channels, 16),
-            nn.Linear(16, 8), 
+            nn.Linear(costvolume_feature_channels, 8),
             nn.GELU(), 
-            nn.Linear(8, 4), 
-            nn.Linear(4, 1), 
-            nn.GELU()
+            nn.Linear(8, 1), 
         )
         
         self.out_predictor = nn.Sequential(

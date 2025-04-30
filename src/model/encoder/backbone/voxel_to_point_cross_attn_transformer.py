@@ -301,14 +301,11 @@ class VoxelToPointTransformer(nn.Module):
         self.max_voxels_foreach_processing = max_voxels_foreach_processing
         
         self.scale_weights_predictor = nn.Sequential(
-            nn.Linear(1, 4), 
-            nn.Linear(4, 8), 
+            nn.Linear(1, 8), 
             nn.GELU(),
-            nn.Linear(8, 16), 
-            nn.Linear(16, 32),
+            nn.Linear(8, 32), 
             nn.GELU(),
             nn.Linear(32, d_model),
-            nn.GELU()
         )
 
         self.layers = nn.ModuleList(

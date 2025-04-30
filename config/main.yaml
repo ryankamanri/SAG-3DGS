@@ -44,9 +44,9 @@ optimizer:
   cosine_lr: true
   delta_means_lr: 2.e-4
   quaternion_lr: 2.e-4
-  scale_lr: 1.e-4
-  opacity_lr: 5.e-4
-  shs_lr: [5.e-4, 1.e-4, 2.e-5, 4.e-6]
+  scale_lr: 2.e-4
+  opacity_lr: 2.e-4
+  shs_lr: [2.e-4, 2.e-4, 2.e-4, 2.e-4]
 
 checkpointing:
   load: null

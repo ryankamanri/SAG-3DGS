@@ -92,17 +92,17 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         
         # from mvsplat
         self.backbone = BackboneMultiview(
-            feature_channels=cfg.feature_channels,
-            downscale_factor=cfg.downscale_factor
+            feature_channels=cfg.feature_channels * 4,
+            downscale_factor=4, 
+            num_head=cfg.transformer_num_head * 4
         )
         
         self.upsampler = nn.Sequential(
-            nn.ConvTranspose2d(cfg.feature_channels, cfg.feature_channels, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(cfg.feature_channels),
+            nn.ConvTranspose2d(cfg.feature_channels * 4, cfg.feature_channels * 2, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(cfg.feature_channels * 2),
             nn.GELU(),
-            nn.ConvTranspose2d(cfg.feature_channels, cfg.feature_channels, kernel_size=4, stride=2, padding=1),
+            nn.ConvTranspose2d(cfg.feature_channels * 2, cfg.feature_channels, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(cfg.feature_channels),
-            nn.GELU(),
         )
         
         self.feat_enhancer = nn.ModuleDict({
@@ -110,13 +110,11 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
                 nn.Conv2d(self.feature_channels+3+3+1+3, self.feature_channels, kernel_size=1, stride=1, padding=0),
                 nn.GELU(),
                 nn.Conv2d(self.feature_channels, self.feature_channels, kernel_size=1, stride=1, padding=0),
-                nn.GELU()
             ), # merge direction and rgb features
             "conv2": nn.Sequential(
                 nn.Conv2d(self.feature_channels+3, self.feature_channels, kernel_size=1, stride=1, padding=0),
                 nn.GELU(),
                 nn.Conv2d(self.feature_channels, self.feature_channels, kernel_size=1, stride=1, padding=0),
-                nn.GELU()
             ), # merge rgb features
             "unets": nn.ModuleList([UNetModel(
                 image_size=None, 
@@ -260,7 +258,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             tar_extrinsics = context["target_extrinsics"]
             assert tar_extrinsics.shape == (b, 1, 4, 4), "You must ensure the target view is UNIQUE while using the enhanced features"
             _, _, cf, _, _ = trans_features.shape
-            trans_features = self.upsampler(trans_features.view(b*v, cf, h//4, w//4)).view(b, v, cf, h, w) # (B, V, C, H, W)
+            trans_features = self.upsampler(trans_features.view(b*v, cf, h//4, w//4)).view(b, v, cf // 4, h, w) # (B, V, C, H, W)
             trans_features = self.enhance_features(
                 imgs, trans_features, cas_module_result.registed_prob_pcd.vertices[:, :, :3], extrinsics, tar_extrinsics.squeeze(1),
             )
