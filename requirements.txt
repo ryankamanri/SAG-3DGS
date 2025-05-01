@@ -19,7 +19,7 @@ plyfile==1.1
 # pytorch3d.egg==info
 pytorch_lightning==2.4.0
 PyYAML==6.0.2
-scikit-image==0.24.0
+scikit-image==0.19.0
 scikit_learn==1.5.2
 scipy==1.14.1
 sk_video==1.1.10

@@ -234,7 +234,8 @@ def compute_voxel_interpolate_and_knn_features(
     n = voxel_xyz.shape[1]
     voxel_xyz = F.pad(voxel_xyz, pad=(0, 1), value=1) # (B, N, 4)
     voxel_xyz = voxel_xyz.permute(0, 2, 1) # (B, 4, N)
-    voxel_centers_uvd = torch.matmul(intrinsics, torch.matmul(torch.linalg.inv(extrinsics), voxel_xyz)[:, :3]) # (B, 4, N) -> (B, 3, N)
+    voxel_cam_xyz = torch.matmul(torch.linalg.inv(extrinsics), voxel_xyz) # (B, 4, N)
+    voxel_centers_uvd = torch.matmul(intrinsics, voxel_cam_xyz[:, :3]) # (B, 4, N) -> (B, 3, N)
     voxel_centers_uv = (voxel_centers_uvd[:, :2] / voxel_centers_uvd[:, 2:]).permute(0, 2, 1) # (B, 3, N) -> (B, N, 2)
     # knn features
     if False: # use knn method, slowly
@@ -269,14 +270,22 @@ def compute_voxel_interpolate_and_knn_features(
     knn_features = cnn_features[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]].permute(0, 3, 1, 2) # (B, N, K, C) -> (B, C, N, K)
     
     # normalize
-    voxel_centers_uv[..., 0] /= ((w - 1) / 2)
-    voxel_centers_uv[..., 0] -= 1
-    voxel_centers_uv[..., 1] /= ((h - 1) / 2)
-    voxel_centers_uv[..., 1] -= 1
+    voxel_centers_uv_normalized = voxel_centers_uv.clone()
+    voxel_centers_uv_normalized[..., 0] /= ((w - 1) / 2)
+    voxel_centers_uv_normalized[..., 0] -= 1
+    voxel_centers_uv_normalized[..., 1] /= ((h - 1) / 2)
+    voxel_centers_uv_normalized[..., 1] -= 1
     
-    interpolated_feat = F.grid_sample(cnn_features, voxel_centers_uv.unsqueeze(-2), padding_mode="border")
-    interpolated_depth = F.grid_sample(depths.unsqueeze(1), voxel_centers_uv.unsqueeze(-2), padding_mode="border").view(b, n) # (B, C=1, N, 1) -> (B, N)
-    interpolated_dist = torch.abs(interpolated_depth - voxel_centers_uvd[:, 2]) # (B, N)
+    interpolated_feat = F.grid_sample(cnn_features, voxel_centers_uv_normalized.unsqueeze(-2), padding_mode="border")
+    interpolated_depth = F.grid_sample(depths.unsqueeze(1), voxel_centers_uv_normalized.unsqueeze(-2), padding_mode="border").view(b, n) # (B, C=1, N, 1) -> (B, N)
+    interpolated_cam_xyz = torch.matmul(
+        torch.linalg.inv(intrinsics), 
+        torch.stack((
+            voxel_centers_uv[..., 0], # (B, N)
+            voxel_centers_uv[..., 1], 
+            torch.ones_like(interpolated_depth, device=interpolated_depth.device)
+        ), dim=1) * interpolated_depth.unsqueeze(1)) # (B, 3, N)
+    interpolated_dist = torch.norm(interpolated_cam_xyz - voxel_cam_xyz[:, :3], dim=1) # (B, 3, N) -> (B, N)
     return interpolated_feat.view(b, c, -1), interpolated_dist, knn_features, knn_byx, voxel_centers_uvd[:, 2] # (B, C, N), (B, N), (B, C, N, K), (B, N, K, 3(bhw)), (B, N)
 
 
