@@ -75,8 +75,8 @@ class CostvolumeSampler(nn.Module):
         stage_volumes, stage_near_fars = [], []
         for stage in range(3):
             stage_volumes.append([
-                cas_module_result.ref_view_result_list[vi].backbone["stage{}".format(stage + 1)]["volume"][batch_idx]
-                 for vi in range(v)]) # stage_volumes: [[(C, D, H, W) * V] * 3]
+                cas_module_result.ref_view_result_list[vi].backbone["stage{}".format(stage + 1)]["volume"][batch_idx].unsqueeze(0)
+                 for vi in range(v)]) # stage_volumes: [[(1, C, D, H, W) * V] * 3]
             stage_near_fars.append([
                 cas_module_result.ref_view_result_list[vi].backbone["stage{}".format(stage + 1)]["depth_near_far"][batch_idx]
                  for vi in range(v)]) # stage_near_far_invs: [[(2, H, W) * V] * 3]
@@ -87,34 +87,39 @@ class CostvolumeSampler(nn.Module):
         for si in SliceIterator(0, vox, self.max_voxels_foreach_processing):
             voxi = si.stop - si.start
             means_slice = gaussian_means[si].permute(1, 0).unsqueeze(0) # (1, 3, Voxi)
-            means_cam_slice = torch.matmul(torch.linalg.inv(extrinsic), torch.cat((means_slice, torch.ones(1, 1, voxi).to(means_slice.device)), dim=1))[:, :3] # (1, 4, Vox) -> (1, 3, Vox)
+            means_cam_slice = torch.matmul(torch.linalg.inv(extrinsic), torch.cat((means_slice, torch.ones(1, 1, voxi).to(means_slice.device)), dim=1))[:, :3] # (1, 4, Vox) -> (V, 3, Vox)
             
             stage = 0 # only one stage
-            volumes = torch.stack(stage_volumes[stage], dim=0) # (V, C, D, H, W)
-            _, c, d, _, _ = volumes.shape # (V, C, D, H, W)
-            prop = 1 / (2 ** (2 - stage))
-            stage_intrinsics = intrinsic.clone()
-            stage_intrinsics[:, :2] *= prop # (V, 3, 3) 4 -> 2 -> 1
-            means_uvd_slice = torch.matmul(stage_intrinsics, means_cam_slice) # (V, 3, Voxi)
-            means_uvd_slice = torch.stack((
-                means_uvd_slice[:, 0] / means_uvd_slice[:, 2], 
-                means_uvd_slice[:, 1] / means_uvd_slice[:, 2], 
-                means_uvd_slice[:, 2]), dim=1) # (V, 3, Voxi)
-            
-            # normalize
-            means_uvd_norm_slice = torch.stack((
-                (means_uvd_slice[:, 0] / ((w * prop - 1) / 2)) - 1, 
-                (means_uvd_slice[:, 1] / ((h * prop - 1) / 2)) - 1, 
-                (((means_uvd_slice[:, 2] - near.view(v, 1)) / ((far - near).view(v, 1) / 2)) - 1)), dim=1) # (V, 3, Voxi)
+            sampled_features = []
+            # we handle volume individually cause it is too large
+            for vidx in range(v):
+                volume = stage_volumes[stage][vidx] # (V=1, C, D, H, W)
+                vi, c, d, _, _ = volume.shape # (V=1, C, D, H, W)
+                prop = 1 / (2 ** (2 - stage))
+                stage_intrinsics = intrinsic[vidx].unsqueeze(0).clone() # V -> 1
+                stage_intrinsics[:, :2] *= prop # (V, 3, 3) 4 -> 2 -> 1
+                means_uvd_slice = torch.matmul(stage_intrinsics, means_cam_slice[vidx].unsqueeze(0)) # (V, 3, Voxi)
+                means_uvd_slice = torch.stack((
+                    means_uvd_slice[:, 0] / means_uvd_slice[:, 2], 
+                    means_uvd_slice[:, 1] / means_uvd_slice[:, 2], 
+                    means_uvd_slice[:, 2]), dim=1) # (V, 3, Voxi)
+                
+                # normalize
+                means_uvd_norm_slice = torch.stack((
+                    (means_uvd_slice[:, 0] / ((w * prop - 1) / 2)) - 1, 
+                    (means_uvd_slice[:, 1] / ((h * prop - 1) / 2)) - 1, 
+                    (((means_uvd_slice[:, 2] - near[vidx].view(vi, 1)) / ((far[vidx] - near[vidx]).view(vi, 1) / 2)) - 1)), dim=1) # (V, 3, Voxi)
 
-            sampled_feature = F.grid_sample(
-                volumes.view(v, c, d, int(h*prop), int(w*prop)), 
-                means_uvd_norm_slice.permute(0, 2, 1).view(v, 1, 1, voxi, 3),
-                mode='bilinear', 
-                padding_mode='zeros', 
-                align_corners=True
-            ).view(v, c, voxi)
+                sampled_feature = F.grid_sample(
+                    volume.view(vi, c, d, int(h*prop), int(w*prop)), 
+                    means_uvd_norm_slice.permute(0, 2, 1).view(vi, 1, 1, voxi, 3),
+                    mode='bilinear', 
+                    padding_mode='zeros', 
+                    align_corners=True
+                ).view(vi, c, voxi)
+                sampled_features.append(sampled_feature)
             
+            sampled_feature = torch.cat(sampled_features, dim=0) # (V, C, Voxi)
             sampled_feature = self.feature_enhancer(sampled_feature.permute(0, 2, 1)).permute(0, 2, 1) # (V, C, Voxi)
             weighted_features = self.weight_features(sampled_feature, means_slice.squeeze(0), extrinsic) # (V, 1, Voxi)
             sampled_feature = sampled_feature * torch.softmax(weighted_features, dim=0) # (V, C, Voxi)

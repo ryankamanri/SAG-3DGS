@@ -130,8 +130,8 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         self.scaling_activation = lambda x, voxel_size: (self.gaussian_scale_min + (self.gaussian_scale_max - self.gaussian_scale_min) * torch.sigmoid(x - 5)) / voxel_size
         self.quaternion_activation = lambda x: x
         self.opacity_activation = lambda x: torch.sigmoid(x - 5)
-        self.activated_shs = [lambda x : x] + [
-            lambda x: x / (5 ** (i + 1)) for i in range(1, sh_degree + 1)
+        self.activated_shs = [lambda x, i : x] + [
+            lambda x, i: x / (5 ** (i + 1)) for _ in range(1, sh_degree + 1)
         ]
         
         def make_predictor(in_dim, out_dim):
@@ -176,7 +176,7 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         scales = self.scale_predictor(feature)
         opacity = self.opacity_predictor(feature)
         shs = [sh_predictor(feature) for sh_predictor in self.shs_predictor]
-        activated_shs = [sh_activation(sh) for sh, sh_activation in zip(shs, self.activated_shs)]
+        activated_shs = [sh_activation(sh, i) for sh, sh_activation, i in zip(shs, self.activated_shs, range(3))]
         
         
         activated_delta_means = self.delta_means_activation(delta_means, voxel_size)

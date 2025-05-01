@@ -30,6 +30,7 @@ from .backbone.voxel_to_point_cross_attn_transformer import VoxelToPointTransfor
 from .costvolume.depth_predictor_multiview import DepthPredictorMultiView
 from .mvsnet import generate_depth_map_based_point_cloud, generate_geometric_mask
 from .costvolume.ldm_unet.unet import UNetModel
+from ...misc.execution_timer import ExecutionTimer
 
 
 @dataclass
@@ -89,6 +90,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         
         self.feature_channels = cfg.feature_channels
         self.do_enhance_feat = True
+        self.timer_switch = False
         
         # from mvsplat
         self.backbone = BackboneMultiview(
@@ -245,23 +247,27 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         b, v, c, h, w = imgs.shape
         if global_step >= self.voxel_size_begin_steps[self.current_idx]:
             self.current_idx += 1
-        cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, masks, extrinsics, intrinsics, nears, fars)
+        with ExecutionTimer("CAS-MVSNet Module", switch=self.timer_switch):
+            cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, masks, extrinsics, intrinsics, nears, fars)
         ################################################### from mvsplat
-        trans_features = self.backbone(
-            context["image"],
-            attn_splits=self.cfg.multiview_trans_attn_split,
-            return_cnn_features=False,
-            epipolar_kwargs=None,
-        )[0]
+        with ExecutionTimer("Feature Extraction", switch=self.timer_switch):
+            trans_features = self.backbone(
+                context["image"],
+                attn_splits=self.cfg.multiview_trans_attn_split,
+                return_cnn_features=False,
+                epipolar_kwargs=None,
+            )[0]
         
+        
+        tar_extrinsics = context["target_extrinsics"]
+        assert tar_extrinsics.shape == (b, 1, 4, 4), "You must ensure the target view is UNIQUE while using the enhanced features"
+        _, _, cf, _, _ = trans_features.shape
+        trans_features = self.upsampler(trans_features.view(b*v, cf, h//4, w//4)).view(b, v, cf // 4, h, w) # (B, V, C, H, W)
         if self.do_enhance_feat:
-            tar_extrinsics = context["target_extrinsics"]
-            assert tar_extrinsics.shape == (b, 1, 4, 4), "You must ensure the target view is UNIQUE while using the enhanced features"
-            _, _, cf, _, _ = trans_features.shape
-            trans_features = self.upsampler(trans_features.view(b*v, cf, h//4, w//4)).view(b, v, cf // 4, h, w) # (B, V, C, H, W)
-            trans_features = self.enhance_features(
-                imgs, trans_features, cas_module_result.registed_prob_pcd.vertices[:, :, :3], extrinsics, tar_extrinsics.squeeze(1),
-            )
+            with ExecutionTimer("Enhance Features", switch=self.timer_switch):
+                trans_features = self.enhance_features(
+                    imgs, trans_features, cas_module_result.registed_prob_pcd.vertices[:, :, :3], extrinsics, tar_extrinsics.squeeze(1),
+                )
 
         # # Sample depths from the resulting features.
         # in_feats = trans_features
@@ -300,15 +306,16 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         features = trans_features
         
         ##########################################################
-        gaussians: EncoderOutput = self.gaussian_adapter_module.forward(
-            imgs, 
-            features, 
-            self.current_idx if self.training else len(self.voxel_size_list), 
-            cas_module_result, 
-            masks, 
-            extrinsics, 
-            intrinsics, 
-            nears, fars)
+        with ExecutionTimer("Gaussian Adapter Module", switch=self.timer_switch):
+            gaussians: EncoderOutput = self.gaussian_adapter_module.forward(
+                imgs, 
+                features, 
+                self.current_idx if self.training else len(self.voxel_size_list), 
+                cas_module_result, 
+                masks, 
+                extrinsics, 
+                intrinsics, 
+                nears, fars)
         gaussians.others["cas_module_result"] = cas_module_result
         gaussians.others["nears"] = nears
         gaussians.others["fars"] = fars
