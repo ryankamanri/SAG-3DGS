@@ -37,7 +37,7 @@ model:
 
 dataset: 
   name: llff
-  image_shape: [640, 960] # 
+  image_shape: [256, 256] # 
   roots: [datasets/llff]
   baseline_scale_bounds: false
   make_baseline_1: false

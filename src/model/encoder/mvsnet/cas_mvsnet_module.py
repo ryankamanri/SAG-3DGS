@@ -63,7 +63,7 @@ class CasMVSNetModule(nn.Module):
         
         if use_backbone:
             self.pretrained_cas_mvsnet = CascadeMVSNet(refine=False, ndepths=ndepths, return_photometric_confidence=True)
-            self.backbone_cas_mvsnet = CascadeMVSNet(refine=self.refine, ndepths=ndepths, return_volume=True, return_photometric_confidence=True)
+            self.backbone_cas_mvsnet = CascadeMVSNet(use_dot_similarity=True, refine=self.refine, ndepths=ndepths, return_volume=True, return_photometric_confidence=True)
         else:
             self.pretrained_cas_mvsnet = CascadeMVSNet(refine=False, ndepths=ndepths, return_volume=True, return_photometric_confidence=True)
             
@@ -112,7 +112,7 @@ class CasMVSNetModule(nn.Module):
         depth_values = depth_values.flip(dims=(2,)) # start from near to far.
         return proj_mat, depth_values
         
-    def forward(self, imgs, img_masks, extrinsics, intrinsics, nears, fars):
+    def forward(self, imgs, img_masks, extrinsics, intrinsics, nears, fars, outer_features=None):
         proj_mat, depth_values = self.preprocess(imgs, extrinsics, intrinsics, nears, fars)
         near_fars = torch.stack([nears, fars], dim=-1) # (B, V, 2)
         b, v, c, h, w = imgs.shape
@@ -132,7 +132,7 @@ class CasMVSNetModule(nn.Module):
                 pretrained_outputs_list = self.pretrained_cas_mvsnet(imgs, proj_mat, depth_values) # depth and photometric_confidence
         
         if self.use_backbone:
-            backbone_outputs_list = self.backbone_cas_mvsnet(imgs, proj_mat, depth_values)
+            backbone_outputs_list = self.backbone_cas_mvsnet.forward(imgs, proj_mat, depth_values, outer_features)
         elif not self.training:
             backbone_outputs_list = self.pretrained_cas_mvsnet(imgs, proj_mat, depth_values)
         else:

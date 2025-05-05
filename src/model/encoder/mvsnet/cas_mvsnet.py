@@ -6,8 +6,9 @@ from .cas_module import *
 Align_Corners_Range = False
 
 class DepthNet(nn.Module):
-    def __init__(self, return_volume=False, return_photometric_confidence=False):
+    def __init__(self, use_dot_similarity, return_volume=False, return_photometric_confidence=False):
         super(DepthNet, self).__init__()
+        self.use_dot_similarity = use_dot_similarity
         self.return_volume = return_volume
         self.return_photometric_confidence = return_photometric_confidence
 
@@ -23,10 +24,14 @@ class DepthNet(nn.Module):
         ref_proj, src_projs = proj_matrices[0], proj_matrices[1:]
 
         # step 2. differentiable homograph, build cost volume
+        b, c, h, w = ref_feature.shape
         ref_volume = ref_feature.unsqueeze(2).repeat(1, 1, num_depth, 1, 1)
-        volume_sum = ref_volume
-        volume_sq_sum = ref_volume ** 2
-        del ref_volume
+        if self.use_dot_similarity:
+            prob_volume_pre = torch.zeros(b, num_depth, h, w, device=ref_feature.device)
+        else:
+            volume_sum = ref_volume
+            volume_sq_sum = ref_volume ** 2
+            del ref_volume
         for src_fea, src_proj in zip(src_features, src_projs):
             #warpped features
             src_proj_new = src_proj[:, 0].clone()
@@ -35,22 +40,27 @@ class DepthNet(nn.Module):
             ref_proj_new[:, :3, :4] = torch.matmul(ref_proj[:, 1, :3, :3], ref_proj[:, 0, :3, :4])
             warped_volume = homo_warping(src_fea, src_proj_new, ref_proj_new, depth_values)
             # warped_volume = homo_warping(src_fea, src_proj[:, 2], ref_proj[:, 2], depth_values)
-
-            if self.training:
-                volume_sum = volume_sum + warped_volume
-                volume_sq_sum = volume_sq_sum + warped_volume ** 2
-            else:
-                # TODO: this is only a temporal solution to save memory, better way?
-                volume_sum += warped_volume
-                volume_sq_sum += warped_volume.pow_(2)  # the memory of warped_volume has been modified
+            if self.use_dot_similarity:
+                similarity = (ref_volume * warped_volume).sum(dim=1) / (c ** 0.5) # like cross-attention
+                prob_volume_pre = prob_volume_pre + similarity
+                del similarity
+            else:   
+                if self.training:
+                    volume_sum = volume_sum + warped_volume
+                    volume_sq_sum = volume_sq_sum + warped_volume ** 2
+                else:
+                    # TODO: this is only a temporal solution to save memory, better way?
+                    volume_sum += warped_volume
+                    volume_sq_sum += warped_volume.pow_(2)  # the memory of warped_volume has been modified
             del warped_volume
-        # aggregate multiple feature volumes by variance
-        volume_variance = volume_sq_sum.div_(num_views).sub_(volume_sum.div_(num_views).pow_(2))
+        if not self.use_dot_similarity:
+            # aggregate multiple feature volumes by variance
+            volume_variance = volume_sq_sum.div_(num_views).sub_(volume_sum.div_(num_views).pow_(2))
 
-        # step 3. cost volume regularization
-        cost_reg = cost_regularization(volume_variance, stage_idx)
-        # cost_reg = F.upsample(cost_reg, [num_depth * 4, img_height, img_width], mode='trilinear')
-        prob_volume_pre = cost_reg.squeeze(1)
+            # step 3. cost volume regularization
+            cost_reg = cost_regularization(volume_variance, stage_idx)
+            # cost_reg = F.upsample(cost_reg, [num_depth * 4, img_height, img_width], mode='trilinear')
+            prob_volume_pre = cost_reg.squeeze(1)
 
         if prob_volume_init is not None:
             prob_volume_pre += prob_volume_init
@@ -61,7 +71,8 @@ class DepthNet(nn.Module):
         result = {}
         result["depth"] = depth
         
-        if self.return_volume:
+        if not self.use_dot_similarity and self.return_volume:
+            # TODO: remove the inplace operation if needed (referenced by multiple tensors)
             volume_context = volume_sum.div_(num_views)
             feature_volume = torch.cat((volume_variance, volume_context), dim=1)
             result["volume"] = feature_volume
@@ -81,9 +92,10 @@ class DepthNet(nn.Module):
 
 
 class CascadeMVSNet(nn.Module):
-    def __init__(self, refine=False, ndepths=[48, 32, 8], depth_interals_ratio=[4, 2, 1], share_cr=False,
+    def __init__(self, use_dot_similarity=False, refine=False, ndepths=[48, 32, 8], depth_interals_ratio=[4, 2, 1], share_cr=False,
                  grad_method="detach", arch_mode="fpn", cr_base_chs=[8, 8, 8], return_volume=False, return_photometric_confidence=False):
         super(CascadeMVSNet, self).__init__()
+        self.use_dot_similarity = use_dot_similarity
         self.refine = refine
         self.share_cr = share_cr
         self.ndepths = ndepths
@@ -116,7 +128,7 @@ class CascadeMVSNet(nn.Module):
                                                       for i in range(self.num_stage)])
         if self.refine:
             self.refine_network = RefineNet()
-        self.DepthNet = DepthNet(return_volume=return_volume, return_photometric_confidence=return_photometric_confidence)
+        self.DepthNet = DepthNet(use_dot_similarity=use_dot_similarity, return_volume=return_volume, return_photometric_confidence=return_photometric_confidence)
 
     def backbone(self, ref_img: torch.Tensor, features: dict, proj_matrices, depth_values, imgs_shape: tuple):
         outputs = {}
@@ -166,10 +178,19 @@ class CascadeMVSNet(nn.Module):
         return outputs
     
     
-    def forward(self, imgs, proj_matrices, depth_values):
+    def forward(self, imgs, proj_matrices, depth_values, outer_features=None):
         b, v, c, h, w = imgs.shape
-        # step 1. feature extraction
-        features = self.feature(imgs) # {'stage1': (B, V, C, H, W), ...}
+        if outer_features == None or not self.use_dot_similarity:
+            # step 1. feature extraction
+            features = self.feature(imgs) # {'stage1': (B, V, C, H, W), ...}
+        else: 
+            # use outer features
+            assert type(outer_features) == dict \
+                and outer_features.get("stage1") is not None \
+                and outer_features.get("stage2") is not None \
+                and outer_features.get("stage3") is not None, \
+                "outer_features should be a dict with key stage1-3"
+            features = outer_features
         # for nview_idx in range(imgs.size(1)):  #imgs shape (B, N, C, H, W)
         #     img = imgs[:, nview_idx]
         #     features.append(self.feature(img))

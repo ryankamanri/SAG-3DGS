@@ -37,7 +37,7 @@ model:
 
 dataset: 
   name: ns
-  image_shape: [800, 800]
+  image_shape: [256, 256]
   roots: [datasets/nerf_synthetic]
   baseline_scale_bounds: false
   make_baseline_1: false

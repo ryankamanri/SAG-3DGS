@@ -608,7 +608,7 @@ def get_depth_range_samples(cur_depth, cur_period, ndepth, device, shape):
         depth_range_samples = (cur_depth_min + (cur_depth_max - cur_depth_min) * (cur_period * torch.arange(0, ndepth, device=device).reshape(1, -1).repeat(b, 1)))  #(B, D)
         depth_range_samples = depth_range_samples.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, shape[1], shape[2]) #(B, D, H, W)
 
-        near_far = torch.stack((cur_depth_min, cur_depth_max), dim=1).repeat(1, 1, shape[1], shape[2]) # (B, 2, H, W)
+        near_far = torch.cat((cur_depth_min, cur_depth_max), dim=1).view(b, 2, 1, 1).repeat(1, 1, shape[1], shape[2]) # (B, 2, H, W)
     else:
         b, h, w = cur_depth.shape
         cur_depth_min = (cur_depth - cur_period / 2).unsqueeze(1) # (B, 1, H, W)
@@ -617,7 +617,7 @@ def get_depth_range_samples(cur_depth, cur_period, ndepth, device, shape):
         
         depth_range_samples = (cur_depth_min + (cur_depth_max - cur_depth_min) * (cur_period * torch.arange(0, ndepth, device=device).reshape(1, -1, 1, 1).repeat(b, 1, h, w)))  #(B, D, H, W)
 
-        near_far = torch.stack((cur_depth_max, cur_depth_min), dim=1) # (B, 2, H, W)
+        near_far = torch.cat((cur_depth_min, cur_depth_max), dim=1) # (B, 2, H, W)
         
     return depth_range_samples, cur_period, near_far
 

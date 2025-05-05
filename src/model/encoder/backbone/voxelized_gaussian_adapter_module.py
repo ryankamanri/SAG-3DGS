@@ -121,8 +121,9 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         super().__init__()
         assert sh_degree < 4
         self.sh_degree = sh_degree
+        self.cat_volume_feat = False
         self.voxel_feat_dim = voxel_feat_dim
-        self.voxel_volume_feat_dim = voxel_feat_dim + volume_feat_dim
+        self.voxel_volume_feat_dim = voxel_feat_dim + volume_feat_dim if self.cat_volume_feat else voxel_feat_dim
         
         self.gaussian_scale_min = 0.1
         self.gaussian_scale_max = 10.0
@@ -168,9 +169,10 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         # convert means and scales from ndc space to real world.
         means: torch.Tensor = bbox.transform_from_ndc(activated_delta_means + voxel_center, batch, xyz_shape=(1, 3)) # (N, 3)
         
-        volume_feature = costvolume_sampler_callback(means)
-        # merge voxel & volume features
-        feature = torch.cat((feature, volume_feature), dim=-1) # (N, C + C')
+        if self.cat_volume_feat:
+            volume_feature = costvolume_sampler_callback(means)
+            # merge voxel & volume features
+            feature = torch.cat((feature, volume_feature), dim=-1) # (N, C + C')
         
         quaternion = self.quaternion_predictor(feature)
         scales = self.scale_predictor(feature)

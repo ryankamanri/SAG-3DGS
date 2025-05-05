@@ -99,12 +99,16 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             num_head=cfg.transformer_num_head * 4
         )
         
-        self.upsampler = nn.Sequential(
+        self.upsamplerx2 = nn.Sequential(
             nn.ConvTranspose2d(cfg.feature_channels * 4, cfg.feature_channels * 2, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(cfg.feature_channels * 2),
             nn.GELU(),
+            nn.BatchNorm2d(cfg.feature_channels * 2)
+        )
+        
+        self.upsamplerx4 = nn.Sequential(     
             nn.ConvTranspose2d(cfg.feature_channels * 2, cfg.feature_channels, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(cfg.feature_channels),
+            nn.GELU(),
+            nn.BatchNorm2d(cfg.feature_channels)
         )
         
         self.feat_enhancer = nn.ModuleDict({
@@ -247,8 +251,6 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         b, v, c, h, w = imgs.shape
         if global_step >= self.voxel_size_begin_steps[self.current_idx]:
             self.current_idx += 1
-        with ExecutionTimer("CAS-MVSNet Module", switch=self.timer_switch):
-            cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module(imgs, masks, extrinsics, intrinsics, nears, fars)
         ################################################### from mvsplat
         with ExecutionTimer("Feature Extraction", switch=self.timer_switch):
             trans_features = self.backbone(
@@ -262,7 +264,16 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         tar_extrinsics = context["target_extrinsics"]
         assert tar_extrinsics.shape == (b, 1, 4, 4), "You must ensure the target view is UNIQUE while using the enhanced features"
         _, _, cf, _, _ = trans_features.shape
-        trans_features = self.upsampler(trans_features.view(b*v, cf, h//4, w//4)).view(b, v, cf // 4, h, w) # (B, V, C, H, W)
+        stage_features = {}
+        stage_features["stage1"] = trans_features
+        stage_features["stage2"] = self.upsamplerx2(stage_features["stage1"].view(b*v, cf, h//4, w//4)).view(b, v, cf//2, h//2, w//2) # (B, V, C, H, W)
+        stage_features["stage3"] = self.upsamplerx4(stage_features["stage2"].view(b*v, cf//2, h//2, w//2)).view(b, v, cf//4, h, w) # (B, V, C, H, W)
+        trans_features = stage_features["stage3"]
+        
+        with ExecutionTimer("CAS-MVSNet Module", switch=self.timer_switch):
+            cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module.forward(
+                imgs, masks, extrinsics, intrinsics, nears, fars, outer_features=stage_features)
+        
         if self.do_enhance_feat:
             with ExecutionTimer("Enhance Features", switch=self.timer_switch):
                 trans_features = self.enhance_features(
