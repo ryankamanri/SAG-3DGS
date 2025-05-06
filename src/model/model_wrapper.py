@@ -146,6 +146,8 @@ class ModelWrapper(LightningModule):
             self.log(f"loss/{loss_fn.name}", loss)
             total_loss = total_loss + loss * loss_fn.cfg.weight
             total_weight += loss_fn.cfg.weight
+            # total_loss = total_loss + loss / loss.detach() # autoloss
+            # total_weight += 1.0
             loss_str += f"{loss_fn.name}: {loss:.6} * {loss_fn.cfg.weight}; "
         total_loss /= total_weight
         self.log("loss/total", total_loss)
@@ -163,7 +165,7 @@ class ModelWrapper(LightningModule):
                 f"train step {self.global_step}; "
                 f"scene = {[x[:20] for x in batch['scene']]}; "
                 f"context = {batch['context']['index'].tolist()}; "
-                f"bound = {gaussians.others['bbox'].size.detach().cpu().numpy().mean()}; "
+                # f"bound = {gaussians.others['bbox'].size.detach().cpu().numpy().mean()}; "
                 f"gaussians = {gaussians.opacities.shape[1]}; "
                 f"loss = [{loss_str}]; "
                 f"total loss = {total_loss:.6f}; "

@@ -308,6 +308,9 @@ class VoxelToPointTransformer(nn.Module):
         self.d_model_pe = d_model // 6
         self.nhead = nhead
         self.max_voxels_foreach_processing = max_voxels_foreach_processing
+        self.wo_confidence = False
+        self.wo_weights = False
+        self.wo_voxel_size_embedding = False
         
         self.scale_weights_predictor = nn.Sequential(
             nn.Linear(1, 8), 
@@ -365,6 +368,9 @@ class VoxelToPointTransformer(nn.Module):
         
         if v == 0: return torch.zeros(c, v, device=cnn_features.device)
         
+        if self.wo_confidence:
+            confidences = torch.ones_like(confidences, device=confidences.device)
+        
         # process voxels for multi times if vixel is too much.
         # and merge feature from all views.
         
@@ -385,16 +391,19 @@ class VoxelToPointTransformer(nn.Module):
             
             knn_weights = voxel_length / (torch.norm(point_xyz[knn_byx[..., 0], :, knn_byx[..., 1], knn_byx[..., 2]] \
                 - voxel_xyz_slice.permute(0, 2, 1).unsqueeze(-2).repeat(1, 1, k, 1), dim=-1) + 1e-6) # (B, V, K, 3) -> (B, V, K)
+            if self.wo_weights:
+                knn_weights = torch.ones_like(knn_weights, device=knn_weights.device)
             voxel_based_confidences = confidences[knn_byx[..., 0], knn_byx[..., 1], knn_byx[..., 2]] # (B, V, K)
             
             source = interpolated_features.permute(0, 2, 1) # (B, V, C)
             target = knn_features.permute(0, 2, 3, 1) # (B, V, K, C)
             
             # voxel size embedding
-            voxel_scale = voxel_length / voxel_depths # (B, V)
-            voxel_size_emb = self.scale_weights_predictor(voxel_scale.unsqueeze(-1)) # (B, V, C)
-            source *= voxel_size_emb
-            target *= voxel_size_emb.view(b, vi, 1, c)
+            if not self.wo_voxel_size_embedding:
+                voxel_scale = voxel_length / voxel_depths # (B, V)
+                voxel_size_emb = self.scale_weights_predictor(voxel_scale.unsqueeze(-1)) # (B, V, C)
+                source *= voxel_size_emb
+                target *= voxel_size_emb.view(b, vi, 1, c)
             
         
             for i, layer in enumerate(self.layers):

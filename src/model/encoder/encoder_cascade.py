@@ -341,7 +341,11 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     def configure_optimizers(self, cfg):
         return [
             {'params': self.cas_mvsnet_module.parameters(), 'lr': cfg.lr}, 
-            {'params': self.backbone.parameters(), 'lr': cfg.lr},
+            {'params': self.backbone.parameters(), 'lr': cfg.lr}, 
+            {'params': self.upsamplerx2.parameters(), 'lr': cfg.lr}, 
+            {'params': self.upsamplerx4.parameters(), 'lr': cfg.lr}, 
+            {'params': self.feat_enhancer.parameters(), 'lr': cfg.lr}, 
             {'params': self.depth_predictor.parameters(), 'lr': cfg.lr}, 
-            {'params': self.transformer.parameters(), 'lr': cfg.lr}
+            {'params': self.transformer.parameters(), 'lr': cfg.lr}, 
+            {'params': self.costvolume_sampler.parameters(), 'lr': cfg.lr}, 
         ] + self.gaussian_adapter_module.configure_optimizers(cfg)
