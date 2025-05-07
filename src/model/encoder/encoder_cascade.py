@@ -272,7 +272,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         
         with ExecutionTimer("CAS-MVSNet Module", switch=self.timer_switch):
             cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module.forward(
-                imgs, masks, extrinsics, intrinsics, nears, fars, outer_features=stage_features)
+                imgs, masks, extrinsics, intrinsics, nears, fars, outer_features=None)
         
         if self.do_enhance_feat:
             with ExecutionTimer("Enhance Features", switch=self.timer_switch):

@@ -302,7 +302,7 @@ class VoxelToPointTransformer(nn.Module):
     ):
         super(VoxelToPointTransformer, self).__init__()
         
-        assert d_model % 6 == 0 # for positional encoding
+        # assert d_model % 6 == 0 # for positional encoding
         
         self.d_model = d_model
         self.d_model_pe = d_model // 6

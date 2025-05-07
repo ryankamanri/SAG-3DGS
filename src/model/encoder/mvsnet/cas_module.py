@@ -3,9 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import time
 import sys
-from .multiview_transformer import MultiViewFeatureTransformer
-from .unimatch.utils import split_feature, merge_splits
-from .unimatch.position import PositionEmbeddingSine
+# from .multiview_transformer import MultiViewFeatureTransformer
+# from .unimatch.utils import split_feature, merge_splits
+# from .unimatch.position import PositionEmbeddingSine
 sys.path.append("..")
 
 def init_bn(module):
