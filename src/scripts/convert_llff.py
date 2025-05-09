@@ -25,73 +25,7 @@ args = parser.parse_args()
 INPUT_IMAGE_DIR = Path(args.input_dir)
 OUTPUT_DIR = Path(args.output_dir)
 
-def normalize(v):
-    """Normalize a vector."""
-    return v / np.linalg.norm(v)
 
-def average_poses(poses):
-    """
-    Calculate the average pose, which is then used to center all poses
-    using @center_poses. Its computation is as follows:
-    1. Compute the center: the average of pose centers.
-    2. Compute the z axis: the normalized average z axis.
-    3. Compute axis y': the average y axis.
-    4. Compute x' = y' cross product z, then normalize it as the x axis.
-    5. Compute the y axis: z cross product x.
-
-    Note that at step 3, we cannot directly use y' as y axis since it's
-    not necessarily orthogonal to z axis. We need to pass from x to y.
-    Inputs:
-        poses: (N_images, 3, 4)
-    Outputs:
-        pose_avg: (3, 4) the average pose
-    """
-    # 1. Compute the center
-    center = poses[..., 3].mean(0)  # (3)
-
-    # 2. Compute the z axis
-    z = normalize(poses[..., 2].mean(0))  # (3)
-
-    # 3. Compute axis y' (no need to normalize as it's not the final output)
-    y_ = poses[..., 1].mean(0)  # (3)
-
-    # 4. Compute the x axis
-    x = normalize(np.cross(y_, z))  # (3)
-
-    # 5. Compute the y axis (as z and x are normalized, y is already of norm 1)
-    y = np.cross(z, x)  # (3)
-
-    pose_avg = np.stack([x, y, z, center], 1)  # (3, 4)
-
-    return pose_avg
-
-
-def center_poses(poses, blender2opencv):
-    """
-    Center the poses so that we can use NDC.
-    See https://github.com/bmild/nerf/issues/34
-    Inputs:
-        poses: (N_images, 3, 4)
-    Outputs:
-        poses_centered: (N_images, 3, 4) the centered poses
-        pose_avg: (3, 4) the average pose
-    """
-
-    pose_avg = average_poses(poses)  # (3, 4)
-    pose_avg_homo = np.eye(4)
-    pose_avg_homo[:3] = pose_avg  # convert to homogeneous coordinate for faster computation
-    # by simply adding 0, 0, 0, 1 as the last row
-    last_row = np.tile(np.array([0, 0, 0, 1]), (len(poses), 1, 1))  # (N_images, 1, 4)
-    poses_homo = \
-        np.concatenate([poses, last_row], 1)  # (N_images, 4, 4) homogeneous coordinate
-
-    poses_centered = np.linalg.inv(pose_avg_homo) @ poses_homo  # (N_images, 4, 4)
-    # 草，这个地方源代码没有乘这个blender2opencv，做这个操作相当于把相机转换到另一个坐标系了，和一般的nerf坐标系不同
-    poses_centered = poses_centered @ blender2opencv
-    poses_centered = poses_centered[:, :3]  # (N_images, 3, 4)
-    print('center in center_poses',poses_centered[:, :3, 3].mean(0))
-
-    return poses_centered, np.linalg.inv(pose_avg_homo) @ blender2opencv
 
 def read_cam_file(filename):
     scale_factor = 1.0 / 200
@@ -175,38 +109,24 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
     H, W, focal = poses[0, :, -1]  # original intrinsics, same for all images
     print('original focal', focal)
     
-    # img_wh = (960, 640)
-    focal = [focal, focal]
-    # print('porcessed focal', focal)
-
-    # Step 2: correct poses
-    poses = np.concatenate([poses[..., 1:2], -poses[..., :1], poses[..., 2:4]], -1)
-    poses, _ = center_poses(poses[..., :3, :4], blender2opencv)
-    
-    ######################
-    # Correct the direction of the z-axis so that the reconstructed Gauss is located in the voxel as much as possible.
-    last_row = np.tile(np.array([0, 0, 0, 1]), (len(poses), 1, 1))  # (N_images, 1, 4)
-    poses = np.concatenate([poses[..., :4], last_row], axis=-2)
-    poses = poses @ trans1
-    ###########################
-
-    # Step 3: correct scale so that the nearest depth is at a little more than 1.0
-    near_original = bounds.min()
-    scale_factor = near_original * 0.75  # 0.75 is the default parameter
-    bounds /= scale_factor
-    poses[..., 3] /= scale_factor
+    poses = poses_bounds[:, :15].reshape((-1, 3, 5))
+    c2ws = np.eye(4)[None].repeat(len(poses), 0)
+    c2ws[:, :3, 0], c2ws[:, :3, 1], c2ws[:, :3, 2], c2ws[:, :3, 3] = poses[:, :3, 1], poses[:, :3, 0], -poses[:, :3, 2], poses[:, :3, 3]
+    ixts = np.eye(3)[None].repeat(len(poses), 0)
+    ixts[:, 0, 0], ixts[:, 1, 1] = poses[:, 2, 4], poses[:, 2, 4]
+    ixts[:, 0, 2], ixts[:, 1, 2] = poses[:, 1, 4]/2., poses[:, 0, 4]/2.
+    ixts[:, :2] *= 0.25
 
     for _, idx in enumerate(images.keys()):
-        c2w = torch.eye(4).float()
-        c2w[:3] = torch.FloatTensor(poses[idx, :3, :4])
+        c2w = torch.FloatTensor(c2ws[idx])
         w2c = torch.inverse(c2w)
         
         w, h = Image.open(BytesIO(images[idx].numpy().tobytes())).size
         # normalized the intr
-        fx = focal[0] * w / W
-        fy = focal[1] * h / H
-        cx = w / 2
-        cy = h / 2
+        fx = ixts[idx, 0, 0]
+        fy = ixts[idx, 1, 1]
+        cx = ixts[idx, 0, 2]
+        cy = ixts[idx, 1, 2]
         # w = 2.0 * cx
         # h = 2.0 * cy
         saved_fx = fx / w

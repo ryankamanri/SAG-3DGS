@@ -28,8 +28,6 @@ OUTPUT_DIR = Path(args.output_dir)
 
 
 def read_cam_file(filename):
-    scale_factor = 1.0 / 200
-
     with open(filename) as f:
         lines = [line.rstrip() for line in f.readlines()]
     # extrinsics: line [1,5), 4x4 matrix
@@ -39,8 +37,8 @@ def read_cam_file(filename):
     intrinsic = np.fromstring(" ".join(lines[7:10]), dtype=np.float32, sep=" ")
     intrinsic = intrinsic.reshape((3, 3))
     # depth_min & depth_interval: line 11
-    depth_min = float(lines[11].split()[0]) * scale_factor
-    depth_max = depth_min + float(lines[11].split()[1]) * 192 * scale_factor
+    depth_min = float(lines[11].split()[0])
+    depth_max = float(lines[11].split()[-1])
     near_far = [depth_min, depth_max]
     return intrinsic, extrinsic, near_far
 
@@ -103,7 +101,7 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
         saved_fy = fy / h
         saved_cx = cx / w
         saved_cy = cy / h
-        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 1.0, 10.0]
+        camera = [saved_fx, saved_fy, saved_cx, saved_cy, near_far[0], near_far[1]]
 
         camera.extend(w2c[:3].flatten().tolist())
         cameras.append(np.array(camera))

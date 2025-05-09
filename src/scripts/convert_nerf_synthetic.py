@@ -26,24 +26,6 @@ OUTPUT_DIR = Path(args.output_dir)
 
 
 
-def read_cam_file(filename):
-    scale_factor = 1.0 / 200
-
-    with open(filename) as f:
-        lines = [line.rstrip() for line in f.readlines()]
-    # extrinsics: line [1,5), 4x4 matrix
-    extrinsic = np.fromstring(" ".join(lines[1:5]), dtype=np.float32, sep=" ")
-    extrinsic = extrinsic.reshape((4, 4))
-    # intrinsics: line [7-10), 3x3 matrix
-    intrinsic = np.fromstring(" ".join(lines[7:10]), dtype=np.float32, sep=" ")
-    intrinsic = intrinsic.reshape((3, 3))
-    # depth_min & depth_interval: line 11
-    depth_min = float(lines[11].split()[0]) * scale_factor
-    depth_max = depth_min + float(lines[11].split()[1]) * 192 * scale_factor
-    near_far = [depth_min, depth_max]
-    return intrinsic, extrinsic, near_far
-
-
 def get_example_keys(stage: Literal["test", "train"]) -> list[str]:
     if stage == "train": return []
 

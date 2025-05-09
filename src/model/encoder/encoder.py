@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
+from typing import Generic, Optional, TypeVar
 
 from torch import nn
 
@@ -22,6 +22,7 @@ class Encoder(nn.Module, IConfigureOptimizers, ABC, Generic[T]):
         self,
         context: BatchedViews,
         deterministic: bool,
+        scene_names: Optional[list] = None,
     ) -> EncoderOutput:
         pass
 
