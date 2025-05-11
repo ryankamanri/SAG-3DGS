@@ -113,7 +113,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         
         self.feat_enhancer = nn.ModuleDict({
             "conv1": nn.Sequential(
-                nn.Conv2d(self.feature_channels+3+3+1+3, self.feature_channels, kernel_size=1, stride=1, padding=0),
+                nn.Conv2d(self.feature_channels+3, self.feature_channels, kernel_size=1, stride=1, padding=0),
                 nn.GELU(),
                 nn.Conv2d(self.feature_channels, self.feature_channels, kernel_size=1, stride=1, padding=0),
             ), # merge direction and rgb features
@@ -204,7 +204,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         
         
         enhanced_features = self.feat_enhancer["conv1"](
-            torch.cat((features, point_to_cam, dir_disp, dir_disp_dot, imgs), dim=2).reshape(b*v, c+3+3+1+3, h, w)
+            torch.cat((features, imgs), dim=2).reshape(b*v, c+3, h, w)
         )
         enhanced_features = self.feat_enhancer["unets"][0](enhanced_features)
         enhanced_features = self.feat_enhancer["conv2"](

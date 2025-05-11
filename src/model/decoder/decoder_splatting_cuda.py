@@ -42,6 +42,7 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
         near: Float[Tensor, "batch view"],
         far: Float[Tensor, "batch view"],
         image_shape: tuple[int, int],
+        apply_sigmoid: bool,
         depth_mode: DepthRenderingMode | None = None,
     ) -> DecoderOutput:
         b, v, _, _ = extrinsics.shape
@@ -59,6 +60,9 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
             repeat(gaussians.opacities, "b g -> (b v) g", v=v),
         )
         color = rearrange(color, "(b v) c h w -> b v c h w", b=b, v=v)
+        
+        if apply_sigmoid:
+            color = torch.sigmoid(color)
 
         return DecoderOutput(
             color,

@@ -126,11 +126,11 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         self.voxel_volume_feat_dim = voxel_feat_dim + volume_feat_dim if self.cat_volume_feat else voxel_feat_dim
         
         self.gaussian_scale_min = 0.1
-        self.gaussian_scale_max = 10.0
+        self.gaussian_scale_max = 2.0
         self.delta_means_activation = lambda x, voxel_size: (torch.sigmoid(x) - 0.5) / voxel_size
-        self.scaling_activation = lambda x, voxel_size: (self.gaussian_scale_min + (self.gaussian_scale_max - self.gaussian_scale_min) * torch.sigmoid(x - 5)) / voxel_size
+        self.scaling_activation = lambda x, voxel_size: (self.gaussian_scale_min + (self.gaussian_scale_max - self.gaussian_scale_min) * torch.sigmoid(x)) / voxel_size
         self.quaternion_activation = lambda x: x
-        self.opacity_activation = lambda x: torch.sigmoid(x - 5)
+        self.opacity_activation = lambda x: torch.sigmoid(x)
         self.activated_shs = [lambda x, i : x] + [
             lambda x, i: x / (5 ** (i + 1)) for _ in range(1, sh_degree + 1)
         ]
