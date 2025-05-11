@@ -42,7 +42,7 @@ from ..visualization.layout import add_border, hcat, vcat
 from ..visualization import layout
 from ..visualization.validation_in_3d import render_cameras, render_projections
 from .decoder.decoder import Decoder, DepthRenderingMode
-from .encoder import Encoder, EncoderCascade
+from .encoder import Encoder
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
 from .types import EncoderOutput, TrainCfg, TestCfg, OptimizerCfg, FineTuneGaussianWrapper
 from ..utils import l1_loss, ssim as ssim_fn
@@ -97,8 +97,6 @@ class ModelWrapper(LightningModule):
         self.data_shim = get_data_shim(self.encoder)
         self.losses = nn.ModuleList(losses)
         
-        self.apply_sigmoid_to_color = type(self.encoder) == EncoderCascade
-        
         # compute time remains
         self.last_timestamp = time.time()
 
@@ -130,7 +128,6 @@ class ModelWrapper(LightningModule):
             batch["target"]["far"],
             (h, w),
             depth_mode=self.train_cfg.depth_mode,
-            apply_sigmoid=self.apply_sigmoid_to_color,
         )
         target_gt = batch["target"]["image"]
 
@@ -208,7 +205,6 @@ class ModelWrapper(LightningModule):
                 batch["target"]["far"],
                 (h, w),
                 depth_mode=None,
-                apply_sigmoid=self.apply_sigmoid_to_color,
             )
             
         if self.test_cfg.use_network_gui:
@@ -227,7 +223,6 @@ class ModelWrapper(LightningModule):
                     far=torch.tensor([[custom_cam.zfar]], device=gaussians.means.device),
                     image_shape=(custom_cam.image_height, custom_cam.image_width),
                     depth_mode=None,
-                    apply_sigmoid=self.apply_sigmoid_to_color,
                 ).color.view(c, custom_cam.image_height, custom_cam.image_width)
                 render_gaussians.scales /= scaling_modifier
                 return net_image
@@ -261,7 +256,6 @@ class ModelWrapper(LightningModule):
                             batch["fine_tune"]["far"],
                             (h, w),
                             depth_mode=None,
-                            apply_sigmoid=self.apply_sigmoid_to_color,
                         )
                         # compute loss
                         Ll1 = l1_loss(output_ft.color, gt)
@@ -292,7 +286,6 @@ class ModelWrapper(LightningModule):
                 batch["target"]["far"],
                 (h, w),
                 depth_mode=None,
-                apply_sigmoid=self.apply_sigmoid_to_color,
             ) # render target frames.
             pass # if self.test_cfg.fine_tune:
         
@@ -336,7 +329,7 @@ class ModelWrapper(LightningModule):
                 ).items():
                     self.logger.log_image(k, [prep_image(image)], step=self.global_step)
         
-        if False:
+        if True:
             # Construct comparison image.
             comparison = hcat(
                 add_label(vcat(*batch["context"]["image"][0]), "Context"),
@@ -350,7 +343,7 @@ class ModelWrapper(LightningModule):
                 caption=batch["scene"],
             )
             
-        if False:
+        if True:
             # Render projections and construct projection image.
             projections = hcat(*render_projections(
                                     gaussians,
@@ -534,7 +527,6 @@ class ModelWrapper(LightningModule):
             batch["target"]["near"],
             batch["target"]["far"],
             (h, w),
-            apply_sigmoid=self.apply_sigmoid_to_color,
         )
         rgb_softmax = output_softmax.color[0]
 
@@ -724,7 +716,7 @@ class ModelWrapper(LightningModule):
         near = repeat(batch["context"]["near"][:, 0], "b -> b v", v=num_frames)
         far = repeat(batch["context"]["far"][:, 0], "b -> b v", v=num_frames)
         output_prob = self.decoder.forward(
-            gaussians_prob, extrinsics, intrinsics, near, far, (h, w), self.apply_sigmoid_to_color,"depth"
+            gaussians_prob, extrinsics, intrinsics, near, far, (h, w), "depth"
         )
         images_prob = [
             vcat(rgb, depth)

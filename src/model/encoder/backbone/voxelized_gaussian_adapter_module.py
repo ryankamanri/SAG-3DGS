@@ -131,7 +131,7 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         self.scaling_activation = lambda x, voxel_size: (self.gaussian_scale_min + (self.gaussian_scale_max - self.gaussian_scale_min) * torch.sigmoid(x)) / voxel_size
         self.quaternion_activation = lambda x: x
         self.opacity_activation = lambda x: torch.sigmoid(x)
-        self.activated_shs = [lambda x, i : x] + [
+        self.activated_shs = [lambda x, i : RGB2SH(torch.sigmoid(x))] + [
             lambda x, i: x / (5 ** (i + 1)) for _ in range(1, sh_degree + 1)
         ]
         
