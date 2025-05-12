@@ -72,6 +72,7 @@ class DatasetRE10kCfg(DatasetCfgCommon):
     test_chunk_interval: int
     train_times_per_scene: int
     test_times_per_scene: int
+    depth_map_path: str
     skip_bad_shape: bool = True
     near: float = -1.0
     far: float = -1.0
@@ -205,15 +206,26 @@ class DatasetRE10k(IterableDataset):
                 ]) if fine_tune_indices != None else (None, None)
                 
                 # load depth from pfm file
-                if False: # self.cfg.name == "dtu":
-                    pfm_path = Path("C:/Users/97448/plus/repos/datasets/dtu/data/mvs_training/dtu/Depths_raw") / example['key'][:example['key'].index("_")]
+                if self.cfg.name == "dtu" and self.stage == "train":
+                    pfm_path = Path(self.cfg.depth_map_path) / example['key'][:example['key'].index("_")]
                     context_depth_maps = [read_pfm(str(pfm_path / f"depth_map_{(index // 7).item():04d}.pfm"))[0] for index in context_indices]
+                    context_depth_masks = [np.array(depth_map != 0., dtype=np.float32) for depth_map in context_depth_maps]
                     # downsample to 512 * 640
                     context_depth_maps = [cv2.resize(depth_map, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST) for depth_map in context_depth_maps]
                     context_depth_maps = [depth_map[44:556, 80:720] for depth_map in context_depth_maps]
                     context_depth_maps = torch.stack([torch.from_numpy(depth_map.copy()) for depth_map in context_depth_maps], dim=0)
-                    # donwscale to 1/ 200
+                    context_depth_masks = [cv2.resize(depth_mask, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST) for depth_mask in context_depth_masks]
+                    context_depth_masks = [depth_mask[44:556, 80:720] for depth_mask in context_depth_masks]
+                    context_depth_masks = torch.stack([torch.from_numpy(depth_mask.copy()) for depth_mask in context_depth_masks], dim=0)
+                    # downscale to 1 / 200
                     context_depth_maps = context_depth_maps / 200.0
+                    # resize & crop
+                    resize_crop = tf.Compose([
+                        tf.Resize(min(self.cfg.image_shape)), 
+                        tf.CenterCrop(tuple(self.cfg.image_shape))
+                    ])
+                    context_depth_maps = resize_crop(context_depth_maps)
+                    context_depth_masks = resize_crop(context_depth_masks)
                 
 
                 # Skip the example if the images don't have the right shape.
@@ -251,6 +263,8 @@ class DatasetRE10k(IterableDataset):
                         "target_intrinsics": intrinsics[target_indices],
                         "image": context_images,
                         "alpha": context_alphas, 
+                        "depth": context_depth_maps if self.cfg.name == "dtu" and self.stage == "train" else torch.tensor(0.), 
+                        "depth_mask": context_depth_masks if self.cfg.name == "dtu" and self.stage == "train" else torch.tensor(0.), 
                         "near": nears[context_indices] / nf_scale,
                         "far": fars[context_indices] / nf_scale,
                         "index": context_indices,
