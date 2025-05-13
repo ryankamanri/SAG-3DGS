@@ -176,7 +176,8 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             feature_channels=self.feature_channels, 
             voxel_size_list=cfg.voxel_size_list, 
             patch_size_list=cfg.patch_size_list, 
-            sh_degree=cfg.predict_sh_degree
+            sh_degree=cfg.predict_sh_degree, 
+            max_voxels_foreach_processing=cfg.max_voxels_foreach_processing,
         )
         
         print(cfg)
@@ -192,15 +193,16 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         ):
         
         b, v, c, h, w = features.shape
-        cam_points = extrinsics[:, :, :3, 3].view(b, -1, 3, 1, 1) # (B, V, 3, 1, 1)
-        tar_cam_point = tar_extrinsic[:, :3, 3].view(b, 1, 3, 1, 1) # (B, 1, 3, 1, 1)
+        # TODO: remove useless annotations
+        # cam_points = extrinsics[:, :, :3, 3].view(b, -1, 3, 1, 1) # (B, V, 3, 1, 1)
+        # tar_cam_point = tar_extrinsic[:, :3, 3].view(b, 1, 3, 1, 1) # (B, 1, 3, 1, 1)
         
-        point_to_cam = cam_points - point_xyz # (B, V, 3, H, W)
-        point_to_cam = point_to_cam / torch.norm(point_to_cam, dim=2, keepdim=True) # (B, V, 3, H, W)
-        point_to_tar_cam = tar_cam_point - point_xyz # (B, V, 3, H, W)
-        point_to_tar_cam = point_to_tar_cam / torch.norm(point_to_tar_cam, dim=2, keepdim=True) # (B, V, 3, H, W)
-        dir_disp = point_to_tar_cam - point_to_cam # (B, V, 3, H, W)
-        dir_disp_dot = torch.sum(point_to_tar_cam * point_to_cam, dim=2, keepdim=True) # (B, V, 1, H, W)
+        # point_to_cam = cam_points - point_xyz # (B, V, 3, H, W)
+        # point_to_cam = point_to_cam / torch.norm(point_to_cam, dim=2, keepdim=True) # (B, V, 3, H, W)
+        # point_to_tar_cam = tar_cam_point - point_xyz # (B, V, 3, H, W)
+        # point_to_tar_cam = point_to_tar_cam / torch.norm(point_to_tar_cam, dim=2, keepdim=True) # (B, V, 3, H, W)
+        # dir_disp = point_to_tar_cam - point_to_cam # (B, V, 3, H, W)
+        # dir_disp_dot = torch.sum(point_to_tar_cam * point_to_cam, dim=2, keepdim=True) # (B, V, 1, H, W)
         
         
         enhanced_features = self.feat_enhancer["conv1"](

@@ -4,6 +4,7 @@ from torch import nn
 import torch.nn.functional as F
 import math
 
+from ....misc.slice_iterator import SliceIterator
 from ..backbone.costvolume_sampler import CostvolumeSampler
 from .voxel_to_point_cross_attn_transformer import VoxelToPointTransformer
 from ..mvsnet.cas_mvsnet_module import CasMVSNetModuleResult, PointCloudResult
@@ -274,7 +275,13 @@ def create_local_coordinates(voxel_size: int, last_voxel_size: int = 0, last_coo
     result = (last_coordinates * seg_times).view(-1, 1, 3) + d_grid # (N, seg_times^3, 3)
     return result.view(-1, 3).unique(sorted=True, dim=0) # use unique to sort index
 
-
+def append_gaussians(gaussians: EncoderOutput, gaussians_tobe_append: EncoderOutput):
+    gaussians.means = torch.cat((gaussians.means, gaussians_tobe_append.means), dim=1)
+    gaussians.scales = torch.cat((gaussians.scales, gaussians_tobe_append.scales), dim=1)
+    gaussians.rotations = torch.cat((gaussians.rotations, gaussians_tobe_append.rotations), dim=1)
+    gaussians.harmonics = torch.cat((gaussians.harmonics, gaussians_tobe_append.harmonics), dim=1)
+    gaussians.opacities = torch.cat((gaussians.opacities, gaussians_tobe_append.opacities), dim=1)
+    
 
 def combine_batch_gaussians(batch_gaussians: list[EncoderOutput]) -> EncoderOutput:
     b, dim = 1, 3
@@ -485,7 +492,7 @@ def identify_is_current_scale(point_coordinates: torch.Tensor, local_coordinates
 
 class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
 
-    def __init__(self, transformer: VoxelToPointTransformer, costvolume_sampler: CostvolumeSampler, feature_channels=192, voxel_size_list=[32, 128, 512], patch_size_list=[3, 2, 1], sh_degree=3) -> None:
+    def __init__(self, transformer: VoxelToPointTransformer, costvolume_sampler: CostvolumeSampler, feature_channels=192, voxel_size_list=[32, 128, 512], patch_size_list=[3, 2, 1], sh_degree=3, max_voxels_foreach_processing=1000000) -> None:
         super().__init__()
         self.transformer = transformer
         self.costvolume_sampler = costvolume_sampler
@@ -493,6 +500,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
         self.voxel_size_list = voxel_size_list
         self.patch_size_list = patch_size_list
         self.sh_degree = sh_degree
+        self.max_voxels_foreach_processing = max_voxels_foreach_processing
         assert len(patch_size_list) == len(voxel_size_list)
 
         self.gaussian_features_predictor = GaussianFeaturesPredictor(voxel_feat_dim=feature_channels, volume_feat_dim=feature_channels, sh_degree=sh_degree)
@@ -590,6 +598,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 
             for scale_idx in range(current_stage):
                 # TODO: Create multi-scale voxel according to points.
+                current_gaussians = empty_encoder_output(d_sh=(self.sh_degree + 1) ** 2)
                 voxel_size = self.voxel_size_list[scale_idx]
                 local_coordinates = create_local_coordinates(
                     voxel_size=voxel_size, 
@@ -610,35 +619,42 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 local_coordinates = local_coordinates[is_current_scale]
                 # compute ndc
                 centers_ndc = bbox.compute_ndc(local_coordinates, voxel_size)
+                vox, _ = local_coordinates.shape
                 
-                voxel_feature: torch.Tensor = self.transformer.forward(
-                    imgs=imgs[batch],
-                    cnn_features=cnn_features[batch], # (V, C, H, W)
-                    depths=depth_ndc,
-                    extrinsics=extrinsic_ndc, 
-                    intrinsics=intrinsics[batch], 
-                    point_xyz=prob_pcd_xyz_ndc, # (V, 3, H, W)
-                    voxel_xyz=centers_ndc.transpose(0, 1), # (3, N)
-                    confidences=prob_pcd.vertices_confidence[batch],  # (V, H, W)
-                    voxel_length=torch.tensor(1 / voxel_size, device=cnn_features.device), 
-                    k=self.patch_size_list[scale_idx]
-                ) # (C, N)
-                
-                current_gaussians = self.gaussian_features_predictor.forward(
-                    feature=(voxel_feature).transpose(0, 1), 
-                    voxel_center=centers_ndc,
-                    voxel_size=voxel_size, 
-                    bbox=bbox, 
-                    batch=batch, 
-                    costvolume_sampler_callback=lambda means: self.costvolume_sampler.forward(
-                        gaussian_means=means, 
-                        cas_module_result=cas_module_result,
-                        extrinsic=extrinsics[batch], 
-                        intrinsic=intrinsics[batch], 
-                        near=nears[batch],
-                        far=fars[batch],
-                        batch_idx=batch
-                    )) # (N, 15)
+                for si in SliceIterator(0, vox, self.max_voxels_foreach_processing):
+                    # TODO: remove other `SliceIterator`s
+                    voxel_feature: torch.Tensor = self.transformer.forward(
+                        imgs=imgs[batch],
+                        cnn_features=cnn_features[batch], # (V, C, H, W)
+                        depths=depth_ndc,
+                        extrinsics=extrinsic_ndc, 
+                        intrinsics=intrinsics[batch], 
+                        point_xyz=prob_pcd_xyz_ndc, # (V, 3, H, W)
+                        voxel_xyz=centers_ndc[si].transpose(0, 1), # (3, N')
+                        confidences=prob_pcd.vertices_confidence[batch],  # (V, H, W)
+                        voxel_length=torch.tensor(1 / voxel_size, device=cnn_features.device), 
+                        k=self.patch_size_list[scale_idx]
+                    ) # (C, N)
+                    
+                    current_gaussians_si = self.gaussian_features_predictor.forward(
+                        feature=(voxel_feature).transpose(0, 1), 
+                        voxel_center=centers_ndc[si],
+                        voxel_size=voxel_size, 
+                        bbox=bbox, 
+                        batch=batch, 
+                        costvolume_sampler_callback=lambda means: self.costvolume_sampler.forward(
+                            gaussian_means=means, 
+                            cas_module_result=cas_module_result,
+                            extrinsic=extrinsics[batch], 
+                            intrinsic=intrinsics[batch], 
+                            near=nears[batch],
+                            far=fars[batch],
+                            batch_idx=batch
+                        )) # (N, 15)
+                    
+                    append_gaussians(current_gaussians, current_gaussians_si)
+                    del current_gaussians_si
+                    pass
                 
                 if is_trainning:
                     # compute losses
@@ -657,11 +673,8 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                     total_color_loss += color_loss
                 
                 # Append current gaussians
-                gaussians.means = torch.cat((gaussians.means, current_gaussians.means), dim=1)
-                gaussians.scales = torch.cat((gaussians.scales, current_gaussians.scales), dim=1)
-                gaussians.rotations = torch.cat((gaussians.rotations, current_gaussians.rotations), dim=1)
-                gaussians.harmonics = torch.cat((gaussians.harmonics, current_gaussians.harmonics), dim=1)
-                gaussians.opacities = torch.cat((gaussians.opacities, current_gaussians.opacities), dim=1)
+                append_gaussians(gaussians, current_gaussians)
+                del current_gaussians
                 
                 # next level
                 local_coordinates = next_coordinates
