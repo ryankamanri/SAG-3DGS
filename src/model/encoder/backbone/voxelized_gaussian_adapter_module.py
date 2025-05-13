@@ -556,22 +556,23 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
             
             if is_trainning:
                 with torch.no_grad():
+                    # TODO: Remove useless annotations
                     pcd_xyz = pcd.vertices[batch, :, :3] # (V, 3, H, W)
                     pcd_xyz_ndc = bbox.transform_ndc(pcd_xyz, batch, xyz_shape=(1, 3, 1, 1))
                     pcd_xyz_ndc_reshaped = pcd_xyz_ndc.permute(0, 2, 3, 1)[img_masks[batch]] # (N, 3)
-                    pcd_geo_mask_reshaped = pcd.vertices_geometry_mask[batch][img_masks[batch]] # (N)
+                    # pcd_geo_mask_reshaped = pcd.vertices_geometry_mask[batch][img_masks[batch]] # (N)
                     pcd_confidence_reshaped = pcd.vertices_confidence[batch][img_masks[batch]] # (N)
-                    pcd_mask_reshaped = torch.logical_and(pcd_geo_mask_reshaped, pcd_confidence_reshaped > 0.8)
-                    prob_pcd_geo_mask_reshaped = prob_pcd.vertices_geometry_mask[batch][img_masks[batch]] # (N)
-                    prob_pcd_confidence_reshaped = prob_pcd.vertices_confidence[batch][img_masks[batch]] # (N)
-                    prob_pcd_mask_reshaped = torch.logical_and(prob_pcd_geo_mask_reshaped, prob_pcd_confidence_reshaped > 0.8)
+                    pcd_mask_reshaped = pcd_confidence_reshaped == 1.
+                    # prob_pcd_geo_mask_reshaped = prob_pcd.vertices_geometry_mask[batch][img_masks[batch]] # (N)
+                    # prob_pcd_confidence_reshaped = prob_pcd.vertices_confidence[batch][img_masks[batch]] # (N)
+                    # prob_pcd_mask_reshaped = prob_pcd_confidence_reshaped == 1.
                     all_rectified_xyz_ndc = torch.cat((
                         pcd_xyz_ndc_reshaped[pcd_mask_reshaped], 
-                        prob_pcd_xyz_ndc_reshaped[prob_pcd_mask_reshaped]
+                        # prob_pcd_xyz_ndc_reshaped[prob_pcd_mask_reshaped]
                     ), dim=0) # (N'', 3)
                     all_rectified_rgb = torch.cat((
                         prob_pcd_rgb_reshaped[pcd_mask_reshaped], 
-                        prob_pcd_rgb_reshaped[prob_pcd_mask_reshaped]
+                        # prob_pcd_rgb_reshaped[prob_pcd_mask_reshaped]
                     ), dim=0) # (N'', 3)
                     downsampled_pcds = downsample_pcd(
                         xyz_ndc=all_rectified_xyz_ndc, 

@@ -112,7 +112,7 @@ class CasMVSNetModule(nn.Module):
         depth_values = depth_values.flip(dims=(2,)) # start from near to far.
         return proj_mat, depth_values
         
-    def forward(self, imgs, img_masks, extrinsics, intrinsics, nears, fars, outer_features=None):
+    def forward(self, context, imgs, img_masks, extrinsics, intrinsics, nears, fars, outer_features=None):
         proj_mat, depth_values = self.preprocess(imgs, extrinsics, intrinsics, nears, fars)
         near_fars = torch.stack([nears, fars], dim=-1) # (B, V, 2)
         b, v, c, h, w = imgs.shape
@@ -127,7 +127,7 @@ class CasMVSNetModule(nn.Module):
         backbone_geo_masks = []
         
         pretrained_outputs_list = []
-        if self.training:
+        if False:
             with torch.no_grad(): # necessary to reduce the memory
                 pretrained_outputs_list = self.pretrained_cas_mvsnet(imgs, proj_mat, depth_values) # depth and photometric_confidence
         
@@ -142,9 +142,9 @@ class CasMVSNetModule(nn.Module):
         for vi in range(v):
             pretrained_outputs = {}
             if self.training:
-                pretrained_outputs = pretrained_outputs_list[vi]
-                pretrained_depths_est.append(pretrained_outputs["depth"])
-                pretrained_photometric_confidences.append(pretrained_outputs["photometric_confidence"])
+                # pretrained_outputs = pretrained_outputs_list[vi]
+                pretrained_depths_est.append(context["depth"][:, vi])
+                pretrained_photometric_confidences.append(context["depth_mask"][:, vi])
                 
             backbone_outputs = backbone_outputs_list[vi]
             backbone_depths_est.append(backbone_outputs["depth"])
@@ -155,13 +155,13 @@ class CasMVSNetModule(nn.Module):
         if self.training:
             with torch.no_grad():            
                 vertices = generate_depth_map_based_point_cloud(pretrained_depths_est, extrinsics, intrinsics)
-                for vi in range(v):
-                    pretrained_geo_mask, _ = generate_geometric_mask(imgs, extrinsics, intrinsics, pretrained_depths_est, near_fars,
-                                                                     ref_idx=vi, max_dist=self.geo_max_dist, max_depth_diff=self.geo_max_depth_diff)
-                    backbone_geo_mask, _ = generate_geometric_mask(imgs, extrinsics, intrinsics, backbone_depths_est, near_fars, 
-                                                                ref_idx=vi, max_dist=self.geo_max_dist, max_depth_diff=self.geo_max_depth_diff)
-                    pretrained_geo_masks.append(pretrained_geo_mask)
-                    backbone_geo_masks.append(backbone_geo_mask)
+                # for vi in range(v):
+                #     pretrained_geo_mask, _ = generate_geometric_mask(imgs, extrinsics, intrinsics, pretrained_depths_est, near_fars,
+                #                                                      ref_idx=vi, max_dist=self.geo_max_dist, max_depth_diff=self.geo_max_depth_diff)
+                #     backbone_geo_mask, _ = generate_geometric_mask(imgs, extrinsics, intrinsics, backbone_depths_est, near_fars, 
+                #                                                 ref_idx=vi, max_dist=self.geo_max_dist, max_depth_diff=self.geo_max_depth_diff)
+                #     pretrained_geo_masks.append(pretrained_geo_mask)
+                #     backbone_geo_masks.append(backbone_geo_mask)
                     
                 result.registed_pcd = ViewBasedPointCloudResult(
                     vertices=vertices, 
