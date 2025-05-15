@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import time
 from typing import Optional, Protocol, runtime_checkable
-
+import gc
 import moviepy.editor as mpy
 import torch
 from tqdm import tqdm
@@ -204,7 +204,7 @@ class ModelWrapper(LightningModule):
                 batch["target"]["near"],
                 batch["target"]["far"],
                 (h, w),
-                depth_mode=None,
+                depth_mode="depth",
             )
             
         if self.test_cfg.use_network_gui:
@@ -285,7 +285,7 @@ class ModelWrapper(LightningModule):
                 batch["target"]["near"],
                 batch["target"]["far"],
                 (h, w),
-                depth_mode=None,
+                depth_mode="depth",
             ) # render target frames.
             pass # if self.test_cfg.fine_tune:
         
@@ -295,6 +295,8 @@ class ModelWrapper(LightningModule):
         path = self.test_cfg.output_path / name
         images_prob = output.color[0]
         images_prob_ft = output_ft.color[0] if self.test_cfg.fine_tune else images_prob
+        depth_prob = output.depth[0]
+        depth_prob_ft = output_ft.depth[0] if self.test_cfg.fine_tune else depth_prob
         rgb_gt = batch["target"]["image"][0]
 
         # Save images.
@@ -331,10 +333,17 @@ class ModelWrapper(LightningModule):
         
         if True:
             # Construct comparison image.
+            def depth_map(result):
+                result = result + 1e-6
+                result = result.log()
+                result = 1 - ((result - result.min()) / (result.max() - result.min()))
+                return apply_color_map_to_image(result, "turbo")
+            
             comparison = hcat(
                 add_label(vcat(*batch["context"]["image"][0]), "Context"),
                 add_label(vcat(*rgb_gt), "Target (Ground Truth)"),
                 add_label(vcat(*torch.cat((images_prob, images_prob_ft))), "Target (w/o | w fine-tune)"),
+                add_label(vcat(*torch.cat((depth_map(depth_prob), depth_map(depth_prob_ft)))), "Target depth (w/o | w fine-tune)"),
             )
             self.logger.log_image(
                 "comparison",
@@ -387,7 +396,12 @@ class ModelWrapper(LightningModule):
                     opacities=fine_tuned_gaussians.opacities[0],
                     path=path / scene / "fine_tuned_gaussians.ply",
                 )
-                
+        
+        del gaussians
+        if self.test_cfg.fine_tune:
+            del fine_tuned_gaussians
+        torch.cuda.empty_cache()
+        gc.collect()
                     
         # compute scores
         if self.test_cfg.compute_scores:
@@ -706,7 +720,8 @@ class ModelWrapper(LightningModule):
 
         # Color-map the result.
         def depth_map(result):
-            near = result[result >= 0][:16_000_000].quantile(0.01).log()
+            result = result + 1e-6
+            near = result[result > 0][:16_000_000].quantile(0.01).log()
             far = result.view(-1)[:16_000_000].quantile(0.99).log()
             result = result.log()
             result = 1 - (result - near) / (far - near)

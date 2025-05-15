@@ -116,13 +116,13 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
                 nn.Conv2d(self.feature_channels+3, self.feature_channels, kernel_size=1, stride=1, padding=0),
                 nn.GELU(),
                 nn.Conv2d(self.feature_channels, self.feature_channels, kernel_size=1, stride=1, padding=0),
-            ), # merge direction and rgb features
+            ), # merge rgb features
             "conv2": nn.Sequential(
                 nn.Conv2d(self.feature_channels+3, self.feature_channels, kernel_size=1, stride=1, padding=0),
                 nn.GELU(),
                 nn.Conv2d(self.feature_channels, self.feature_channels, kernel_size=1, stride=1, padding=0),
             ), # merge rgb features
-            "unets": nn.ModuleList([UNetModel(
+            "unet": UNetModel(
                 image_size=None, 
                 in_channels=self.feature_channels,
                 model_channels=self.feature_channels,
@@ -135,7 +135,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
                 postnorm=True, 
                 num_frames=get_cfg().dataset.view_sampler.num_context_views, 
                 use_cross_view_self_attn=True
-            ) for _ in range(2)]),
+            ),
         }) 
         
         
@@ -187,32 +187,17 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         self, 
         imgs: torch.Tensor, # (B, V, 3, H, W)
         features: torch.Tensor, # (B, V, C, H, W)
-        point_xyz: torch.Tensor, # (B, V, 3, H, W)
-        extrinsics: torch.Tensor, # (B, V, 4, 4)
-        tar_extrinsic: torch.Tensor, # (B, 4, 4)
         ):
         
         b, v, c, h, w = features.shape
-        # TODO: remove useless annotations
-        # cam_points = extrinsics[:, :, :3, 3].view(b, -1, 3, 1, 1) # (B, V, 3, 1, 1)
-        # tar_cam_point = tar_extrinsic[:, :3, 3].view(b, 1, 3, 1, 1) # (B, 1, 3, 1, 1)
-        
-        # point_to_cam = cam_points - point_xyz # (B, V, 3, H, W)
-        # point_to_cam = point_to_cam / torch.norm(point_to_cam, dim=2, keepdim=True) # (B, V, 3, H, W)
-        # point_to_tar_cam = tar_cam_point - point_xyz # (B, V, 3, H, W)
-        # point_to_tar_cam = point_to_tar_cam / torch.norm(point_to_tar_cam, dim=2, keepdim=True) # (B, V, 3, H, W)
-        # dir_disp = point_to_tar_cam - point_to_cam # (B, V, 3, H, W)
-        # dir_disp_dot = torch.sum(point_to_tar_cam * point_to_cam, dim=2, keepdim=True) # (B, V, 1, H, W)
-        
         
         enhanced_features = self.feat_enhancer["conv1"](
             torch.cat((features, imgs), dim=2).reshape(b*v, c+3, h, w)
         )
-        enhanced_features = self.feat_enhancer["unets"][0](enhanced_features)
+        enhanced_features = self.feat_enhancer["unet"](enhanced_features)
         enhanced_features = self.feat_enhancer["conv2"](
             torch.cat((enhanced_features, imgs.reshape(b*v, 3, h, w)), dim=1)
         )
-        enhanced_features = self.feat_enhancer["unets"][1](enhanced_features)
         
         return enhanced_features.view(b, v, c, h, w)
         
@@ -278,44 +263,8 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         
         if self.do_enhance_feat:
             with ExecutionTimer("Enhance Features", switch=self.timer_switch):
-                trans_features = self.enhance_features(
-                    imgs, trans_features, cas_module_result.registed_prob_pcd.vertices[:, :, :3], extrinsics, tar_extrinsics.squeeze(1),
-                )
+                trans_features = self.enhance_features(imgs, trans_features)
 
-        # # Sample depths from the resulting features.
-        # in_feats = trans_features
-        # extra_info = {}
-        # extra_info['images'] = rearrange(context["image"], "b v c h w -> (v b) c h w")
-        # extra_info["scene_names"] = scene_names
-        # gpp = self.cfg.gaussians_per_pixel
-        # depths, densities, raw_gaussians = self.depth_predictor(
-        #     in_feats,
-        #     context["intrinsics"],
-        #     context["extrinsics"],
-        #     context["near"],
-        #     context["far"],
-        #     gaussians_per_pixel=gpp,
-        #     deterministic=deterministic,
-        #     extra_info=extra_info,
-        #     cnn_features=cnn_features,
-        # ) # (B, V, H*W, 1, 1), (B, V, H*W, 1, 1), (B, V, H*W, C)
-        
-        
-        # features = rearrange(raw_gaussians, "b v (h w) c -> b v c h w", h=h, w=w)
-        # depths = rearrange(depths, "b v (h w) 1 1 -> b v h w", h=h, w=w)
-        # depths = list(torch.unbind(depths, dim=1)) # (B, H, W) * V
-        # vertices = generate_depth_map_based_point_cloud(depths, extrinsics, intrinsics) # (B, V, 4, H, W)
-        # near_fars = torch.stack([nears, fars], dim=-1) # (B, V, 2)
-        # geo_mask = []
-        # for vi in range(v):
-        #     geo_mask.append(generate_geometric_mask(imgs, extrinsics, intrinsics, depths, near_fars, 
-        #                                             ref_idx=vi, max_depth_diff=self.cfg.cas_mvsnet_geo_max_depth_diff,
-        #                                             max_dist=self.cfg.cas_mvsnet_geo_max_dist)[0])
-        
-        # cas_module_result.registed_prob_pcd.vertices = vertices
-        # cas_module_result.registed_prob_pcd.vertices_confidence = torch.ones(b, v, h, w, device=imgs.device) # (B, V, H, W)
-        # cas_module_result.registed_prob_pcd.vertices_geometry_mask = torch.stack(geo_mask, dim=1) if len(geo_mask) > 0 else torch.tensor(0) # (B, V, H, W)
-        
         features = trans_features
         
         ##########################################################

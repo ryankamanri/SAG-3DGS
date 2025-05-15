@@ -435,7 +435,7 @@ def compute_struct_loss(
     # Due to the characteristics of LoD, for non-minimum resolution voxels, 
     # the distance from the voxel to the nearest point can be estimated based on the voxel size. 
     # Because there must be a voxel next to the voxel, we estimate that the distance is voxel length.
-    dist_weight = voxel_size_list[0] / voxel_size_list[scale_idx]
+    dist_weight = voxel_size_list[0] / voxel_size_list[scale_idx] * 0.1
     
     existence_loss += (1. - get_opacity(must_exist_voxels_mask)).sum()
     existence_loss += (get_opacity(must_empty_voxels_mask) * dist_weight ** 2).sum()
@@ -589,12 +589,12 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         bbox=bbox, 
                         batch_idx=batch
                     )
-                    if False:
-                        import open3d
-                        pcd = open3d.geometry.PointCloud()
-                        pcd.points = open3d.utility.Vector3dVector(pcd_xyz_ndc_reshaped.detach().cpu())
-                        pcd.colors = open3d.utility.Vector3dVector(prob_pcd_rgb_reshaped.detach().cpu())
-                        open3d.visualization.draw_geometries([pcd])
+            if False:
+                import open3d
+                pcd = open3d.geometry.PointCloud()
+                pcd.points = open3d.utility.Vector3dVector(prob_pcd_xyz_ndc_reshaped.detach().cpu())
+                pcd.colors = open3d.utility.Vector3dVector(prob_pcd_rgb_reshaped.detach().cpu())
+                open3d.visualization.draw_geometries([pcd])
                 
             for scale_idx in range(current_stage):
                 # TODO: Create multi-scale voxel according to points.
