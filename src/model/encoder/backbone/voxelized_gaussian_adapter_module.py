@@ -580,12 +580,12 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         bbox=bbox, 
                         batch_idx=batch
                     )
-                    if False:
-                        import open3d
-                        pcd = open3d.geometry.PointCloud()
-                        pcd.points = open3d.utility.Vector3dVector(pcd_xyz_ndc_reshaped.detach().cpu())
-                        pcd.colors = open3d.utility.Vector3dVector(prob_pcd_rgb_reshaped.detach().cpu())
-                        open3d.visualization.draw_geometries([pcd])
+            if False:
+                import open3d
+                pcd = open3d.geometry.PointCloud()
+                pcd.points = open3d.utility.Vector3dVector(prob_pcd_xyz_ndc_reshaped.detach().cpu())
+                pcd.colors = open3d.utility.Vector3dVector(prob_pcd_rgb_reshaped.detach().cpu())
+                open3d.visualization.draw_geometries([pcd])
                 
             for scale_idx in range(current_stage):
                 # TODO: Create multi-scale voxel according to points.

@@ -122,7 +122,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
                 nn.GELU(),
                 nn.Conv2d(self.feature_channels, self.feature_channels, kernel_size=1, stride=1, padding=0),
             ), # merge rgb features
-            "unets": nn.ModuleList([UNetModel(
+            "unet": UNetModel(
                 image_size=None, 
                 in_channels=self.feature_channels,
                 model_channels=self.feature_channels,
@@ -135,7 +135,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
                 postnorm=True, 
                 num_frames=get_cfg().dataset.view_sampler.num_context_views, 
                 use_cross_view_self_attn=True
-            ) for _ in range(2)]),
+            ),
         }) 
         
         
@@ -192,25 +192,14 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         ):
         
         b, v, c, h, w = features.shape
-        cam_points = extrinsics[:, :, :3, 3].view(b, -1, 3, 1, 1) # (B, V, 3, 1, 1)
-        tar_cam_point = tar_extrinsic[:, :3, 3].view(b, 1, 3, 1, 1) # (B, 1, 3, 1, 1)
-        
-        point_to_cam = cam_points - point_xyz # (B, V, 3, H, W)
-        point_to_cam = point_to_cam / torch.norm(point_to_cam, dim=2, keepdim=True) # (B, V, 3, H, W)
-        point_to_tar_cam = tar_cam_point - point_xyz # (B, V, 3, H, W)
-        point_to_tar_cam = point_to_tar_cam / torch.norm(point_to_tar_cam, dim=2, keepdim=True) # (B, V, 3, H, W)
-        dir_disp = point_to_tar_cam - point_to_cam # (B, V, 3, H, W)
-        dir_disp_dot = torch.sum(point_to_tar_cam * point_to_cam, dim=2, keepdim=True) # (B, V, 1, H, W)
-        
         
         enhanced_features = self.feat_enhancer["conv1"](
             torch.cat((features, imgs), dim=2).reshape(b*v, c+3, h, w)
         )
-        enhanced_features = self.feat_enhancer["unets"][0](enhanced_features)
+        enhanced_features = self.feat_enhancer["unet"](enhanced_features)
         enhanced_features = self.feat_enhancer["conv2"](
             torch.cat((enhanced_features, imgs.reshape(b*v, 3, h, w)), dim=1)
         )
-        enhanced_features = self.feat_enhancer["unets"][1](enhanced_features)
         
         return enhanced_features.view(b, v, c, h, w)
         
