@@ -208,13 +208,8 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         normalized_intrinsics : torch.Tensor = context["intrinsics"] # (B, V, 3, 3), or get the origin size image by context["origin_intrinsics"]
         nears, fars = context["near"], context["far"] # (B, V)
         b, v, c, h, w = imgs.shape
-        # crop image to adapt to mvsnet and swin transformer (h and w can be devided by 32)
-        if h % 32 != 0:
-            imgs = imgs[..., :-(h % 32), :]
-            alphas = alphas[..., :-(h % 32), :]
-        if w % 32 != 0:
-            imgs = imgs[..., :-(w % 32)]
-            alphas = alphas[..., :-(w % 32)]
+        # check the shape of image to adapt to mvsnet and swin transformer (h and w can be devided by 32)
+        assert h % 32 == 0 and w % 32 == 0, "The height and width of the image must be divisible by 32"
         b, v, c, h, w = imgs.shape # update h and w
         
         # intrinsics adapt to img size
