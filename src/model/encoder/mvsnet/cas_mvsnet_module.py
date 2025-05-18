@@ -63,7 +63,7 @@ class CasMVSNetModule(nn.Module):
         
         if use_backbone:
             self.pretrained_cas_mvsnet = CascadeMVSNet(refine=False, ndepths=ndepths, return_photometric_confidence=True)
-            self.backbone_cas_mvsnet = CascadeMVSNet(use_dot_similarity=False, refine=self.refine, ndepths=ndepths, return_volume=True, return_photometric_confidence=True)
+            self.backbone_cas_mvsnet = CascadeMVSNet(use_dot_similarity=False, cr_base_chs=[32, 16, 8], refine=self.refine, ndepths=ndepths, return_volume=True, return_photometric_confidence=True)
         else:
             self.pretrained_cas_mvsnet = CascadeMVSNet(refine=False, ndepths=ndepths, return_volume=True, return_photometric_confidence=True)
             
