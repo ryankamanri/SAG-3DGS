@@ -202,7 +202,7 @@ class CasMVSNetModule(nn.Module):
             self.backbone_cas_mvsnet.load_state_dict(state_dict["model"])
             
         # VGGT initial
-        self.use_vggt = True
+        self.use_vggt = False
         if self.use_vggt:
             device = "cuda" if torch.cuda.is_available() else "cpu"
             self.vggt = VGGT()
@@ -281,8 +281,7 @@ class CasMVSNetModule(nn.Module):
         else:
             backbone_outputs_list = pretrained_outputs_list
             
-        # if self.training and not "depth" in context:
-        if True:
+        if self.use_vggt and self.training and not "depth" in context:
             with torch.inference_mode():
                 predictions = self.vggt(vggt_imgs)
                 vggt_extrinsics_3x4, _ = pose_encoding_to_extri_intri(predictions["pose_enc"], build_intrinsics=False)
