@@ -281,7 +281,7 @@ class CasMVSNetModule(nn.Module):
         else:
             backbone_outputs_list = pretrained_outputs_list
             
-        if self.use_vggt and self.training and not "depth" in context:
+        if self.use_vggt and self.training:
             with torch.inference_mode():
                 predictions = self.vggt(vggt_imgs)
                 vggt_extrinsics_3x4, _ = pose_encoding_to_extri_intri(predictions["pose_enc"], build_intrinsics=False)

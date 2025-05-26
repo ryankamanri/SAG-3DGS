@@ -1,10 +1,52 @@
+import gc
 import os
+import random
 from pathlib import Path
 import torch
 from tqdm import tqdm
 from vggt.models.vggt import VGGT
 from vggt.utils.load_fn import load_and_preprocess_images
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+
+class SliceIterator:
+    def __init__(self, start, stop, step, slice_step=1):
+        if step == 0:
+            raise ValueError("step cannot be zero")
+        self.start = start
+        self.stop = stop
+        self.step = step
+        self.slice_step = slice_step
+        self.current_start = start
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        # 检查是否完成迭代
+        if self.step > 0 and self.current_start >= self.stop:
+            raise StopIteration
+        if self.step < 0 and self.current_start <= self.stop:
+            raise StopIteration
+
+        # 计算当前结束位置
+        current_end = self.current_start + self.step
+
+        # 根据步长方向调整结束位置
+        if self.step > 0:
+            current_end = min(current_end, self.stop)
+        else:
+            current_end = max(current_end, self.stop)
+
+        # 创建切片对象
+        if self.step > 0:
+            slice_obj = slice(self.current_start, current_end, self.slice_step)
+        else:
+            slice_obj = slice(self.current_start, current_end, -self.slice_step)
+
+        # 更新下一个起始位置
+        self.current_start = current_end
+
+        return slice_obj
 
 def umeyama_alignment_with_scale_batch(t_pred, t_gt):
     """
@@ -130,8 +172,18 @@ OUTPUT_DIR = Path("C:/Users/97448/plus/repos/mvsplat/outputs/predict_depth_outpu
 
 for stage in ["train", "test"]:
     os.makedirs(OUTPUT_DIR / stage, exist_ok=True)
-    for scene in tqdm(os.listdir(IMAGE_DIR / stage), desc=f"stage {stage}"): # image based
+    scene_list = os.listdir(IMAGE_DIR / stage)
+    random.shuffle(scene_list)
+    for scene in tqdm(scene_list, desc=f"stage {stage}"): # image based
+        result_path = str(OUTPUT_DIR / stage / f"{scene}.pt")
+        if os.path.exists(result_path):
+            print(f"jump processed scene {scene}.")
+            continue
         scene_img_dir = IMAGE_DIR / stage / scene
+        max_images = 100
+        if len(os.listdir(scene_img_dir)) > max_images:
+            print(f"scene {scene} has more than {max_images} images, skipping.")
+            continue
         w2cs = []
         image_dirs = []
         image_names = []
@@ -154,23 +206,32 @@ for stage in ["train", "test"]:
         # Load and preprocess example images (replace with your own image paths)
         # image_names = ["path/to/imageA.png", "path/to/imageB.png", "path/to/imageC.png"]  
         image_size = (256, 256)
+        max_slice_size = 100
         images = load_and_preprocess_images(image_dirs).to(device)
         # print(images.shape)
         images = images.unsqueeze(0) # (B=1, V, C, H, W)
         b, v, c, h, w = images.shape
         extrinsics = torch.stack(w2cs).inverse().unsqueeze(0) # (B, V, 4, 4)
-        with torch.no_grad():
-            with torch.cuda.amp.autocast(dtype=dtype):
-                # Predict attributes including cameras, depth maps, and point maps.
-                predictions = model(images)
+        aligned_depths_slice_list, depth_confs_slice_list = [], []
+        for si in SliceIterator(0, v, max_slice_size):
+            vi = si.stop - si.start
+            with torch.inference_mode():
+                with torch.cuda.amp.autocast(dtype=dtype):
+                    # Predict attributes including cameras, depth maps, and point maps.
+                    predictions = model(images[:, si])
+                    pass
                 pass
-            pass
-        vggt_extrinsics_3x4, _ = pose_encoding_to_extri_intri(predictions["pose_enc"], build_intrinsics=False)
-        vggt_extrinsics = torch.eye(4, device=device).unsqueeze(0).unsqueeze(0).repeat(b, v, 1, 1)
-        vggt_extrinsics[:, :, :3, :4] = vggt_extrinsics_3x4
-        vggt_extrinsics_aligned, depth_values = align_pred_to_gt_batch(vggt_extrinsics, extrinsics, predictions["depth"].squeeze(-1))
-        aligned_depths = adapt_size(image_size, depth_values.unsqueeze(2), pad_value=0.0).squeeze(2) # (B, V, H, W)
-        depth_confs = adapt_size(image_size, predictions["depth_conf"].unsqueeze(2), pad_value=0.0).squeeze(2)
+            vggt_extrinsics_3x4, _ = pose_encoding_to_extri_intri(predictions["pose_enc"], build_intrinsics=False)
+            vggt_extrinsics = torch.eye(4, device=device).unsqueeze(0).unsqueeze(0).repeat(b, vi, 1, 1)
+            vggt_extrinsics[:, :, :3, :4] = vggt_extrinsics_3x4
+            vggt_extrinsics_aligned, depth_values = align_pred_to_gt_batch(vggt_extrinsics, extrinsics[:, si], predictions["depth"].squeeze(-1))
+            aligned_depths = adapt_size(image_size, depth_values.unsqueeze(2), pad_value=0.0).squeeze(2) # (B, V, H, W)
+            depth_confs = adapt_size(image_size, predictions["depth_conf"].unsqueeze(2), pad_value=0.0).squeeze(2)
+            aligned_depths_slice_list.append(aligned_depths)
+            depth_confs_slice_list.append(depth_confs)
+        aligned_depths = torch.cat(aligned_depths_slice_list, dim=1)
+        depth_confs = torch.cat(depth_confs_slice_list, dim=1)
+        
         result = {}
         for vi in range(v):
             result[image_names[vi]] = {
@@ -179,7 +240,9 @@ for stage in ["train", "test"]:
             }
             # print(result[image_names[vi]]["depth"].shape)
         # print(result)
-        torch.save(result, str(OUTPUT_DIR / stage / f"{scene}.pt"))
+        torch.save(result, result_path)
+        # torch.cuda.empty_cache()
+        # gc.collect()
         pass # for scene in os.listdir(IMAGE_DIR): # image based
     pass
 

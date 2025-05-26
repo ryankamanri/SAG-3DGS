@@ -182,7 +182,6 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         activated_shs = [sh_activation(sh, i) for sh, sh_activation, i in zip(shs, self.activated_shs, range(3))]
         
         
-        activated_delta_means = self.delta_means_activation(delta_means, voxel_size)
         activated_quaternion = self.quaternion_activation(quaternion)
         activated_scales = self.scaling_activation(scales, voxel_size)
         activated_opacities = self.opacity_activation(opacity)

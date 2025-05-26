@@ -227,6 +227,19 @@ class DatasetRE10k(IterableDataset):
                     context_depth_maps = resize_crop(context_depth_maps)
                     context_depth_masks = resize_crop(context_depth_masks)
                 
+                # load depth from VGGT prediction
+                offline_depth = False
+                if self.cfg.name == "re10k" and self.stage == "train":
+                    if not offline_depth:
+                        context_depth_maps, context_depth_confs = torch.tensor(0.), torch.tensor(0.) # real time prediction, set `use_vggt = True` on 'src/model/encoder/mvsnet/cas_mvsnet_module.py'
+                    else:
+                        # TODO: check its validation
+                        scene_depth_path = Path(self.cfg.depth_map_path) / example["key"]
+                        scene_depth_dict = torch.load(str(scene_depth_path))
+                        context_timestamps = [example["timestamps"][i.item()] for i in context_indices]
+                        context_depth_maps = torch.stack([scene_depth_dict[t]["depth"] for t in context_timestamps])
+                        context_depth_confs = torch.stack([scene_depth_dict[t]["depth_conf"] for t in context_timestamps])
+                    pass
 
                 # Skip the example if the images don't have the right shape.
                 context_image_invalid = context_images.shape[1:] != (3, 360, 640)
@@ -263,7 +276,8 @@ class DatasetRE10k(IterableDataset):
                         "target_intrinsics": intrinsics[target_indices],
                         "image": context_images,
                         "alpha": context_alphas, 
-                        "depth": context_depth_maps if self.cfg.name == "dtu" and self.stage == "train" else torch.tensor(0.), 
+                        "depth": context_depth_maps if self.stage == "train" else torch.tensor(0.), 
+                        "depth_conf": context_depth_confs if self.cfg.name == "re10k" and self.stage == "train" else torch.tensor(0.), 
                         "depth_mask": context_depth_masks if self.cfg.name == "dtu" and self.stage == "train" else torch.tensor(0.), 
                         "near": nears[context_indices] / nf_scale,
                         "far": fars[context_indices] / nf_scale,
