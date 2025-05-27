@@ -7,6 +7,7 @@ from jaxtyping import Float
 from torch import Tensor, nn
 from collections import OrderedDict
 
+from .mvsnet.vggt_module import VGGTModule
 from .backbone.costvolume_sampler import CostvolumeSampler
 
 from ...dataset.shims.bounds_shim import apply_bounds_shim
@@ -79,6 +80,8 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         self.voxel_size_list = cfg.voxel_size_list
         self.voxel_size_begin_steps = cfg.voxel_size_begin_steps
         self.current_idx = 0
+        self.use_vggt = True
+        self.vggt_module = VGGTModule()
         self.cas_mvsnet_module = CasMVSNetModule(
             cas_mvsnet_ckpt_path=cfg.cas_mvsnet_ckpt_path, 
             ndepths=cfg.cas_mvsnet_ndepth, 
@@ -252,6 +255,14 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         stage_features["stage3"] = self.upsamplerx4(stage_features["stage2"].view(b*v, cf//2, h//2, w//2)).view(b, v, cf//4, h, w) # (B, V, C, H, W)
         trans_features = stage_features["stage3"]
         
+        if self.training and self.use_vggt:
+            with ExecutionTimer("VGGT Module", switch=self.timer_switch):
+                depths, nears, fars = self.vggt_module.forward(imgs, extrinsics)
+                context["depth"] = depths
+                # Important note: `nears`, `fars` here covered those loaded from DataLoader
+                # and context["depth"], which will be used in the loss function.
+            pass
+        
         with ExecutionTimer("CAS-MVSNet Module", switch=self.timer_switch):
             cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module.forward(
                 context, imgs, masks, extrinsics, intrinsics, nears, fars, outer_features=None)
@@ -286,6 +297,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     
     def configure_optimizers(self, cfg):
         return [
+            {'params': self.vggt_module.parameters(), 'lr': cfg.lr},
             {'params': self.cas_mvsnet_module.parameters(), 'lr': cfg.lr}, 
             {'params': self.backbone.parameters(), 'lr': cfg.lr}, 
             {'params': self.upsamplerx2.parameters(), 'lr': cfg.lr}, 

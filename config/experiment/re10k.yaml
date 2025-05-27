@@ -13,8 +13,12 @@ data_loader:
   train:
     batch_size: 1
 
+optimizer:
+  max_steps: 300_001
+
 trainer:
   max_steps: 300_001
+  val_check_interval: 300
 
 # ----- Additional params for default best model customization
 model:

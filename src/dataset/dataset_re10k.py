@@ -165,6 +165,7 @@ class DatasetRE10k(IterableDataset):
                 
                 if self.cfg.name == "re10k":
                     # we need to put extra near & far bounds for re10k
+                    # we dont use the near & far from here when training
                     nears = torch.ones_like(nears)
                     fars = torch.ones_like(fars) * 100.0
 
@@ -268,6 +269,7 @@ class DatasetRE10k(IterableDataset):
                     scale = 1
 
                 nf_scale = scale if self.cfg.baseline_scale_bounds else 1.0
+                v, _, _, _ = context_images.shape
                 example = {
                     "context": {
                         "extrinsics": extrinsics[context_indices],
@@ -278,7 +280,7 @@ class DatasetRE10k(IterableDataset):
                         "alpha": context_alphas, 
                         "depth": context_depth_maps if self.stage == "train" else torch.tensor(0.), 
                         "depth_conf": context_depth_confs if self.cfg.name == "re10k" and self.stage == "train" else torch.tensor(0.), 
-                        "depth_mask": context_depth_masks if self.cfg.name == "dtu" and self.stage == "train" else torch.tensor(0.), 
+                        "depth_mask": context_depth_masks if self.cfg.name == "dtu" and self.stage == "train" else torch.ones(v, self.cfg.image_shape[0], self.cfg.image_shape[1]), 
                         "near": nears[context_indices] / nf_scale,
                         "far": fars[context_indices] / nf_scale,
                         "index": context_indices,

@@ -45,8 +45,8 @@ class ViewSamplerInterval(ViewSampler[ViewSamplerIntervalCfg]):
         index_context = torch.arange(
             index_context_begin, 
             index_context_begin + dist if num_views > dist else index_context_begin + num_views, 
-            step=step
-        )
+            step=step if num_views > dist else num_views // self.cfg.num_context_views
+        )[:self.num_context_views]
 
         # Allow the context views to be fixed.
         if self.cfg.context_views is not None:
