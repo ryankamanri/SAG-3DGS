@@ -151,7 +151,7 @@ class VGGTModule(nn.Module):
         # pad images to 518x518
         target_size = (518, 518)
         vggt_imgs = adapt_size(target_size, imgs, pad_value=1.0)
-        with torch.inference_mode():
+        with torch.inference_mode(mode=self.inference_mode):
             predictions = self.vggt(vggt_imgs)
             vggt_extrinsics_3x4, _ = pose_encoding_to_extri_intri(predictions["pose_enc"], build_intrinsics=False)
             vggt_extrinsics = torch.eye(4, device=imgs.device).unsqueeze(0).unsqueeze(0).repeat(b, v, 1, 1)
@@ -161,6 +161,7 @@ class VGGTModule(nn.Module):
             # visualize_cameras(vggt_extrinsics_aligned[:, :, :3, 3].reshape(-1, 3).cpu(), extrinsics[:, :, :3, 3].reshape(-1, 3).cpu())
             depths = adapt_size(imgs.shape[3:], depth_values.unsqueeze(2), pad_value=0.0).squeeze(2)
             nears = depths.reshape(b, v, h*w).min(dim=-1).values * 0.8 # (B, V)
+            nears = torch.clamp(nears, min=0.1) # avoid too small near values (0) may be devided by zero in later calculations
             fars = depths.reshape(b, v, h*w).max(dim=-1).values * 1.2 # (B, V)
             # print(f"nears: {context['near']}, fars: {context['far']}")
         return depths, nears, fars

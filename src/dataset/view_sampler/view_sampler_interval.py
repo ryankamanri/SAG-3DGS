@@ -56,8 +56,8 @@ class ViewSamplerInterval(ViewSampler[ViewSamplerIntervalCfg]):
             )
 
         index_target = torch.randint(
-            0,
-            num_views,
+            index_context_begin, 
+            index_context_begin + dist if num_views > dist else index_context_begin + num_views, 
             size=(self.cfg.num_target_views,),
             device=device,
         )

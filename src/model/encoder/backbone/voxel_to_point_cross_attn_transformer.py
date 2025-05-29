@@ -236,6 +236,7 @@ def compute_voxel_interpolate_and_knn_features(
     voxel_xyz = voxel_xyz.permute(0, 2, 1) # (B, 4, N)
     voxel_cam_xyz = torch.matmul(torch.linalg.inv(extrinsics), voxel_xyz) # (B, 4, N)
     voxel_centers_uvd = torch.matmul(intrinsics, voxel_cam_xyz[:, :3]) # (B, 4, N) -> (B, 3, N)
+    torch.clamp_(voxel_centers_uvd[:, 2], min=1e-6) # avoid division by zero!
     voxel_centers_uv = (voxel_centers_uvd[:, :2] / voxel_centers_uvd[:, 2:]).permute(0, 2, 1) # (B, 3, N) -> (B, N, 2)
     # knn features
     if False: # use knn method, slowly

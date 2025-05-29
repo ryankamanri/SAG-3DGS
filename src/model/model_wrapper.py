@@ -163,8 +163,9 @@ class ModelWrapper(LightningModule):
             print(
                 f"[{time.strftime('%Y-%m-%d %H:%M:%S')}]: "
                 f"train step {self.global_step}; "
-                f"scene = {[x[:20] for x in batch['scene']]}; "
+                f"scene = {[x for x in batch['scene']]}; "
                 f"context = {batch['context']['index'].tolist()}; "
+                f"target = {batch['target']['index'].tolist()}; "
                 # f"bound = {gaussians.others['bbox'].size.detach().cpu().numpy().mean()}; "
                 f"gaussians = {gaussians.opacities.shape[1]}; "
                 f"loss = [{loss_str}]; "
