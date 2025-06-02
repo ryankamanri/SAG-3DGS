@@ -116,7 +116,7 @@ def train(cfg_dict: DictConfig):
         callbacks=callbacks,
         val_check_interval=cfg.trainer.val_check_interval,
         enable_progress_bar=cfg.mode == "test",
-        gradient_clip_val=cfg.trainer.gradient_clip_val,
+        # gradient_clip_val=cfg.trainer.gradient_clip_val, # TODO: clip grad manually
         max_steps=cfg.trainer.max_steps // cfg.data_loader.train.batch_size,
         num_sanity_val_steps=cfg.trainer.num_sanity_val_steps,
     )

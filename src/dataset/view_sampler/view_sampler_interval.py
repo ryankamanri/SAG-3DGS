@@ -13,6 +13,7 @@ class ViewSamplerIntervalCfg:
     name: Literal["interval"]
     num_context_views: int
     num_target_views: int
+    step: int
     context_views: list[int] | None
     target_views: list[int] | None
 
@@ -32,21 +33,21 @@ class ViewSamplerInterval(ViewSampler[ViewSamplerIntervalCfg]):
         """Arbitrarily sample context and target views."""
         num_views, _, _ = extrinsics.shape
         
-        step = 10
-        dist = self.cfg.num_context_views * step
+        step = self.cfg.step
+        dist = (self.cfg.num_context_views - 1) * step
         
         index_context_begin = torch.randint(
             0,
-            num_views - dist if num_views - dist > 0 else 1,
+            num_views - dist if num_views - 1 > dist else 1,
             size=(),
             device=device,
         ).item()
         
         index_context = torch.arange(
             index_context_begin, 
-            index_context_begin + dist if num_views > dist else index_context_begin + num_views, 
-            step=step if num_views > dist else num_views // self.cfg.num_context_views
-        )[:self.num_context_views]
+            index_context_begin + dist + 1 if num_views - 1 > dist else index_context_begin + num_views, 
+            step=step if num_views - 1 > dist else (num_views - 1) // (self.cfg.num_context_views - 1)
+        )[:self.cfg.num_context_views]
 
         # Allow the context views to be fixed.
         if self.cfg.context_views is not None:
@@ -57,7 +58,7 @@ class ViewSamplerInterval(ViewSampler[ViewSamplerIntervalCfg]):
 
         index_target = torch.randint(
             index_context_begin, 
-            index_context_begin + dist if num_views > dist else index_context_begin + num_views, 
+            index_context_begin + dist + 1 if num_views - 1 > dist else index_context_begin + num_views, 
             size=(self.cfg.num_target_views,),
             device=device,
         )

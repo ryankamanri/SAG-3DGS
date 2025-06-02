@@ -87,6 +87,9 @@ class ModelWrapper(LightningModule):
         self.test_cfg = test_cfg
         self.train_cfg = train_cfg
         self.step_tracker = step_tracker
+        
+        # manual grad computation & update params
+        self.automatic_optimization = False
 
         # Set up the model.
         
@@ -179,6 +182,35 @@ class ModelWrapper(LightningModule):
         # Tell the data loader processes about the current step.
         if self.step_tracker is not None:
             self.step_tracker.set_step(self.global_step)
+            
+        if total_loss.isnan().any():
+            print(f"NaN loss encountered at step {self.global_step}.")
+            print(
+                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}]: "
+                f"train step {self.global_step}; "
+                f"scene = {[x for x in batch['scene']]}; "
+                f"context = {batch['context']['index'].tolist()}; "
+                f"target = {batch['target']['index'].tolist()}; "
+                # f"bound = {gaussians.others['bbox'].size.detach().cpu().numpy().mean()}; "
+                f"gaussians = {gaussians.opacities.shape[1]}; "
+                f"loss = [{loss_str}]; "
+                f"total loss = {total_loss:.6f}; "
+            )
+            print("jumpping to next step, skipping this step.")
+            self.log("nan_events", 1, on_step=True)
+            return None
+        
+        if not self.automatic_optimization:
+            self.optimizers().zero_grad()
+            self.manual_backward(total_loss)
+        
+        if any(torch.isnan(p.grad).any() for p in self.parameters() if p.grad is not None):
+            print(f"NaN gradients at step {self.global_step}.")
+            self.log("grad_nan_events", 1, on_step=True)
+            return None
+            
+        if not self.automatic_optimization:
+            self.optimizers().step()
 
         return total_loss
 
