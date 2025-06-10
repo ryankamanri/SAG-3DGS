@@ -87,10 +87,6 @@ class ModelWrapper(LightningModule):
         self.test_cfg = test_cfg
         self.train_cfg = train_cfg
         self.step_tracker = step_tracker
-        
-        # manual grad computation & update params
-        self.automatic_optimization = False
-
         # Set up the model.
         
         # initialize pretrained mvsnet
@@ -199,20 +195,21 @@ class ModelWrapper(LightningModule):
             print("jumpping to next step, skipping this step.")
             self.log("nan_events", 1, on_step=True)
             return None
-        
-        if not self.automatic_optimization:
-            self.optimizers().zero_grad()
-            self.manual_backward(total_loss)
-        
-        if any(torch.isnan(p.grad).any() for p in self.parameters() if p.grad is not None):
-            print(f"NaN gradients at step {self.global_step}.")
-            self.log("grad_nan_events", 1, on_step=True)
-            return None
-            
-        if not self.automatic_optimization:
-            self.optimizers().step()
 
         return total_loss
+    
+    # def on_after_backward(self):
+    #     # 监控梯度统计信息
+    #     for name, param in self.named_parameters():
+    #         if param.grad is not None:
+    #             grad = param.grad
+    #             self.log(f"grad/{name}_mean", grad.mean())
+    #             self.log(f"grad/{name}_max", grad.max())
+    #             self.log(f"grad/{name}_min", grad.min())
+                
+    #             # 检测 NaN
+    #             if torch.isnan(grad).any():
+    #                 print(f"NaN gradients in {name}!")
 
     def test_step(self, batch, batch_idx):
         batch: BatchedExample = self.data_shim(batch)
@@ -283,7 +280,7 @@ class ModelWrapper(LightningModule):
                     with self.benchmarker.time("fine_tune"):
                         output_ft = self.decoder.forward(
                             fine_tune_gaussian_wrapper.get_gaussians(),
-                            batch["fine_tune"]["extrinsics"], # TODO: load fine tune images.
+                            batch["fine_tune"]["extrinsics"],
                             batch["fine_tune"]["intrinsics"],
                             batch["fine_tune"]["near"],
                             batch["fine_tune"]["far"],

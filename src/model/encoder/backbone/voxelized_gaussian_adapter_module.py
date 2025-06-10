@@ -434,10 +434,10 @@ def compute_struct_loss(
     # Due to the characteristics of LoD, for non-minimum resolution voxels, 
     # the distance from the voxel to the nearest point can be estimated based on the voxel size. 
     # Because there must be a voxel next to the voxel, we estimate that the distance is voxel length.
-    dist_weight = voxel_size_list[0] / voxel_size_list[scale_idx] * 0.1
+    dist_weight = voxel_size_list[0] / voxel_size_list[scale_idx]
     
     existence_loss += (1. - get_opacity(must_exist_voxels_mask)).sum()
-    existence_loss += (get_opacity(must_empty_voxels_mask) * dist_weight ** 2).sum()
+    existence_loss += (get_opacity(must_empty_voxels_mask) * dist_weight).sum()
     existence_n += (must_exist_points_mask.sum() + must_empty_voxels_mask.sum())
     
     predicted_means: torch.Tensor = get_means(must_exist_voxels_mask)

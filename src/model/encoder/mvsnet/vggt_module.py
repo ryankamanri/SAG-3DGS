@@ -1,3 +1,4 @@
+from typing import Any, Mapping
 import torch
 from torch import nn
 from vggt.models.vggt import VGGT
@@ -162,7 +163,15 @@ class VGGTModule(nn.Module):
             depths = adapt_size(imgs.shape[3:], depth_values.unsqueeze(2), pad_value=0.0).squeeze(2)
             nears = depths.reshape(b, v, h*w).min(dim=-1).values * 0.8 # (B, V)
             nears = torch.clamp(nears, min=0.1) # avoid too small near values (0) may be devided by zero in later calculations
-            fars = depths.reshape(b, v, h*w).max(dim=-1).values * 1.2 # (B, V)
+            fars = depths.reshape(b, v, h*w).max(dim=-1).values * 1.0 # (B, V)
             # print(f"nears: {context['near']}, fars: {context['far']}")
         return depths, nears, fars
-        
+    
+    # Override state_dict and load_state_dict to return empty dicts, because VGGT does not have any trainable parameters.
+    def state_dict(self, destination=None, prefix="", keep_vars=False):
+        # Override to return an empty state_dict
+        return {}
+    
+    def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
+        return super().load_state_dict(state_dict, False, assign)
+          

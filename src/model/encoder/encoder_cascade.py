@@ -41,8 +41,12 @@ class EncoderCascadeCfg:
     cas_mvsnet_use_backbone: bool
     cas_mvsnet_load_to_backbone: bool
     cas_mvsnet_ndepth: list[int]
+    cas_mvsnet_cr_base_channels: list[int]
+    cas_mvsnet_base_channel: int
     cas_mvsnet_geo_max_dist: float
     cas_mvsnet_geo_max_depth_diff: float
+    cas_mvsnet_use_out_features: bool
+    use_vggt: bool
     positional_encoding_num_frequencies: int
     feature_channels: int
     transformer_layers: int
@@ -80,11 +84,13 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         self.voxel_size_list = cfg.voxel_size_list
         self.voxel_size_begin_steps = cfg.voxel_size_begin_steps
         self.current_idx = 0
-        self.use_vggt = True
-        self.vggt_module = VGGTModule()
+        self.use_vggt = self.cfg.use_vggt
+        self.vggt_module = VGGTModule() if self.use_vggt else nn.Module()
         self.cas_mvsnet_module = CasMVSNetModule(
             cas_mvsnet_ckpt_path=cfg.cas_mvsnet_ckpt_path, 
             ndepths=cfg.cas_mvsnet_ndepth, 
+            cr_base_chs=cfg.cas_mvsnet_cr_base_channels,
+            base_channel=cfg.cas_mvsnet_base_channel,
             geo_max_dist=cfg.cas_mvsnet_geo_max_dist, 
             geo_max_depth_diff=cfg.cas_mvsnet_geo_max_depth_diff, 
             use_backbone=cfg.cas_mvsnet_use_backbone, 
@@ -169,7 +175,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         
         self.costvolume_sampler = CostvolumeSampler(
             max_voxels_foreach_processing=cfg.max_voxels_foreach_processing,
-            costvolume_feature_channels=64,  # 8 * 4 * 2
+            costvolume_feature_channels=(cfg.feature_channels if cfg.cas_mvsnet_use_out_features else cfg.cas_mvsnet_base_channel) * 4 * 2,  # 8 * 4 * 2
             out_channels=cfg.feature_channels,
         )
         
@@ -265,7 +271,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         
         with ExecutionTimer("CAS-MVSNet Module", switch=self.timer_switch):
             cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module.forward(
-                context, imgs, masks, extrinsics, intrinsics, nears, fars, outer_features=None)
+                context, imgs, masks, extrinsics, intrinsics, nears, fars, outer_features=stage_features if self.cfg.cas_mvsnet_use_out_features else None)
         
         if self.do_enhance_feat:
             with ExecutionTimer("Enhance Features", switch=self.timer_switch):
@@ -297,7 +303,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     
     def configure_optimizers(self, cfg):
         return [
-            {'params': self.vggt_module.parameters(), 'lr': cfg.lr},
+            # {'params': self.vggt_module.parameters(), 'lr': cfg.lr}, # we don't train VGGT, so no need to set lr
             {'params': self.cas_mvsnet_module.parameters(), 'lr': cfg.lr}, 
             {'params': self.backbone.parameters(), 'lr': cfg.lr}, 
             {'params': self.upsamplerx2.parameters(), 'lr': cfg.lr}, 

@@ -49,7 +49,7 @@ def empty_cas_mvsnet_module_result():
 
 class CasMVSNetModule(nn.Module):
 
-    def __init__(self, cas_mvsnet_ckpt_path, ndepths=[48, 32, 8], geo_max_dist=0.001, geo_max_depth_diff=0.001, use_backbone=True, load_to_backbone=False) -> None:
+    def __init__(self, cas_mvsnet_ckpt_path, ndepths=[48, 32, 8], cr_base_chs=[32, 16, 8], base_channel=8, geo_max_dist=0.001, geo_max_depth_diff=0.001, use_backbone=True, load_to_backbone=False) -> None:
         super().__init__()
         self.ndepths = ndepths
         self.geo_max_dist = geo_max_dist
@@ -61,13 +61,14 @@ class CasMVSNetModule(nn.Module):
         state_dict = torch.load(cas_mvsnet_ckpt_path)
         
         if use_backbone:
-            self.pretrained_cas_mvsnet = CascadeMVSNet(refine=False, ndepths=ndepths, return_photometric_confidence=True)
-            self.backbone_cas_mvsnet = CascadeMVSNet(use_dot_similarity=False, cr_base_chs=[32, 16, 8], refine=self.refine, ndepths=ndepths, return_volume=True, return_photometric_confidence=True)
-        else:
-            self.pretrained_cas_mvsnet = CascadeMVSNet(refine=False, ndepths=ndepths, return_volume=True, return_photometric_confidence=True)
+            # TODO: remove pretrained_cas_mvsnet
+            # self.pretrained_cas_mvsnet = CascadeMVSNet(refine=False, ndepths=ndepths, return_photometric_confidence=True)
+            self.backbone_cas_mvsnet = CascadeMVSNet(use_dot_similarity=False, cr_base_chs=cr_base_chs, base_channel=base_channel, refine=self.refine, ndepths=ndepths, return_volume=True, return_photometric_confidence=True)
+        # else:
+        #     self.pretrained_cas_mvsnet = CascadeMVSNet(refine=False, ndepths=ndepths, return_volume=True, return_photometric_confidence=True)
             
-        self.pretrained_cas_mvsnet.load_state_dict(state_dict["model"])
-        self.pretrained_cas_mvsnet.eval()
+        # self.pretrained_cas_mvsnet.load_state_dict(state_dict["model"])
+        # self.pretrained_cas_mvsnet.eval()
         
         if use_backbone and load_to_backbone:
             self.backbone_cas_mvsnet.load_state_dict(state_dict["model"])

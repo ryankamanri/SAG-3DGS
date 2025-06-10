@@ -23,3 +23,4 @@ test_chunk_interval: 1
 test_times_per_scene: 1
 
 depth_map_path: path_to_depth_map
+offline: false

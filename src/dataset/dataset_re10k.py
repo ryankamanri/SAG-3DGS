@@ -78,6 +78,7 @@ class DatasetRE10kCfg(DatasetCfgCommon):
     far: float = -1.0
     baseline_scale_bounds: bool = True
     shuffle_val: bool = True
+    offline: bool = True  # whether to use offline depth map, default is True, set to False for real-time prediction (VGGT) during training
 
 
 class DatasetRE10k(IterableDataset):
@@ -229,21 +230,20 @@ class DatasetRE10k(IterableDataset):
                     context_depth_masks = resize_crop(context_depth_masks)
                 
                 # load depth from VGGT prediction
-                offline_depth = False
+                offline_depth = self.cfg.offline
                 if self.cfg.name == "re10k" and self.stage == "train":
                     if not offline_depth:
                         context_depth_maps, context_depth_confs = torch.tensor(0.), torch.tensor(0.) # real time prediction, set `use_vggt = True` on 'src/model/encoder/mvsnet/cas_mvsnet_module.py'
                     else:
-                        # TODO: check its validation
                         scene_depth_path = Path(self.cfg.depth_map_path) / self.stage / f"{example['key']}.pt"
                         scene_depth_dict = torch.load(str(scene_depth_path), map_location="cpu") # load to cpu, NOT original device
                         context_timestamps = [example["timestamps"][i.item()] for i in context_indices]
                         context_depth_maps = torch.stack([scene_depth_dict[str(t.item())]["depth"] for t in context_timestamps]).float()
                         context_depth_confs = torch.ones(context_images.shape[0], self.cfg.image_shape[0], self.cfg.image_shape[1]) # (V, H, W)
                         # context_depth_confs = torch.stack([scene_depth_dict[t]["depth_conf"] for t in context_timestamps])
-                        nears = context_depth_maps.reshape(context_images.shape[0], self.cfg.image_shape[0] * self.cfg.image_shape[1]).min(dim=-1).values * 0.8 # (V)
-                        nears = torch.clamp(nears, min=0.1) # avoid too small near values (0) may be devided by zero in later calculations
-                        fars = context_depth_maps.reshape(context_images.shape[0], self.cfg.image_shape[0] * self.cfg.image_shape[1]).max(dim=-1).values * 1.2 # (V)
+                        nears[context_indices] = context_depth_maps.reshape(context_images.shape[0], self.cfg.image_shape[0] * self.cfg.image_shape[1]).min(dim=-1).values * 0.8 # (V)
+                        torch.clamp_(nears[context_indices], min=0.1) # avoid too small near values (0) may be devided by zero in later calculations
+                        fars[context_indices] = context_depth_maps.reshape(context_images.shape[0], self.cfg.image_shape[0] * self.cfg.image_shape[1]).max(dim=-1).values * 1.0 # (V)
                     pass
 
                 # Skip the example if the images don't have the right shape.

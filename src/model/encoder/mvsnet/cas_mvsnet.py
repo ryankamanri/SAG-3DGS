@@ -93,7 +93,7 @@ class DepthNet(nn.Module):
 
 class CascadeMVSNet(nn.Module):
     def __init__(self, use_dot_similarity=False, refine=False, ndepths=[48, 32, 8], depth_interals_ratio=[4, 2, 1], share_cr=False,
-                 grad_method="detach", arch_mode="fpn", cr_base_chs=[8, 8, 8], return_volume=False, return_photometric_confidence=False):
+                 grad_method="detach", base_channel=8, arch_mode="fpn", cr_base_chs=[8, 8, 8], return_volume=False, return_photometric_confidence=False):
         super(CascadeMVSNet, self).__init__()
         self.use_dot_similarity = use_dot_similarity
         self.refine = refine
@@ -101,6 +101,7 @@ class CascadeMVSNet(nn.Module):
         self.ndepths = ndepths
         self.depth_interals_ratio = depth_interals_ratio
         self.grad_method = grad_method
+        self.base_channel = base_channel
         self.arch_mode = arch_mode
         self.cr_base_chs = cr_base_chs
         self.num_stage = len(ndepths)
@@ -119,7 +120,7 @@ class CascadeMVSNet(nn.Module):
             }
         }
 
-        self.feature = FeatureNet(base_channels=8, stride=4, num_stage=self.num_stage, arch_mode=self.arch_mode)
+        self.feature = FeatureNet(base_channels=base_channel, stride=4, num_stage=self.num_stage, arch_mode=self.arch_mode)
         if self.share_cr:
             self.cost_regularization = CostRegNet(in_channels=self.feature.out_channels, base_channels=8)
         else:
@@ -180,7 +181,7 @@ class CascadeMVSNet(nn.Module):
     
     def forward(self, imgs, proj_matrices, depth_values, outer_features=None):
         b, v, c, h, w = imgs.shape
-        if outer_features == None or not self.use_dot_similarity:
+        if outer_features == None:
             # step 1. feature extraction
             features = self.feature(imgs) # {'stage1': (B, V, C, H, W), ...}
         else: 

@@ -14,6 +14,8 @@ class ViewSamplerIntervalCfg:
     num_context_views: int
     num_target_views: int
     step: int
+    min_interval: int
+    max_interval: int
     context_views: list[int] | None
     target_views: list[int] | None
 
@@ -33,7 +35,7 @@ class ViewSamplerInterval(ViewSampler[ViewSamplerIntervalCfg]):
         """Arbitrarily sample context and target views."""
         num_views, _, _ = extrinsics.shape
         
-        step = self.cfg.step
+        step = torch.randint(self.cfg.min_interval, self.cfg.max_interval + 1, size=()).item()
         dist = (self.cfg.num_context_views - 1) * step
         
         index_context_begin = torch.randint(

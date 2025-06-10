@@ -112,7 +112,6 @@ def SH2RGB(sh):
     return sh * C0 + 0.5
     
 
-# TODO: change the activation equal to 3DGS
 scaling_activation = torch.exp
 scaling_deactivation = torch.log
 quaternion_activation = torch.nn.functional.normalize

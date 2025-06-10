@@ -3,5 +3,7 @@ name: interval
 num_target_views: 1
 num_context_views: 3
 step: 10
+min_interval: 10
+max_interval: 20
 # If you want to hard-code context views, do so here.
 context_views: null

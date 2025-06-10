@@ -147,7 +147,6 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
         if scene.startswith('tandt') or scene.startswith('ns') or scene.startswith('llff') or scene.startswith('scannet'):
             scene_name = scene[scene.index("_")+1:-3]
             return torch.tensor(self.test_pairs[f"{scene_name}_train"])
-        # TODO: add other datasets.
         
         
         
