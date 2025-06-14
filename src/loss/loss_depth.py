@@ -64,6 +64,7 @@ class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
         for ref_view_result in cas_module_result.ref_view_result_list:
             for stage in range(1, 4):
                 mask = depth_gt_mask_stages[stage-1][:, view_idx] == 1.
+                if not mask.any(): continue # Skip if no valid pixels in this view for this stage.
                 delta_d = torch.Tensor(depth_gt_stages[stage-1][:, view_idx][mask] - ref_view_result.backbone[f"stage{stage}"]["depth"][mask]).abs() # (N)
                 delta_d_normalized = delta_d / (fars[:, view_idx] - nears[:, view_idx]) # (N)
                 confidence = torch.Tensor(ref_view_result.backbone[f"stage{stage}"]["photometric_confidence"][mask]) # (N)

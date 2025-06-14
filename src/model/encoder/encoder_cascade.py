@@ -84,7 +84,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         self.voxel_size_list = cfg.voxel_size_list
         self.voxel_size_begin_steps = cfg.voxel_size_begin_steps
         self.current_idx = 0
-        self.use_vggt = self.cfg.use_vggt
+        self.use_vggt = self.cfg.use_vggt and get_cfg().mode == "train"
         self.vggt_module = VGGTModule() if self.use_vggt else nn.Module()
         self.cas_mvsnet_module = CasMVSNetModule(
             cas_mvsnet_ckpt_path=cfg.cas_mvsnet_ckpt_path, 
@@ -265,8 +265,11 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             with ExecutionTimer("VGGT Module", switch=self.timer_switch):
                 depths, nears, fars = self.vggt_module.forward(imgs, extrinsics)
                 context["depth"] = depths
-                # Important note: `nears`, `fars` here covered those loaded from DataLoader
-                # and context["depth"], which will be used in the loss function.
+                context["depth_mask"][torch.logical_or(depths < nears.view(b, v, 1, 1), depths > fars.view(b, v, 1, 1))] = 0.0 # remove those too big or small values.
+                # Important note: `nears`, `fars` here covered those loaded from DataLoader, 
+                # which will decide the candidate depths in the CasMVSNetModule and voxel range in VoxelizedGaussianAdapterModule.
+                # and context["depth"], context["depth_mask"], which will be used in the loss function.
+                # you can overwrite context["near"], context["far"] to ensure exact camera rendering (though it wonld not happen during training).
             pass
         
         with ExecutionTimer("CAS-MVSNet Module", switch=self.timer_switch):

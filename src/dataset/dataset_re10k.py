@@ -167,8 +167,11 @@ class DatasetRE10k(IterableDataset):
                 if self.cfg.name == "re10k":
                     # we need to put extra near & far bounds for re10k
                     # we dont use the near & far from here when training
-                    nears = torch.ones_like(nears)
-                    fars = torch.ones_like(fars) * 100.0
+                    nears = torch.ones_like(nears) * 1.0
+                    fars = torch.ones_like(fars) * 10.0
+                    # the image in our preprocessed dataset is rescale from 360 * 640 to 256 * (640*256/360) and crop to 256 * 256, but the corresponding camera intrinsics is not be adjusted.
+                    # so we manually adjust intrinsics here
+                    intrinsics[..., 0, 0] *= 640 / 360  # fx
 
                 scene = f"{self.cfg.name}_{example['key']}_{(run_idx % times_per_scene):02d}"
 

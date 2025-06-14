@@ -133,6 +133,24 @@ def adapt_size(target_size: tuple, imgs: torch.Tensor, pad_value=1.0):
     return target_imgs
 
 
+def compute_bounds(depths: torch.Tensor, min_percentile=0.0, max_percentile=0.97, min_depth=0.1, max_depth=400.0):
+    """
+    #### Use percentile to compute near and far bounds from depth maps.
+    
+    input:
+        depths: (B, V, H, W)
+    output:
+        near and far bounds
+    """
+    b, v, h, w = depths.shape
+    depths = depths.reshape(b * v, h * w)
+    sorted_flat_depth = depths.sort(dim=-1).values # (B*V, H*W)
+    nears = sorted_flat_depth[:, int(h * w * min_percentile)].view(b, v) # (B, V)
+    nears = torch.clamp(nears, min=min_depth)  # avoid too small near values (0) may be devided by zero in later calculations
+    fars = sorted_flat_depth[:, int(h * w * max_percentile)].view(b, v) # (B, V)
+    fars = torch.clamp(fars, max=max_depth)  # avoid too large far values (100) may cause overflow in later calculations
+    return nears, fars
+
 class VGGTModule(nn.Module):
     def __init__(self, pth_path="pretrained/vggt/model.pt", inference_mode=True):
         super().__init__()
@@ -161,11 +179,9 @@ class VGGTModule(nn.Module):
             
             # visualize_cameras(vggt_extrinsics_aligned[:, :, :3, 3].reshape(-1, 3).cpu(), extrinsics[:, :, :3, 3].reshape(-1, 3).cpu())
             depths = adapt_size(imgs.shape[3:], depth_values.unsqueeze(2), pad_value=0.0).squeeze(2)
-            nears = depths.reshape(b, v, h*w).min(dim=-1).values * 0.8 # (B, V)
-            nears = torch.clamp(nears, min=0.1) # avoid too small near values (0) may be devided by zero in later calculations
-            fars = depths.reshape(b, v, h*w).max(dim=-1).values * 1.0 # (B, V)
-            # print(f"nears: {context['near']}, fars: {context['far']}")
-        return depths, nears, fars
+            nears, fars = compute_bounds(depths)
+            
+        return depths.clone(), nears.clone(), fars.clone()
     
     # Override state_dict and load_state_dict to return empty dicts, because VGGT does not have any trainable parameters.
     def state_dict(self, destination=None, prefix="", keep_vars=False):
