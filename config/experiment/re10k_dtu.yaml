@@ -1,14 +1,14 @@
 # @package _global_
 
 defaults:
-  - override /dataset: [dtu]
-  - override /dataset/view_sampler: [mvsnerf]
+  - override /dataset: [re10k, dtu]
+  - override /dataset/view_sampler: [interval, mvsnerf]
   - override /model/encoder: cascade
   - override /loss: [mse, ssim, lpips, depth, struct, color]
 
 wandb:
-  name: dtu/views2
-  tags: [dtu, 512x640]
+  name: re10k_dtu
+  tags: [re10k_dtu, 256x256]
 
 data_loader:
   train:
@@ -19,6 +19,7 @@ optimizer:
 
 trainer:
   max_steps: 300_001
+  val_check_interval: 300
 
 # ----- Additional params for default best model customization
 model:
@@ -33,9 +34,6 @@ model:
     depth_unet_channel_mult: [1,1,1,1,1]
 
 
-dataset: 
-  dtu:
-    roots: [datasets/dtu]
-
 test:
+  eval_time_skip_steps: 5
   compute_scores: true

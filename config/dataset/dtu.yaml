@@ -1,8 +1,8 @@
-re10k:
-  name: re10k
-  weight: 0.75
-  view_sampler: interval
-  roots: [datasets/re10k_pt]
+dtu:
+  name: dtu
+  weight: 0.25
+  view_sampler: mvsnerf
+  roots: [datasets/dtu]
   make_baseline_1: false
   augment: true
 
@@ -24,5 +24,5 @@ re10k:
   test_chunk_interval: 1
   test_times_per_scene: 3
 
-  depth_map_path: path_to_depth_map
+  depth_map_path: C:/Users/97448/plus/repos/datasets/dtu/data/mvs_training/dtu/Depths_raw
   offline: false

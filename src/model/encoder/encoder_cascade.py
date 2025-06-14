@@ -142,7 +142,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
                 num_head_channels=self.feature_channels // 2, 
                 dims=2,
                 postnorm=True, 
-                num_frames=get_cfg().dataset.view_sampler.num_context_views, 
+                num_frames=get_cfg()[get_cfg().mode].num_context_views, 
                 use_cross_view_self_attn=True
             ),
         }) 
@@ -157,7 +157,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             costvolume_unet_attn_res=tuple(cfg.costvolume_unet_attn_res),
             gaussian_raw_channels=cfg.feature_channels,
             gaussians_per_pixel=cfg.gaussians_per_pixel,
-            num_views=get_cfg().dataset.view_sampler.num_context_views,
+            num_views=get_cfg()[get_cfg().mode].num_context_views,
             depth_unet_feat_dim=cfg.depth_unet_feat_dim,
             depth_unet_attn_res=cfg.depth_unet_attn_res,
             depth_unet_channel_mult=cfg.depth_unet_channel_mult,

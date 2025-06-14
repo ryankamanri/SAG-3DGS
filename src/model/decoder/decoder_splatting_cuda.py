@@ -17,6 +17,7 @@ from .decoder import Decoder, DecoderOutput
 @dataclass
 class DecoderSplattingCUDACfg:
     name: Literal["splatting_cuda"]
+    background_color: list[float]
 
 
 class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
@@ -25,12 +26,11 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
     def __init__(
         self,
         cfg: DecoderSplattingCUDACfg,
-        dataset_cfg: DatasetCfg,
     ) -> None:
-        super().__init__(cfg, dataset_cfg)
+        super().__init__(cfg)
         self.register_buffer(
             "background_color",
-            torch.tensor(dataset_cfg.background_color, dtype=torch.float32),
+            torch.tensor(cfg.background_color, dtype=torch.float32),
             persistent=False,
         )
 

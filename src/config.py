@@ -41,7 +41,7 @@ class TrainerCfg:
 class RootCfg:
     wandb: dict
     mode: Literal["train", "test"]
-    dataset: DatasetCfg
+    dataset: dict[str, DatasetCfg | dict]
     data_loader: DataLoaderCfg
     model: ModelCfg
     optimizer: OptimizerCfg

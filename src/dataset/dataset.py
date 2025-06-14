@@ -9,4 +9,3 @@ class DatasetCfgCommon:
     background_color: list[float]
     cameras_are_circular: bool
     overfit_to_scene: str | None
-    view_sampler: ViewSamplerCfg

@@ -13,6 +13,7 @@ from .view_sampler import ViewSampler
 @dataclass
 class ViewSamplerMVSNeRFCfg:
     name: Literal["mvsnerf"]
+    num_context_views: int # only for original mvsplat code
     num_target_views_train: int
     num_context_views_train: int
     num_target_views_test: int

@@ -63,6 +63,8 @@ def read_pfm(filename):
 @dataclass
 class DatasetRE10kCfg(DatasetCfgCommon):
     name: Literal["re10k", "acid", "dtu", "llff", "tandt", "ns", "scannet"]
+    weight: float
+    view_sampler: str
     roots: list[Path]
     baseline_epsilon: float
     max_fov: float

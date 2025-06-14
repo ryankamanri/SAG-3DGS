@@ -5,7 +5,7 @@ opacity_mapping:
   final: 0.0
   warm_up: 1
 
-num_depth_candidates: 32
+num_depth_candidates: 128
 num_surfaces: 1
 
 gaussians_per_pixel: 1
@@ -27,10 +27,10 @@ unimatch_weights_path: "checkpoints/gmdepth-scale1-resumeflowthings-scannet-5d9d
 multiview_trans_attn_split: 2
 costvolume_unet_feat_dim: 128
 costvolume_unet_channel_mult: [1,1,1]
-costvolume_unet_attn_res: []
-depth_unet_feat_dim: 64
-depth_unet_attn_res: []
-depth_unet_channel_mult: [1, 1, 1]
+costvolume_unet_attn_res: [4]
+depth_unet_feat_dim: 32
+depth_unet_attn_res: [16]
+depth_unet_channel_mult: [1, 1, 1, 1, 1]
 downscale_factor: 4
 shim_patch_size: 4
 

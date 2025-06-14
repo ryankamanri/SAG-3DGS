@@ -1,8 +1,8 @@
 # @package _global_
 
 defaults:
-  - override /dataset: re10k
-  - override /model/encoder: costvolume
+  - override /dataset: [re10k]
+  - override /model/encoder: [costvolume]
   - override /loss: [mse, lpips]
 
 wandb:
@@ -30,12 +30,8 @@ model:
 
 
 dataset: 
-  image_shape: [256, 256]
-  roots: [datasets/acid]
-  near: 1.
-  far: 100.
-  baseline_scale_bounds: false
-  make_baseline_1: false
+  re10k:
+    roots: [datasets/acid]
 
 test:
   eval_time_skip_steps: 5

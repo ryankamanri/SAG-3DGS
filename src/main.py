@@ -130,7 +130,7 @@ def train(cfg_dict: DictConfig):
         "train_cfg": cfg.train,
         "encoder": encoder,
         "encoder_visualizer": encoder_visualizer,
-        "decoder": get_decoder(cfg.model.decoder, cfg.dataset),
+        "decoder": get_decoder(cfg.model.decoder),
         "losses": get_losses(cfg.loss),
         "step_tracker": step_tracker,
     }
