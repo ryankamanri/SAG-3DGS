@@ -35,6 +35,7 @@ model:
 
 dataset: 
   dtu:
+    name: llff
     roots: [datasets/llff]
 
 test:

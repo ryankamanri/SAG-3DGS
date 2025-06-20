@@ -22,7 +22,7 @@ re10k:
   train_times_per_scene: 1
   test_len: -1
   test_chunk_interval: 1
-  test_times_per_scene: 3
+  test_times_per_scene: 4
 
   depth_map_path: path_to_depth_map
   offline: false

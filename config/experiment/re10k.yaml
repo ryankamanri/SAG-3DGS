@@ -33,8 +33,12 @@ model:
     depth_unet_attn_res: [16]
     depth_unet_channel_mult: [1,1,1,1,1]
 
-
+dataset: 
+  re10k:
+    roots: [datasets/re10k]
+    view_sampler: interval
 
 test:
   eval_time_skip_steps: 5
   compute_scores: true
+  num_context_views: 3

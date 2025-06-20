@@ -22,7 +22,7 @@ dtu:
   train_times_per_scene: 1
   test_len: -1
   test_chunk_interval: 1
-  test_times_per_scene: 3
+  test_times_per_scene: 4
 
   depth_map_path: C:/Users/97448/plus/repos/datasets/dtu/data/mvs_training/dtu/Depths_raw
   offline: false

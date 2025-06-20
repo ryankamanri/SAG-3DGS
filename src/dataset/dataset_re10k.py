@@ -190,7 +190,9 @@ class DatasetRE10k(IterableDataset):
                     # reverse the context
                     # context_indices = torch.flip(context_indices, dims=[0])
                     # print(context_indices)
-                except Exception:
+                except Exception as e:
+                    # raise e
+                    print(f"Failed to sample views for {scene} with run index {run_idx}. skip it.")
                     # Skip because the example doesn't have enough frames.
                     continue
 

@@ -35,7 +35,8 @@ model:
 
 dataset: 
   dtu:
-    roots: [datasets/ns]
+    name: ns
+    roots: [datasets/nerf_synthetic]
 
 test:
   compute_scores: true

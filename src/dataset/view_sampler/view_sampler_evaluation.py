@@ -17,7 +17,7 @@ from .view_sampler import ViewSampler
 @dataclass
 class ViewSamplerEvaluationCfg:
     name: Literal["evaluation"]
-    index_path: Path
+    index_path: str
     num_context_views: int
 
 
@@ -35,7 +35,7 @@ class ViewSamplerEvaluation(ViewSampler[ViewSamplerEvaluationCfg]):
         super().__init__(cfg, stage, is_overfitting, cameras_are_circular, step_tracker)
 
         dacite_config = Config(cast=[tuple])
-        with cfg.index_path.open("r") as f:
+        with Path(cfg.index_path).open("r") as f:
             self.index = {
                 k: None if v is None else from_dict(IndexEntry, v, dacite_config)
                 for k, v in json.load(f).items()

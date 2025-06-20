@@ -151,14 +151,22 @@ def compute_bounds(depths: torch.Tensor, min_percentile=0.0, max_percentile=0.97
     fars = torch.clamp(fars, max=max_depth)  # avoid too large far values (100) may cause overflow in later calculations
     return nears, fars
 
-class VGGTModule(nn.Module):
-    def __init__(self, pth_path="pretrained/vggt/model.pt", inference_mode=True):
+class VGGTModule():
+    def __init__(self, pth_path="pretrained/vggt/model.pt", inference_mode=True, device=torch.device("cuda")):
+        """
+        VGGTModule is a wrapper for the VGGT model. 
+        Note that we don't extend nn.Module here because we want to use the inference mode of VGGT. VGGT module will not be managed by pytorch_lightning.
+        Args:
+            pth_path: path to the pretrained model
+            inference_mode: whether to use inference mode
+            device: device to run the model on
+        """
         super().__init__()
-        self.vggt = VGGT()
+        self.vggt = VGGT().to(device)
         self.vggt.load_state_dict(torch.load(pth_path))
         self.vggt.eval()
         self.inference_mode = inference_mode
-        
+         
     def forward(self, imgs: torch.Tensor, extrinsics: torch.Tensor):
         """
         imgs: (B, V, C, H, W)
@@ -183,11 +191,5 @@ class VGGTModule(nn.Module):
             
         return depths.clone(), nears.clone(), fars.clone()
     
-    # Override state_dict and load_state_dict to return empty dicts, because VGGT does not have any trainable parameters.
-    def state_dict(self, destination=None, prefix="", keep_vars=False):
-        # Override to return an empty state_dict
-        return {}
     
-    def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
-        return super().load_state_dict(state_dict, False, assign)
           
