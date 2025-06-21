@@ -67,8 +67,7 @@ class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
                 if not mask.any(): continue # Skip if no valid pixels in this view for this stage.
                 delta_d = torch.Tensor(depth_gt_stages[stage-1][:, view_idx][mask] - ref_view_result.backbone[f"stage{stage}"]["depth"][mask]).abs() # (N)
                 delta_d_normalized = delta_d / (fars[:, view_idx] - nears[:, view_idx]) # (N)
-                confidence = torch.Tensor(ref_view_result.backbone[f"stage{stage}"]["photometric_confidence"][mask]) # (N)
-                loss += (delta_d_normalized * (1.0 - confidence)).mean() * self.stage_weights[stage]
+                loss += (delta_d_normalized).mean() * self.stage_weights[stage]
             view_idx += 1
             # TODO: Add a cascade loss?
             # delta_d = torch.Tensor(ref_view_result.pretrained["depth"] - gaussians.others["depths"][view_idx]).abs() # (B, H, W)

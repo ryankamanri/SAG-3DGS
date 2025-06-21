@@ -419,25 +419,20 @@ def compute_struct_loss(
 
     may_exist_voxels_mask = isin_3d_coordinates(local_coordinates, may_exist_coordinates)
     must_exist_voxels_mask, must_exist_points_mask = isin_3d_coordinates(local_coordinates, downsampled_pcd[:, :3].int(), return_inverse=True)
-    must_accurate_voxels_mask = isin_3d_coordinates(single_point_coordinates, downsampled_pcd[:, :3].int())
     # compute existence loss, offset loss and color loss
     existence_loss, existence_n = 0., 0
     
     # for case 2
-    # Apply a "soft regression loss," 
-    # i.e., a Gaussian opacity of 1 for voxels where the point is present and 0 for voxels where the point is absent, 
-    # and set the loss based on the distance weight.
     must_empty_voxels_mask = torch.logical_not(may_exist_voxels_mask)
-    inaccurate_voxels_mask = torch.logical_not(must_accurate_voxels_mask)
-    inaccurate_voxel_num = inaccurate_voxels_mask.sum()
     
-    # Due to the characteristics of LoD, for non-minimum resolution voxels, 
-    # the distance from the voxel to the nearest point can be estimated based on the voxel size. 
-    # Because there must be a voxel next to the voxel, we estimate that the distance is voxel length.
-    dist_weight = voxel_size_list[0] / voxel_size_list[scale_idx]
+    # Since the positive and negative samples (voxels with/without Gaussian) are unbalanced here, 
+    # we use cross-entropy loss to better minimize the distance between the predicted distribution and the target distribution.
+    prob_must_exist = must_exist_voxels_mask.sum() / must_exist_voxels_mask.numel()
+    prob_must_empty = must_empty_voxels_mask.sum() / must_empty_voxels_mask.numel()
     
-    existence_loss += (1. - get_opacity(must_exist_voxels_mask)).sum()
-    existence_loss += (get_opacity(must_empty_voxels_mask) * dist_weight).sum()
+    
+    existence_loss += -prob_must_exist * torch.log(get_opacity(must_exist_voxels_mask) + 1e-8).sum()
+    existence_loss += -prob_must_empty * torch.log(1 - get_opacity(must_empty_voxels_mask) + 1e-8).sum()
     existence_n += (must_exist_points_mask.sum() + must_empty_voxels_mask.sum())
     
     predicted_means: torch.Tensor = get_means(must_exist_voxels_mask)
@@ -445,10 +440,8 @@ def compute_struct_loss(
     exist_points = downsampled_pcd[must_exist_points_mask]
     
     offset_loss = (exist_points[:, 3:6] - predicted_means).norm(dim=1).sum() * voxel_size_list[scale_idx] / math.sqrt(3) # devide diagonal length to normalize
-    offset_loss += inaccurate_voxel_num
     color_loss = (exist_points[:, 6:] - predicted_color).norm(p=1, dim=1).sum() / 3
-    color_loss += inaccurate_voxel_num
-    offset_n = color_n = must_exist_points_mask.sum() + inaccurate_voxel_num
+    offset_n = color_n = must_exist_points_mask.sum()
     
     # loss normalization
     if existence_n != 0: existence_loss /= existence_n
