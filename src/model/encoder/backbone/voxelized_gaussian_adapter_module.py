@@ -607,8 +607,8 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 single_point_coordinates = local_coordinates[is_single_point]
                 
                 # update current local coordinates
-                next_coordinates = local_coordinates[torch.logical_not(is_current_scale)]
-                local_coordinates = local_coordinates[is_current_scale]
+                # next_coordinates = local_coordinates[torch.logical_not(is_current_scale)]
+                # local_coordinates = local_coordinates[is_current_scale]
                 # compute ndc
                 centers_ndc = bbox.compute_ndc(local_coordinates, voxel_size)
                 vox, _ = local_coordinates.shape
@@ -665,7 +665,9 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                     total_color_loss += color_loss
                 
                 # Append current gaussians
-                append_gaussians(gaussians, current_gaussians)
+                is_current_scale = (current_gaussians.opacities < 0.5).squeeze(0) # (N)
+                next_coordinates = local_coordinates[torch.logical_not(is_current_scale)] # (N', 3)
+                append_gaussians(gaussians, current_gaussians[is_current_scale]) # append current gaussians
                 del current_gaussians
                 
                 # next level
