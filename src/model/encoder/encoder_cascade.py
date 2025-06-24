@@ -1,11 +1,13 @@
 from dataclasses import dataclass
-from typing import Literal, Optional, List
+from typing import Callable, Literal, Optional, List
 
 import torch
 from einops import rearrange
 from jaxtyping import Float
 from torch import Tensor, nn
 from collections import OrderedDict
+
+from ..decoder.decoder import DecoderOutput
 
 from .mvsnet.vggt_module import VGGTModule
 from .backbone.costvolume_sampler import CostvolumeSampler
@@ -77,6 +79,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     cas_mvsnet_module: CasMVSNetModule
     multi_costvolume_transformer_module: MultiCostVolumeTransformerModule
     gaussian_adapter_module: VoxelizedGaussianAdapterModule
+    render_callback: Optional[Callable[[EncoderOutput, int], DecoderOutput]] = None  # render low resolution for split voxel.
     
     def __init__(self, cfg: EncoderCascadeCfg) -> None:
         super().__init__(cfg)
@@ -121,6 +124,23 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         )
         
         self.feat_enhancer = nn.ModuleDict({
+            "stage_unifying": nn.ModuleDict({
+                "stage1": nn.Sequential(
+                    nn.Conv2d(cfg.feature_channels * 4, cfg.feature_channels * 4, kernel_size=1, stride=1, padding=0),
+                    nn.GELU(), 
+                    nn.Conv2d(cfg.feature_channels * 4, cfg.feature_channels, kernel_size=1, stride=1, padding=0),
+                ), 
+                "stage2": nn.Sequential(
+                    nn.Conv2d(cfg.feature_channels * 2, cfg.feature_channels * 2, kernel_size=1, stride=1, padding=0),
+                    nn.GELU(), 
+                    nn.Conv2d(cfg.feature_channels * 2, cfg.feature_channels, kernel_size=1, stride=1, padding=0),
+                ),
+                "stage3": nn.Sequential(
+                    nn.Conv2d(cfg.feature_channels, cfg.feature_channels, kernel_size=1, stride=1, padding=0),
+                    nn.GELU(), 
+                    nn.Conv2d(cfg.feature_channels, cfg.feature_channels, kernel_size=1, stride=1, padding=0),
+                ), 
+            }), 
             "conv1": nn.Sequential(
                 nn.Conv2d(self.feature_channels+3, self.feature_channels, kernel_size=1, stride=1, padding=0),
                 nn.GELU(),
@@ -194,24 +214,37 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         
     def enhance_features(
         self, 
-        imgs: torch.Tensor, # (B, V, 3, H, W)
-        features: torch.Tensor, # (B, V, C, H, W)
+        stage_imgs: dict[str, torch.Tensor], # (B, V, 3, H, W)
+        stage_features: dict[str, torch.Tensor], # (B, V, C, H, W)
         ):
+        stage_enhanced_features = {}
+        for stage in ("stage1", "stage2", "stage3"):
+            imgs = stage_imgs[stage] # (B, V, 3, Hn, Wn)
+            features = stage_features[stage] # (B, V, Cn, Hn, Wn)
+            b, v, c, h, w = features.shape
+            
+            features = self.feat_enhancer["stage_unifying"][stage](features.view(b*v, c, h, w)) # (B*V, C, Hn, Wn)
+            unified_c = features.shape[1] # update c after unifying
+            
+            enhanced_features = self.feat_enhancer["conv1"](
+                torch.cat((features, imgs.reshape(b*v, 3, h, w)), dim=1)
+            )
+            enhanced_features = self.feat_enhancer["unet"](enhanced_features)
+            enhanced_features = self.feat_enhancer["conv2"](
+                torch.cat((enhanced_features, imgs.reshape(b*v, 3, h, w)), dim=1)
+            )
+            stage_enhanced_features[stage] = enhanced_features.view(b, v, unified_c, h, w) # (B, V, C, Hn, Wn)
         
-        b, v, c, h, w = features.shape
-        
-        enhanced_features = self.feat_enhancer["conv1"](
-            torch.cat((features, imgs), dim=2).reshape(b*v, c+3, h, w)
-        )
-        enhanced_features = self.feat_enhancer["unet"](enhanced_features)
-        enhanced_features = self.feat_enhancer["conv2"](
-            torch.cat((enhanced_features, imgs.reshape(b*v, 3, h, w)), dim=1)
-        )
-        
-        return enhanced_features.view(b, v, c, h, w)
+        return stage_enhanced_features
         
     def preprocess(self, context):
         imgs : torch.Tensor = context["image"] # (B, V, C, H, W), or get the origin size image by context["origin_image"]
+        b, v, c, h, w = imgs.shape
+        stage_imgs = {
+            "stage1": torch.nn.functional.interpolate(imgs.view(b*v, c, h, w), scale_factor=0.25, mode='bilinear', align_corners=False).view(b, v, c, h // 4, w // 4), # (B, V, C, H/4, W/4)
+            "stage2": torch.nn.functional.interpolate(imgs.view(b*v, c, h, w), scale_factor=0.5, mode='bilinear', align_corners=False).view(b, v, c, h // 2, w // 2), # (B, V, C, H/2, W/2)
+            "stage3": imgs, # (B, V, C, H, W)
+        }
         alphas: torch.Tensor = context["alpha"] # (B, V, H, W)
         c2w_extrinsics : torch.Tensor = context["extrinsics"] # (B, V, 4, 4)
         normalized_intrinsics : torch.Tensor = context["intrinsics"] # (B, V, 3, 3), or get the origin size image by context["origin_intrinsics"]
@@ -226,8 +259,19 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         intrinsics[..., 0, :] *= w
         intrinsics[..., 1, :] *= h
         
+        stage_intrinsics = {
+            "stage1": torch.stack([normalized_intrinsics[..., 0, :] * w / 4, normalized_intrinsics[..., 1, :] * h / 4, normalized_intrinsics[..., 2, :]], dim=-1), # (B, V, 3)
+            "stage2": torch.stack([normalized_intrinsics[..., 0, :] * w / 2, normalized_intrinsics[..., 1, :] * h / 2, normalized_intrinsics[..., 2, :]], dim=-1), # (B, V, 3)
+            "stage3": torch.stack([normalized_intrinsics[..., 0, :] * w, normalized_intrinsics[..., 1, :] * h, normalized_intrinsics[..., 2, :]], dim=-1), # (B, V, 3)
+        }
+        
         masks = alphas > 0.9
-        return imgs, masks, c2w_extrinsics, intrinsics, nears, fars
+        stage_masks = {
+            "stage1": torch.nn.functional.interpolate(alphas.view(b*v, 1, h, w), scale_factor=0.25, mode='nearest').view(b, v, h // 4, w // 4) > 0.9,
+            "stage2": torch.nn.functional.interpolate(alphas.view(b*v, 1, h, w), scale_factor=0.5, mode='nearest').view(b, v, h // 2, w // 2) > 0.9, 
+            "stage3": alphas > 0.9, # (B, V, H, W)
+        }
+        return stage_imgs, stage_masks, c2w_extrinsics, stage_intrinsics, nears, fars
 
     def forward(
         self,
@@ -238,7 +282,9 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         scene_names: Optional[list] = None,
         ndepths = 192
     ) -> EncoderOutput:
-        imgs, masks, extrinsics, intrinsics, nears, fars = self.preprocess(context)
+        is_training = self.training
+        stage_imgs, stage_masks, extrinsics, stage_intrinsics, nears, fars = self.preprocess(context)
+        imgs, intrinsics = stage_imgs["stage3"], stage_intrinsics["stage3"]
         b, v, c, h, w = imgs.shape
         while global_step >= self.voxel_size_begin_steps[self.current_idx]:
             self.current_idx += 1
@@ -259,9 +305,8 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         stage_features["stage1"] = trans_features
         stage_features["stage2"] = self.upsamplerx2(stage_features["stage1"].view(b*v, cf, h//4, w//4)).view(b, v, cf//2, h//2, w//2) # (B, V, C, H, W)
         stage_features["stage3"] = self.upsamplerx4(stage_features["stage2"].view(b*v, cf//2, h//2, w//2)).view(b, v, cf//4, h, w) # (B, V, C, H, W)
-        trans_features = stage_features["stage3"]
         
-        if self.training and self.use_vggt:
+        if is_training and self.use_vggt:
             with ExecutionTimer("VGGT Module", switch=self.timer_switch):
                 depths, nears, fars = self.vggt_module.forward(imgs, extrinsics)
                 context["depth"] = depths
@@ -271,28 +316,30 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
                 # and context["depth"], context["depth_mask"], which will be used in the loss function.
                 # you can overwrite context["near"], context["far"] to ensure exact camera rendering (though it wonld not happen during training).
             pass
+        else:
+            context["depth"] = torch.ones((b, v, h, w), device=imgs.device) * fars.view(b, v, 1, 1)  # dummy depth map
+            context["depth_mask"] = torch.ones((b, v, h, w), device=imgs.device)  # dummy depth mask
         
         with ExecutionTimer("CAS-MVSNet Module", switch=self.timer_switch):
             cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module.forward(
-                context, imgs, masks, extrinsics, intrinsics, nears, fars, outer_features=stage_features if self.cfg.cas_mvsnet_use_out_features else None)
+                context, imgs, stage_masks, extrinsics, intrinsics, nears, fars, is_training, outer_features=stage_features if self.cfg.cas_mvsnet_use_out_features else None)
         
         if self.do_enhance_feat:
             with ExecutionTimer("Enhance Features", switch=self.timer_switch):
-                trans_features = self.enhance_features(imgs, trans_features)
-
-        features = trans_features
+                stage_features = self.enhance_features(stage_imgs, stage_features)
         
         ##########################################################
         with ExecutionTimer("Gaussian Adapter Module", switch=self.timer_switch):
             gaussians: EncoderOutput = self.gaussian_adapter_module.forward(
-                imgs, 
-                features, 
-                self.current_idx if self.training else len(self.voxel_size_list), 
+                stage_imgs, 
+                stage_features, 
+                self.current_idx if is_training else len(self.voxel_size_list), 
                 cas_module_result, 
-                masks, 
+                stage_masks, 
                 extrinsics, 
-                intrinsics, 
-                nears, fars)
+                stage_intrinsics, 
+                nears, fars, is_training, 
+                self.render_callback)
         gaussians.others["cas_module_result"] = cas_module_result
         gaussians.others["nears"] = nears
         gaussians.others["fars"] = fars

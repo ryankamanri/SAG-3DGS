@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 from ..mvsnet import CascadeMVSNet, generate_depth_map_based_point_cloud, generate_geometric_mask
+import torch.nn.functional as F
 
 @dataclass
 class ReferenceViewResult:
@@ -40,11 +41,19 @@ def empty_view_based_point_cloud_result():
 @dataclass
 class CasMVSNetModuleResult:
     ref_view_result_list: list[ReferenceViewResult]
-    registed_pcd: ViewBasedPointCloudResult
-    registed_prob_pcd: ViewBasedPointCloudResult
+    registed_pcd: dict[str, ViewBasedPointCloudResult]
+    registed_prob_pcd: dict[str, ViewBasedPointCloudResult]
     
 def empty_cas_mvsnet_module_result():
-    return CasMVSNetModuleResult([], empty_view_based_point_cloud_result(), empty_view_based_point_cloud_result())
+    return CasMVSNetModuleResult([], {
+            "stage1": empty_view_based_point_cloud_result(), 
+            "stage2": empty_view_based_point_cloud_result(),
+            "stage3": empty_view_based_point_cloud_result()
+        }, {
+            "stage1": empty_view_based_point_cloud_result(), 
+            "stage2": empty_view_based_point_cloud_result(),
+            "stage3": empty_view_based_point_cloud_result()
+        })
 
 
 class CasMVSNetModule(nn.Module):
@@ -115,64 +124,59 @@ class CasMVSNetModule(nn.Module):
         
         return proj_mat, depth_values
         
-    def forward(self, context, imgs, img_masks, extrinsics, intrinsics, nears, fars, outer_features=None):
+    def forward(self, context, imgs, img_masks, extrinsics, intrinsics, nears, fars, is_training, outer_features=None):
         proj_mat, depth_values = self.preprocess(imgs, extrinsics, intrinsics, nears, fars)
         near_fars = torch.stack([nears, fars], dim=-1) # (B, V, 2)
         b, v, c, h, w = imgs.shape
-        
+        is_training = is_training
         result = empty_cas_mvsnet_module_result()
         
-        pretrained_depths_est = [] # depth map list
-        pretrained_photometric_confidences = [] # photometric confidence map list
-        pretrained_geo_masks = [] # geometric mask list
-        backbone_depths_est = []
-        backbone_photometric_confidences = []
-        backbone_geo_masks = []
+        def empty_stage_list():
+            return {
+                "stage1": [], 
+                "stage2": [],
+                "stage3": []
+            }
         
-        pretrained_outputs_list = []
-        if False:
-            with torch.no_grad(): # necessary to reduce the memory
-                pretrained_outputs_list = self.pretrained_cas_mvsnet(imgs, proj_mat, depth_values) # depth and photometric_confidence
+        pretrained_depths_est = empty_stage_list()  # depth map list
+        pretrained_photometric_confidences = empty_stage_list() # photometric confidence map list
+        pretrained_geo_masks = empty_stage_list() # geometric mask list
+        backbone_depths_est = empty_stage_list()
+        backbone_photometric_confidences = empty_stage_list()
+        backbone_geo_masks = empty_stage_list()
+        
         
         if self.use_backbone:
             backbone_outputs_list = self.backbone_cas_mvsnet.forward(imgs, proj_mat, depth_values, outer_features)
-        elif not self.training:
-            backbone_outputs_list = self.pretrained_cas_mvsnet(imgs, proj_mat, depth_values)
-        else:
-            backbone_outputs_list = pretrained_outputs_list
             
+        stages = ("stage1", "stage2", "stage3")
             
         # for every reference image, the mvsnet will generate a depth map and a photometric confidence map
         for vi in range(v):
             pretrained_outputs = {}
-            if self.training:
+            if is_training:
                 # pretrained_outputs = pretrained_outputs_list[vi]
-                pretrained_depths_est.append(context["depth"][:, vi])
-                pretrained_photometric_confidences.append(context["depth_mask"][:, vi])
+                for stage, idx in zip(stages, range(3)):
+                    prop = 1 / 2 ** (2 - idx)
+                    pretrained_depths_est[stage].append(F.interpolate(context["depth"][:, vi].unsqueeze(1), scale_factor=prop, mode="bilinear").squeeze(1))
+                    pretrained_photometric_confidences[stage].append(F.interpolate(context["depth_mask"][:, vi].unsqueeze(1), scale_factor=prop, mode="bilinear").squeeze(1))
                 
             backbone_outputs = backbone_outputs_list[vi]
-            backbone_depths_est.append(backbone_outputs["depth"])
-            backbone_photometric_confidences.append(backbone_outputs["photometric_confidence"])
-            
+            for stage, idx in zip(stages, range(3)):
+                prop = 1 / 2 ** (2 - idx)
+                backbone_depths_est[stage].append(F.interpolate(backbone_outputs["depth"].unsqueeze(1), scale_factor=prop, mode="bilinear").squeeze(1))
+                backbone_photometric_confidences[stage].append(F.interpolate(backbone_outputs["photometric_confidence"].unsqueeze(1), scale_factor=prop, mode="bilinear").squeeze(1))
+                
             result.ref_view_result_list.append(ReferenceViewResult(imgs[:, vi], pretrained_outputs, backbone_outputs))
         
-        if self.training:
+        if is_training:
             with torch.no_grad():            
-                vertices = generate_depth_map_based_point_cloud(pretrained_depths_est, extrinsics, intrinsics)
-                # for vi in range(v):
-                #     pretrained_geo_mask, _ = generate_geometric_mask(imgs, extrinsics, intrinsics, pretrained_depths_est, near_fars,
-                #                                                      ref_idx=vi, max_dist=self.geo_max_dist, max_depth_diff=self.geo_max_depth_diff)
-                #     backbone_geo_mask, _ = generate_geometric_mask(imgs, extrinsics, intrinsics, backbone_depths_est, near_fars, 
-                #                                                 ref_idx=vi, max_dist=self.geo_max_dist, max_depth_diff=self.geo_max_depth_diff)
-                #     pretrained_geo_masks.append(pretrained_geo_mask)
-                #     backbone_geo_masks.append(backbone_geo_mask)
-                    
-                result.registed_pcd = ViewBasedPointCloudResult(
-                    vertices=vertices, 
-                    vertices_confidence=torch.stack(pretrained_photometric_confidences, dim=1),
-                    vertices_geometry_mask=torch.stack(pretrained_geo_masks, dim=1) if len(pretrained_geo_masks) > 0 else torch.tensor(0))
+                for stage, idx in zip(stages, range(3)):
+                    result.registed_pcd[stage] = ViewBasedPointCloudResult(
+                        vertices=generate_depth_map_based_point_cloud(pretrained_depths_est[stage], extrinsics, proj_mat[stage][..., 1, :3, :3]), 
+                        vertices_confidence=torch.stack(pretrained_photometric_confidences[stage], dim=1),
+                        vertices_geometry_mask=torch.stack(pretrained_geo_masks[stage], dim=1) if len(pretrained_geo_masks[stage]) > 0 else torch.tensor(0))
             
-        prob_vertices = generate_depth_map_based_point_cloud(backbone_depths_est, extrinsics, intrinsics)
         
         if False:
             assert b == 1
@@ -182,10 +186,10 @@ class CasMVSNetModule(nn.Module):
             pcd.points = open3d.utility.Vector3dVector(prob_vertices.permute(0, 1, 3, 4, 2)[masks][..., :3].detach().cpu())
             pcd.colors = open3d.utility.Vector3dVector(imgs.permute(0, 1, 3, 4, 2)[masks].detach().cpu())
             open3d.visualization.draw_geometries([pcd])      
-        
-        result.registed_prob_pcd = ViewBasedPointCloudResult(
-            vertices=prob_vertices, 
-            vertices_confidence=torch.stack(backbone_photometric_confidences, dim=1), 
-            vertices_geometry_mask=torch.stack(backbone_geo_masks, dim=1) if len(backbone_geo_masks) > 0 else torch.tensor(0))
+        for stage, idx in zip(stages, range(3)):
+            result.registed_prob_pcd[stage] = ViewBasedPointCloudResult(
+                vertices=generate_depth_map_based_point_cloud(backbone_depths_est[stage], extrinsics, proj_mat[stage][..., 1, :3, :3]), 
+                vertices_confidence=torch.stack(backbone_photometric_confidences[stage], dim=1), 
+                vertices_geometry_mask=torch.stack(backbone_geo_masks[stage], dim=1) if len(backbone_geo_masks[stage]) > 0 else torch.tensor(0))
         
         return result

@@ -17,9 +17,9 @@ transformer_num_head: 2
 no_ffn: False
 ffn_dim_expansion: 4
 max_voxels_foreach_processing: 1000000
-voxel_size_list: [16, 32, 64, 128, 256, 512]
-voxel_size_begin_steps: [0, 1000, 2000, 3000, 4000, 5000, 300001]
-patch_size_list: [36, 25, 16, 9, 4, 1]
+voxel_size_list: [128, 256, 512]
+voxel_size_begin_steps: [0, 0, 0, 300001]
+patch_size_list: [9, 4, 1]
 predict_sh_degree: 2
 
 

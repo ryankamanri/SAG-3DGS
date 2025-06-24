@@ -41,8 +41,9 @@ from ..visualization.color_map import apply_color_map_to_image
 from ..visualization.layout import add_border, hcat, vcat
 from ..visualization import layout
 from ..visualization.validation_in_3d import render_cameras, render_projections
-from .decoder.decoder import Decoder, DepthRenderingMode
+from .decoder.decoder import Decoder, DecoderOutput, DepthRenderingMode
 from .encoder import Encoder
+from .encoder.encoder_cascade import EncoderCascade
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
 from .types import EncoderOutput, TrainCfg, TestCfg, OptimizerCfg, FineTuneGaussianWrapper
 from ..utils import l1_loss, ssim as ssim_fn
@@ -113,21 +114,43 @@ class ModelWrapper(LightningModule):
     def training_step(self, batch, batch_idx):
         batch: BatchedExample = self.data_shim(batch)
         _, _, _, h, w = batch["target"]["image"].shape
+        
+        # if use our CascadeEncoder, we need to set render_callback for spliting voxels. every step we need to update it because the variable in closure is different.
+        if type(self.encoder) == EncoderCascade:
+            def render_callback(gaussians: EncoderOutput, stage: int) -> DecoderOutput:
+                prop = 1 / 2 ** (2 - stage)
+                intrinsics = batch["target"]["intrinsics"].clone()
+                intrinsics[..., :2, :] *= prop
+                output = self.decoder.forward(
+                    gaussians,
+                    batch["target"]["extrinsics"],
+                    intrinsics,
+                    batch["target"]["near"],
+                    batch["target"]["far"],
+                    (int(h * prop), int(w * prop)),
+                    depth_mode=self.train_cfg.depth_mode,
+                )
+                return output
+                
+            self.encoder.render_callback = render_callback
 
         # Run the model.
         gaussians: EncoderOutput = self.encoder(
             batch["context"], self.global_step, False, scene_names=batch["scene"]
         )
 
-        output = self.decoder.forward(
-            gaussians,
-            batch["target"]["extrinsics"],
-            batch["target"]["intrinsics"],
-            batch["target"]["near"],
-            batch["target"]["far"],
-            (h, w),
-            depth_mode=self.train_cfg.depth_mode,
-        )
+        if type(self.encoder) == EncoderCascade:
+            output = gaussians.others["stage_renders"]["stage3"]
+        else:
+            output = self.decoder.forward(
+                gaussians,
+                batch["target"]["extrinsics"],
+                batch["target"]["intrinsics"],
+                batch["target"]["near"],
+                batch["target"]["far"],
+                (h, w),
+                depth_mode=self.train_cfg.depth_mode,
+            )
         target_gt = batch["target"]["image"]
 
         # Compute metrics.

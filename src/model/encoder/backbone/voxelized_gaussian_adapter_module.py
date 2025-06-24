@@ -1,8 +1,10 @@
-from typing import Callable
+from typing import Callable, Optional
 import torch
 from torch import nn
 import torch.nn.functional as F
 import math
+
+from ...decoder.decoder import DecoderOutput
 
 from ....misc.slice_iterator import SliceIterator
 from ..backbone.costvolume_sampler import CostvolumeSampler
@@ -131,7 +133,7 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         self.delta_means_activation = lambda x, voxel_size: (torch.sigmoid(x) - 0.5) / voxel_size
         self.scaling_activation = lambda x, voxel_size: (self.gaussian_scale_min + (self.gaussian_scale_max - self.gaussian_scale_min) * torch.sigmoid(x)) / voxel_size
         self.quaternion_activation = lambda x: x
-        self.opacity_activation = lambda x: torch.sigmoid(x)
+        self.opacity_activation = lambda x: torch.sigmoid(x - 4)
         self.activated_shs = [lambda x, i : RGB2SH(torch.sigmoid(x))] + [
             lambda x, i: x / (5 ** (i + 1)) for _ in range(1, sh_degree + 1)
         ]
@@ -419,12 +421,17 @@ def compute_struct_loss(
 
     may_exist_voxels_mask = isin_3d_coordinates(local_coordinates, may_exist_coordinates)
     must_exist_voxels_mask, must_exist_points_mask = isin_3d_coordinates(local_coordinates, downsampled_pcd[:, :3].int(), return_inverse=True)
+    
+    if must_exist_voxels_mask.numel() == 0:
+        # If no voxels in this scale, return 0 loss
+        # print(f"Warning: No voxels in scale {scale_idx} for batch {batch}.")
+        return 0., 0., 0.
+    
     # compute existence loss, offset loss and color loss
     existence_loss, existence_n = 0., 0
     
     # for case 2
     must_empty_voxels_mask = torch.logical_not(may_exist_voxels_mask)
-    
     # Since the positive and negative samples (voxels with/without Gaussian) are unbalanced here, 
     # we use cross-entropy loss to better minimize the distance between the predicted distribution and the target distribution.
     prob_must_exist = must_exist_voxels_mask.sum() / must_exist_voxels_mask.numel()
@@ -493,7 +500,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
         self.patch_size_list = patch_size_list
         self.sh_degree = sh_degree
         self.max_voxels_foreach_processing = max_voxels_foreach_processing
-        assert len(patch_size_list) == len(voxel_size_list)
+        assert len(patch_size_list) == len(voxel_size_list) == 3 # only 3 level is available
 
         self.gaussian_features_predictor = GaussianFeaturesPredictor(voxel_feat_dim=feature_channels, volume_feat_dim=feature_channels, sh_degree=sh_degree)
         
@@ -503,31 +510,37 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
         return self.gaussian_features_predictor.configure_optimizers(cfg)
         
     def forward(self, 
-                imgs: torch.Tensor, 
-                cnn_features: torch.Tensor, 
+                stage_imgs: dict[str, torch.Tensor], # {stage1: (B, V, C, H//4, W//4)}
+                stage_features: dict[str, torch.Tensor], 
                 current_stage: int, 
                 cas_module_result: CasMVSNetModuleResult, 
-                img_masks: torch.Tensor, 
+                stage_img_masks: dict[str, torch.Tensor], 
                 extrinsics: torch.Tensor, 
-                intrinsics: torch.Tensor, 
+                stage_intrinsics: dict[str, torch.Tensor], 
                 nears: torch.Tensor, 
-                fars: torch.Tensor):
-        b, v, c, h, w = cnn_features.shape
+                fars: torch.Tensor, 
+                is_training: bool, 
+                render_callback: Optional[Callable[[EncoderOutput, int], DecoderOutput]] = None) -> EncoderOutput:
+
+        b, v, c, h, w = stage_features["stage3"].shape
         far = fars[0, 0]
-        is_trainning = cnn_features.grad_fn != None
+        is_trainning = is_training
         batch_gaussians = []
         batch_losses = [[], [], [], []] # total_existence_loss, total_current_loss, total_offset_loss, total_color_loss
-        pcd = cas_module_result.registed_pcd
-        prob_pcd = cas_module_result.registed_prob_pcd
         
         bbox = BoundingBox(
             extrinsics=extrinsics, 
-            intrinsics=intrinsics, 
+            intrinsics=stage_intrinsics["stage3"], 
             nears=nears, 
             fars=fars, 
             width=w, height=h)
 
-        depths = torch.stack([res.backbone["depth"] for res in cas_module_result.ref_view_result_list], dim=1) # (B, V, H, W)
+        stages = ("stage1", "stage2", "stage3")
+        stage_renders: dict[str, list[DecoderOutput]] = {
+            "stage1": [], 
+            "stage2": [], 
+            "stage3": []
+        }
 
         for batch in range(b):
             # for every batch the number of gaussian may be different (LoD)
@@ -535,52 +548,61 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
             last_voxel_size = 0
             total_existence_loss, total_current_loss, total_offset_loss, total_color_loss = torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda")
             gaussians = empty_encoder_output(d_sh=(self.sh_degree + 1) ** 2)
-            gaussians.others["scales"] = torch.zeros(b, 0, 3, device=cnn_features.device)
+            gaussians.others["scales"] = torch.zeros(b, 0, 3, device="cuda")
+
             extrinsic_ndc = extrinsics[batch].clone()
             extrinsic_ndc[:, :3, 3] = bbox.transform_ndc(extrinsic_ndc[:, :3, 3], batch, xyz_shape=(1, 3))
-            depth_ndc = depths[batch] / bbox.size[batch]
                 
-            prob_pcd_xyz = prob_pcd.vertices[batch, :, :3] # (V, 3, H, W)
-            prob_pcd_rgb = imgs[batch] # (V, 3, H, W)
-            prob_pcd_xyz_ndc = bbox.transform_ndc(prob_pcd_xyz, batch, xyz_shape=(1, 3, 1, 1))
-            prob_pcd_xyz_ndc_reshaped = prob_pcd_xyz_ndc.permute(0, 2, 3, 1)[img_masks[batch]] # (N, 3)
-            prob_pcd_rgb_reshaped = prob_pcd_rgb.permute(0, 2, 3, 1)[img_masks[batch]] # (N, 3)
-            max_resolution_voxel_size = self.voxel_size_list[-1]
-            max_resolution_prob_pcd_xyz, max_resolution_prob_pcd_indices = voxel_down_sample(
-                prob_pcd_xyz_ndc_reshaped, 
-                bbox.compute_voxel_indices(
-                    ndc=prob_pcd_xyz_ndc_reshaped[:, :3], 
-                    voxel_size=max_resolution_voxel_size # max resolution 
-                )
-            ) # (N', 6), (N', 3)
-            
-            if is_trainning:
-                with torch.no_grad():
-                    # TODO: Remove useless annotations
-                    pcd_xyz = pcd.vertices[batch, :, :3] # (V, 3, H, W)
-                    pcd_xyz_ndc = bbox.transform_ndc(pcd_xyz, batch, xyz_shape=(1, 3, 1, 1))
-                    pcd_xyz_ndc_reshaped = pcd_xyz_ndc.permute(0, 2, 3, 1)[img_masks[batch]] # (N, 3)
-                    # pcd_geo_mask_reshaped = pcd.vertices_geometry_mask[batch][img_masks[batch]] # (N)
-                    pcd_confidence_reshaped = pcd.vertices_confidence[batch][img_masks[batch]] # (N)
-                    pcd_mask_reshaped = pcd_confidence_reshaped == 1.
-                    # prob_pcd_geo_mask_reshaped = prob_pcd.vertices_geometry_mask[batch][img_masks[batch]] # (N)
-                    # prob_pcd_confidence_reshaped = prob_pcd.vertices_confidence[batch][img_masks[batch]] # (N)
-                    # prob_pcd_mask_reshaped = prob_pcd_confidence_reshaped == 1.
-                    all_rectified_xyz_ndc = torch.cat((
-                        pcd_xyz_ndc_reshaped[pcd_mask_reshaped], 
-                        # prob_pcd_xyz_ndc_reshaped[prob_pcd_mask_reshaped]
-                    ), dim=0) # (N'', 3)
-                    all_rectified_rgb = torch.cat((
-                        prob_pcd_rgb_reshaped[pcd_mask_reshaped], 
-                        # prob_pcd_rgb_reshaped[prob_pcd_mask_reshaped]
-                    ), dim=0) # (N'', 3)
-                    downsampled_pcds = downsample_pcd(
-                        xyz_ndc=all_rectified_xyz_ndc, 
-                        rgb=all_rectified_rgb, 
-                        voxel_size_list=self.voxel_size_list, 
-                        bbox=bbox, 
-                        batch_idx=batch
+            for scale_idx in range(current_stage):
+                stage = stages[scale_idx]
+                img_masks = stage_img_masks[stage]
+                depths = torch.stack([res.backbone[stage]["depth"] for res in cas_module_result.ref_view_result_list], dim=1) # (B, V, H, W)
+                depth_ndc = depths[batch] / bbox.size[batch]
+                
+                pcd = cas_module_result.registed_pcd[stage]
+                prob_pcd = cas_module_result.registed_prob_pcd[stage]
+                
+                prob_pcd_xyz = prob_pcd.vertices[batch, :, :3] # (V, 3, H, W)
+                prob_pcd_rgb = stage_imgs[stage][batch] # (V, 3, H, W)
+                prob_pcd_xyz_ndc = bbox.transform_ndc(prob_pcd_xyz, batch, xyz_shape=(1, 3, 1, 1))
+                prob_pcd_xyz_ndc_reshaped = prob_pcd_xyz_ndc.permute(0, 2, 3, 1)[img_masks[batch]] # (N, 3)
+                prob_pcd_rgb_reshaped = prob_pcd_rgb.permute(0, 2, 3, 1)[img_masks[batch]] # (N, 3)
+                max_resolution_voxel_size = self.voxel_size_list[-1]
+                max_resolution_prob_pcd_xyz, max_resolution_prob_pcd_indices = voxel_down_sample(
+                    prob_pcd_xyz_ndc_reshaped, 
+                    bbox.compute_voxel_indices(
+                        ndc=prob_pcd_xyz_ndc_reshaped[:, :3], 
+                        voxel_size=max_resolution_voxel_size # max resolution 
                     )
+                ) # (N', 6), (N', 3)
+                
+                if is_trainning:
+                    with torch.no_grad():
+                        # TODO: Remove useless annotations
+                        pcd_xyz = pcd.vertices[batch, :, :3] # (V, 3, H, W)
+                        pcd_xyz_ndc = bbox.transform_ndc(pcd_xyz, batch, xyz_shape=(1, 3, 1, 1))
+                        pcd_xyz_ndc_reshaped = pcd_xyz_ndc.permute(0, 2, 3, 1)[img_masks[batch]] # (N, 3)
+                        # pcd_geo_mask_reshaped = pcd.vertices_geometry_mask[batch][img_masks[batch]] # (N)
+                        pcd_confidence_reshaped = pcd.vertices_confidence[batch][img_masks[batch]] # (N)
+                        pcd_mask_reshaped = pcd_confidence_reshaped == 1.
+                        # prob_pcd_geo_mask_reshaped = prob_pcd.vertices_geometry_mask[batch][img_masks[batch]] # (N)
+                        # prob_pcd_confidence_reshaped = prob_pcd.vertices_confidence[batch][img_masks[batch]] # (N)
+                        # prob_pcd_mask_reshaped = prob_pcd_confidence_reshaped == 1.
+                        all_rectified_xyz_ndc = torch.cat((
+                            pcd_xyz_ndc_reshaped[pcd_mask_reshaped], 
+                            # prob_pcd_xyz_ndc_reshaped[prob_pcd_mask_reshaped]
+                        ), dim=0) # (N'', 3)
+                        all_rectified_rgb = torch.cat((
+                            prob_pcd_rgb_reshaped[pcd_mask_reshaped], 
+                            # prob_pcd_rgb_reshaped[prob_pcd_mask_reshaped]
+                        ), dim=0) # (N'', 3)
+                        downsampled_pcds = downsample_pcd(
+                            xyz_ndc=all_rectified_xyz_ndc, 
+                            rgb=all_rectified_rgb, 
+                            voxel_size_list=self.voxel_size_list[scale_idx:scale_idx+1], 
+                            bbox=bbox, 
+                            batch_idx=batch
+                        )
                     if False:
                         import open3d
                         pcd = open3d.geometry.PointCloud()
@@ -616,15 +638,15 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 for si in SliceIterator(0, vox, self.max_voxels_foreach_processing):
                     # TODO: remove other `SliceIterator`s
                     voxel_feature: torch.Tensor = self.transformer.forward(
-                        imgs=imgs[batch],
-                        cnn_features=cnn_features[batch], # (V, C, H, W)
+                        imgs=stage_imgs[stage][batch],
+                        cnn_features=stage_features[stage][batch], # (V, C, H, W)
                         depths=depth_ndc,
                         extrinsics=extrinsic_ndc, 
-                        intrinsics=intrinsics[batch], 
+                        intrinsics=stage_intrinsics[stage][batch], 
                         point_xyz=prob_pcd_xyz_ndc, # (V, 3, H, W)
                         voxel_xyz=centers_ndc[si].transpose(0, 1), # (3, N')
                         confidences=prob_pcd.vertices_confidence[batch],  # (V, H, W)
-                        voxel_length=torch.tensor(1 / voxel_size, device=cnn_features.device), 
+                        voxel_length=torch.tensor(1 / voxel_size, device="cuda"), 
                         k=self.patch_size_list[scale_idx]
                     ) # (C, N)
                     
@@ -638,7 +660,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                             gaussian_means=means, 
                             cas_module_result=cas_module_result,
                             extrinsic=extrinsics[batch], 
-                            intrinsic=intrinsics[batch], 
+                            intrinsic=stage_intrinsics[stage][batch], 
                             near=nears[batch],
                             far=fars[batch],
                             batch_idx=batch
@@ -651,7 +673,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 if is_trainning:
                     # compute losses
                     existence_loss, offset_loss, color_loss = compute_struct_loss(
-                        downsampled_pcd=downsampled_pcds[scale_idx], 
+                        downsampled_pcd=downsampled_pcds[0], # we only downsampled point clouds into current stage
                         scale_idx=scale_idx, 
                         local_coordinates=local_coordinates, 
                         single_point_coordinates=single_point_coordinates, 
@@ -665,14 +687,23 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                     total_color_loss += color_loss
                 
                 # Append current gaussians
-                is_current_scale = (current_gaussians.opacities < 0.5).squeeze(0) # (N)
-                next_coordinates = local_coordinates[torch.logical_not(is_current_scale)] # (N', 3)
-                append_gaussians(gaussians, current_gaussians[is_current_scale]) # append current gaussians
-                del current_gaussians
+                existing = (current_gaussians.opacities >= 0.05).squeeze(0) # (N)
+                
+                if scale_idx == current_stage - 1:
+                    append_gaussians(gaussians, current_gaussians[existing]) # append finest gaussians only
+                # if not the finest scale, render current stage and determine the voxels to split
+                if is_training:
+                    output = render_callback(current_gaussians[existing], scale_idx) # render current gaussians
+                    stage_renders[stage].append(output)
                 
                 # next level
+                next_coordinates = local_coordinates[existing] # (N', 3)
                 local_coordinates = next_coordinates
                 last_voxel_size = voxel_size
+                pass
+
+                del current_gaussians
+                
             
             batch_losses[0].append(total_existence_loss / self.voxel_size_count)
             batch_losses[1].append(total_current_loss / self.voxel_size_count)
@@ -682,6 +713,14 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
             batch_gaussians.append(gaussians)
         
         
+        # postprocess stage_renders:
+        if is_training:
+            for stage in stages:
+                stage_renders[stage] = DecoderOutput(
+                    color= torch.cat([output.color for output in stage_renders[stage]], dim=0),
+                    depth=None
+                )
+        
         combined_gaussians = combine_batch_gaussians(batch_gaussians)
         combined_gaussians.others["existence_loss"] = torch.stack(batch_losses[0])
         combined_gaussians.others["current_loss"] = torch.stack(batch_losses[1])
@@ -689,5 +728,6 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
         combined_gaussians.others["color_loss"] = torch.stack(batch_losses[3])
         
         combined_gaussians.others["bbox"] = bbox
+        combined_gaussians.others["stage_renders"] = stage_renders
         
         return combined_gaussians
