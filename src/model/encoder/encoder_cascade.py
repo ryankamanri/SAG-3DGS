@@ -240,7 +240,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     ) -> EncoderOutput:
         imgs, masks, extrinsics, intrinsics, nears, fars = self.preprocess(context)
         b, v, c, h, w = imgs.shape
-        if global_step >= self.voxel_size_begin_steps[self.current_idx]:
+        while global_step >= self.voxel_size_begin_steps[self.current_idx]:
             self.current_idx += 1
         ################################################### from mvsplat
         with ExecutionTimer("Feature Extraction", switch=self.timer_switch):
