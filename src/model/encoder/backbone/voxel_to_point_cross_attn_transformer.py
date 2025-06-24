@@ -401,7 +401,7 @@ class VoxelToPointTransformer(nn.Module):
             
             # voxel size embedding
             if not self.wo_voxel_size_embedding:
-                voxel_scale = voxel_length / voxel_depths # (B, V)
+                voxel_scale = voxel_length / voxel_depths * (intrinsics[:, 0, 0] + intrinsics[:, 1, 1]).unsqueeze(-1) / 2 # (B, V)
                 voxel_size_emb = self.scale_weights_predictor(voxel_scale.unsqueeze(-1)) # (B, V, C)
                 voxel_size_emb = torch.softmax(voxel_size_emb, dim=-1) * c # (B, V, C)
                 source *= voxel_size_emb
