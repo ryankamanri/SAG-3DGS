@@ -5,7 +5,7 @@ from einops import rearrange
 from jaxtyping import Float
 from lpips import LPIPS
 from torch import Tensor
-
+import torch.nn.functional as F
 from ..dataset.types import BatchedExample
 from ..misc.nn_module_tools import convert_to_buffer
 from ..model.decoder.decoder import DecoderOutput

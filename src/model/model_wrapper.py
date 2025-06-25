@@ -119,12 +119,10 @@ class ModelWrapper(LightningModule):
         if type(self.encoder) == EncoderCascade:
             def render_callback(gaussians: EncoderOutput, stage: int) -> DecoderOutput:
                 prop = 1 / 2 ** (2 - stage)
-                intrinsics = batch["target"]["intrinsics"].clone()
-                intrinsics[..., :2, :] *= prop
                 output = self.decoder.forward(
                     gaussians,
                     batch["target"]["extrinsics"],
-                    intrinsics,
+                    batch["target"]["intrinsics"],
                     batch["target"]["near"],
                     batch["target"]["far"],
                     (int(h * prop), int(w * prop)),

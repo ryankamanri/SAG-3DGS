@@ -260,9 +260,9 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         intrinsics[..., 1, :] *= h
         
         stage_intrinsics = {
-            "stage1": torch.stack([normalized_intrinsics[..., 0, :] * w / 4, normalized_intrinsics[..., 1, :] * h / 4, normalized_intrinsics[..., 2, :]], dim=-1), # (B, V, 3)
-            "stage2": torch.stack([normalized_intrinsics[..., 0, :] * w / 2, normalized_intrinsics[..., 1, :] * h / 2, normalized_intrinsics[..., 2, :]], dim=-1), # (B, V, 3)
-            "stage3": torch.stack([normalized_intrinsics[..., 0, :] * w, normalized_intrinsics[..., 1, :] * h, normalized_intrinsics[..., 2, :]], dim=-1), # (B, V, 3)
+            "stage1": torch.stack([normalized_intrinsics[..., 0, :] * w / 4, normalized_intrinsics[..., 1, :] * h / 4, normalized_intrinsics[..., 2, :]], dim=-2), # (B, V, 3)
+            "stage2": torch.stack([normalized_intrinsics[..., 0, :] * w / 2, normalized_intrinsics[..., 1, :] * h / 2, normalized_intrinsics[..., 2, :]], dim=-2), # (B, V, 3)
+            "stage3": torch.stack([normalized_intrinsics[..., 0, :] * w, normalized_intrinsics[..., 1, :] * h, normalized_intrinsics[..., 2, :]], dim=-2), # (B, V, 3)
         }
         
         masks = alphas > 0.9

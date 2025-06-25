@@ -425,13 +425,8 @@ def compute_struct_loss(
     may_exist_voxels_mask = isin_3d_coordinates(local_coordinates, may_exist_coordinates)
     must_exist_voxels_mask, must_exist_points_mask = isin_3d_coordinates(local_coordinates, downsampled_pcd[:, :3].int(), return_inverse=True)
     
-    if must_exist_voxels_mask.numel() == 0:
-        # If no voxels in this scale, return 0 loss
-        # print(f"Warning: No voxels in scale {scale_idx} for batch {batch}.")
-        return 0., 0., 0.
-    
     # compute existence loss, offset loss and color loss
-    existence_loss, existence_n = 0., 0
+    existence_loss, existence_n = torch.tensor(0., device="cuda"), 0
     
     # for case 2
     must_empty_voxels_mask = torch.logical_not(may_exist_voxels_mask)
@@ -445,9 +440,6 @@ def compute_struct_loss(
         existence_loss += -prob_must_exist * torch.log(get_opacity(must_exist_voxels_mask) + 1e-8).mean()
     if prob_must_empty != 0:
         existence_loss += -prob_must_empty * torch.log(1 - get_opacity(must_empty_voxels_mask) + 1e-8).mean()
-    
-    existence_loss += -prob_must_exist * torch.log(get_opacity(must_exist_voxels_mask)).mean()
-    existence_loss += -prob_must_empty * torch.log(1 - get_opacity(must_empty_voxels_mask)).mean()
     existence_n += 1
     
     predicted_means: torch.Tensor = get_means(must_exist_voxels_mask)
@@ -557,6 +549,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
             total_existence_loss, total_current_loss, total_offset_loss, total_color_loss = torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda")
             gaussians = empty_encoder_output(d_sh=(self.sh_degree + 1) ** 2)
             gaussians.others["scales"] = torch.zeros(b, 0, 3, device="cuda")
+            gaussian_num = 0
 
             extrinsic_ndc = extrinsics[batch].clone()
             extrinsic_ndc[:, :3, 3] = bbox.transform_ndc(extrinsic_ndc[:, :3, 3], batch, xyz_shape=(1, 3))
@@ -618,7 +611,6 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         pcd.colors = open3d.utility.Vector3dVector(prob_pcd_rgb_reshaped.detach().cpu())
                         open3d.visualization.draw_geometries([pcd])
                 
-            for scale_idx in range(current_stage):
                 # TODO: Create multi-scale voxel according to points.
                 current_gaussians = empty_encoder_output(d_sh=(self.sh_degree + 1) ** 2)
                 voxel_size = self.voxel_size_list[scale_idx]
@@ -698,11 +690,12 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 existing = (current_gaussians.opacities >= 0.05).squeeze(0) # (N)
                 
                 if scale_idx == current_stage - 1:
-                    append_gaussians(gaussians, current_gaussians[existing]) # append finest gaussians only
+                    append_gaussians(gaussians, current_gaussians) # append finest gaussians only
                 # if not the finest scale, render current stage and determine the voxels to split
                 if is_training:
-                    output = render_callback(current_gaussians[existing], scale_idx) # render current gaussians
+                    output = render_callback(current_gaussians, scale_idx) # render current gaussians
                     stage_renders[stage].append(output)
+                    gaussian_num += current_gaussians.opacities.shape[1]
                 
                 # next level
                 next_coordinates = local_coordinates[existing] # (N', 3)
@@ -713,10 +706,10 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 del current_gaussians
                 
             
-            batch_losses[0].append(total_existence_loss / max(gaussians.opacities.shape[1], 1))  # avoid division by zero
-            batch_losses[1].append(total_current_loss / max(gaussians.opacities.shape[1], 1))
-            batch_losses[2].append(total_offset_loss / max(gaussians.opacities.shape[1], 1))
-            batch_losses[3].append(total_color_loss / max(gaussians.opacities.shape[1], 1))
+            batch_losses[0].append(total_existence_loss / max(gaussian_num, 1))  # avoid division by zero
+            batch_losses[1].append(total_current_loss / max(gaussian_num, 1))
+            batch_losses[2].append(total_offset_loss / max(gaussian_num, 1))
+            batch_losses[3].append(total_color_loss / max(gaussian_num, 1))
             
             batch_gaussians.append(gaussians)
         
