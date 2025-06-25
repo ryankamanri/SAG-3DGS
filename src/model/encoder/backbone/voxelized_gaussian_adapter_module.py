@@ -410,6 +410,9 @@ def compute_struct_loss(
     #### Note that assume coordinates contains all points.
     #### Note that the downsampled pcd must align the gaussians
     """
+    if local_coordinates.shape[0] == 0:
+        # if no local coordinates, return zero loss
+        return torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda")
     # Note that Gaussians are no longer in ndc space! we should convert means into ndc space.
     get_opacity = lambda mask: gaussians.opacities[mask.unsqueeze(0)]
     get_means = lambda mask: bbox.transform_ndc(gaussians.means[mask.unsqueeze(0)], batch, xyz_shape=(1, 3)) # (N, 3)
@@ -430,6 +433,11 @@ def compute_struct_loss(
     prob_must_exist = must_exist_voxels_mask.sum() / must_exist_voxels_mask.numel()
     prob_must_empty = must_empty_voxels_mask.sum() / must_empty_voxels_mask.numel()
     
+    # we must ensure that the mask is not empty, otherwise the loss will be NaN.
+    if prob_must_exist != 0:
+        existence_loss += -prob_must_exist * torch.log(get_opacity(must_exist_voxels_mask) + 1e-8).mean()
+    if prob_must_empty != 0:
+        existence_loss += -prob_must_empty * torch.log(1 - get_opacity(must_empty_voxels_mask) + 1e-8).mean()
     
     existence_loss += -prob_must_exist * torch.log(get_opacity(must_exist_voxels_mask)).mean()
     existence_loss += -prob_must_empty * torch.log(1 - get_opacity(must_empty_voxels_mask)).mean()
@@ -660,9 +668,9 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         bbox=bbox, 
                         batch=batch
                     )
-                    total_existence_loss += existence_loss
-                    total_offset_loss += offset_loss
-                    total_color_loss += color_loss
+                    total_existence_loss += existence_loss * local_coordinates.shape[0]
+                    total_offset_loss += offset_loss * local_coordinates.shape[0]
+                    total_color_loss += color_loss * local_coordinates.shape[0]
                 
                 # Append current gaussians
                 append_gaussians(gaussians, current_gaussians)
@@ -672,10 +680,10 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 local_coordinates = next_coordinates
                 last_voxel_size = voxel_size
             
-            batch_losses[0].append(total_existence_loss / self.voxel_size_count)
-            batch_losses[1].append(total_current_loss / self.voxel_size_count)
-            batch_losses[2].append(total_offset_loss / self.voxel_size_count)
-            batch_losses[3].append(total_color_loss / self.voxel_size_count)
+            batch_losses[0].append(total_existence_loss / max(gaussians.opacities.shape[1], 1))  # avoid division by zero
+            batch_losses[1].append(total_current_loss / max(gaussians.opacities.shape[1], 1))
+            batch_losses[2].append(total_offset_loss / max(gaussians.opacities.shape[1], 1))
+            batch_losses[3].append(total_color_loss / max(gaussians.opacities.shape[1], 1))
             
             batch_gaussians.append(gaussians)
         
