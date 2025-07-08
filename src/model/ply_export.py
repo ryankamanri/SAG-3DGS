@@ -32,50 +32,14 @@ def export_ply(
     opacities: Float[Tensor, " gaussian"],
     path: Path,
 ):
-    # Shift the scene so that the median Gaussian is at the origin.
-    means = means - means.median(dim=0).values
-
-    # Rescale the scene so that most Gaussians are within range [-1, 1].
-    scale_factor = means.abs().quantile(0.95, dim=0).max()
-    means = means / scale_factor
-    scales = scales / scale_factor
-
-    # Define a rotation that makes +Z be the world up vector.
-    rotation = [
-        [0, 0, 1],
-        [-1, 0, 0],
-        [0, -1, 0],
-    ]
-    rotation = torch.tensor(rotation, dtype=torch.float32, device=means.device)
-
-    # The Polycam viewer seems to start at a 45 degree angle. Since we want to be
-    # looking directly at the object, we compose a 45 degree rotation onto the above
-    # rotation.
-    adjustment = torch.tensor(
-        R.from_rotvec([0, 0, -45], True).as_matrix(),
-        dtype=torch.float32,
-        device=means.device,
-    )
-    rotation = adjustment @ rotation
-
-    # We also want to see the scene in camera space (as the default view). We therefore
-    # compose the w2c rotation onto the above rotation.
-    rotation = rotation @ extrinsics[:3, :3].inverse()
-
-    # Apply the rotation to the means (Gaussian positions).
-    means = einsum(rotation, means, "i j, ... j -> ... i")
-
-    # Apply the rotation to the Gaussian rotations.
-    rotations = R.from_quat(rotations.detach().cpu().numpy()).as_matrix()
-    rotations = rotation.detach().cpu().numpy() @ rotations
-    rotations = R.from_matrix(rotations).as_quat()
-    x, y, z, w = rearrange(rotations, "g xyzw -> xyzw g")
-    rotations = np.stack((w, x, y, z), axis=-1)
-
     # Since our axes are swizzled for the spherical harmonics, we only export the DC
     # band.
+    g, _, d_sh = harmonics.shape
+    default_d_sh = 4 ** 2  # Default is 4th order SH, which has 16 coefficients.
+    harmonics = torch.cat((harmonics, torch.zeros(g, 3, default_d_sh - d_sh, device=harmonics.device)), dim=-1)
+    
     harmonics_view_invariant = harmonics[..., 0]
-    harmonics_rest = harmonics[..., 1:].reshape(harmonics.shape[0], -1)
+    harmonics_rest = torch.zeros_like(harmonics[..., 1:].reshape(harmonics.shape[0], -1), device=harmonics.device) # we only export the view invariant part, so rest is zero
 
     dtype_full = [(attribute, "f4") for attribute in construct_list_of_attributes((harmonics.shape[-1] - 1) * 3)]
     elements = np.empty(means.shape[0], dtype=dtype_full)
@@ -84,9 +48,9 @@ def export_ply(
         torch.zeros_like(means).detach().cpu().numpy(),
         harmonics_view_invariant.detach().cpu().contiguous().numpy(),
         harmonics_rest.detach().cpu().contiguous().numpy(),
-        opacities[..., None].detach().cpu().numpy(),
+        inverse_sigmoid(opacities[..., None]).detach().cpu().numpy(),
         scales.log().detach().cpu().numpy(),
-        rotations,
+        rotations.detach().cpu().numpy(),
     )
     attributes = np.concatenate(attributes, axis=1)
     elements[:] = list(map(tuple, attributes))

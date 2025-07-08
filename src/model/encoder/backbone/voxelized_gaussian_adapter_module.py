@@ -438,9 +438,6 @@ def compute_struct_loss(
         existence_loss += -prob_must_exist * torch.log(get_opacity(must_exist_voxels_mask) + 1e-8).mean()
     if prob_must_empty != 0:
         existence_loss += -prob_must_empty * torch.log(1 - get_opacity(must_empty_voxels_mask) + 1e-8).mean()
-    
-    existence_loss += -prob_must_exist * torch.log(get_opacity(must_exist_voxels_mask)).mean()
-    existence_loss += -prob_must_empty * torch.log(1 - get_opacity(must_empty_voxels_mask)).mean()
     existence_n += 1
     
     predicted_means: torch.Tensor = get_means(must_exist_voxels_mask)
