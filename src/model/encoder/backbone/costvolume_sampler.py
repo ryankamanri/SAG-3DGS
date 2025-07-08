@@ -71,7 +71,7 @@ class CostvolumeSampler(nn.Module):
     ):
         vox, _, = gaussian_means.shape
         if vox == 0: return torch.zeros(vox, self.out_channels, device=gaussian_means.device)
-        _, v, _, h, w = cas_module_result.registed_prob_pcd.vertices.shape # (B, V, 4, H, W)
+        _, v, _, h, w = cas_module_result.registed_prob_pcd["stage3"].vertices.shape # (B, V, 4, H, W)
         stage_volumes, stage_near_fars = [], []
         for stage in range(3):
             stage_volumes.append([

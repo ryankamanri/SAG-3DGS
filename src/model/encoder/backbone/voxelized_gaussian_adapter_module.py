@@ -503,6 +503,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
         assert len(patch_size_list) == len(voxel_size_list) == 3 # only 3 level is available
 
         self.gaussian_features_predictor = GaussianFeaturesPredictor(voxel_feat_dim=feature_channels, volume_feat_dim=feature_channels, sh_degree=sh_degree)
+        self.min_thresholds = [0.10, 0.10, 0.10]
         
         pass
     
@@ -687,7 +688,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                     total_color_loss += color_loss * local_coordinates.shape[0]
                 
                 # Append current gaussians
-                existing = (current_gaussians.opacities >= 0.05).squeeze(0) # (N)
+                existing = (current_gaussians.opacities >= self.min_thresholds[scale_idx]).squeeze(0) # (N)
                 
                 if scale_idx == current_stage - 1:
                     append_gaussians(gaussians, current_gaussians) # append finest gaussians only
