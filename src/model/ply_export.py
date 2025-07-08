@@ -8,6 +8,8 @@ from plyfile import PlyData, PlyElement
 from scipy.spatial.transform import Rotation as R
 from torch import Tensor
 
+from ..utils import inverse_sigmoid
+
 
 def construct_list_of_attributes(num_rest: int) -> list[str]:
     attributes = ["x", "y", "z", "nx", "ny", "nz"]
