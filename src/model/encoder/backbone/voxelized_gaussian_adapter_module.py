@@ -122,7 +122,7 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         super().__init__()
         assert sh_degree < 4
         self.sh_degree = sh_degree
-        self.cat_volume_feat = True
+        self.cat_volume_feat = False
         self.voxel_feat_dim = voxel_feat_dim
         self.voxel_volume_feat_dim = voxel_feat_dim + volume_feat_dim if self.cat_volume_feat else voxel_feat_dim
         

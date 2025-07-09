@@ -61,20 +61,19 @@ class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
         b, v = nears.shape
         loss = torch.tensor(0., device="cuda")
         view_idx = 0
-        for ref_view_result in cas_module_result.ref_view_result_list:
-            for stage in range(1, 4):
-                mask = depth_gt_mask_stages[stage-1][:, view_idx] == 1.
-                if not mask.any(): continue # Skip if no valid pixels in this view for this stage.
-                delta_d = torch.Tensor(depth_gt_stages[stage-1][:, view_idx][mask] - ref_view_result.backbone[f"stage{stage}"]["depth"][mask]).abs() # (N)
-                delta_d_normalized = delta_d / (fars[:, view_idx] - nears[:, view_idx]) # (N)
-                loss += (delta_d_normalized).mean() * self.stage_weights[stage]
-            view_idx += 1
-            # TODO: Add a cascade loss?
-            # delta_d = torch.Tensor(ref_view_result.pretrained["depth"] - gaussians.others["depths"][view_idx]).abs() # (B, H, W)
-            # delta_d_normalized = delta_d / (fars[:, view_idx] - nears[:, view_idx]).view(b, 1, 1) # (B, H, W)
-            # confidence = torch.Tensor(ref_view_result.pretrained["photometric_confidence"]) # (B, H, W)
-            # loss += (delta_d_normalized * confidence).mean()
+        # for ref_view_result in cas_module_result.ref_view_result_list:
+            # for stage in range(1, 4):
+            #     mask = depth_gt_mask_stages[stage-1][:, view_idx] == 1.
+            #     if not mask.any(): continue # Skip if no valid pixels in this view for this stage.
+            #     delta_d = torch.Tensor(depth_gt_stages[stage-1][:, view_idx][mask] - ref_view_result.backbone[f"stage{stage}"]["depth"][mask]).abs() # (N)
+            #     delta_d_normalized = delta_d / (fars[:, view_idx] - nears[:, view_idx]) # (N)
+            #     loss += (delta_d_normalized).mean() * self.stage_weights[stage]
             # view_idx += 1
+        # TODO: Add a cascade loss?
+        delta_d = torch.Tensor(batch["context"]["depth"] - gaussians.others["depths"][view_idx]).abs() # (B, H, W)
+        delta_d_normalized = delta_d / (fars[:, view_idx] - nears[:, view_idx]).view(b, 1, 1) # (B, H, W)
+        loss += (delta_d_normalized).mean()
+        view_idx += 1
         
         loss /= len(cas_module_result.ref_view_result_list)
         return loss

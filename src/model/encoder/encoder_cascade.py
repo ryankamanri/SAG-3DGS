@@ -22,7 +22,7 @@ from ..types import EncoderOutput, empty_encoder_output
 from ...global_cfg import get_cfg
 from .common.gaussian_adapter import GaussianAdapter, GaussianAdapterCfg
 from .encoder import Encoder
-from .mvsnet.cas_mvsnet_module import CasMVSNetModule, CasMVSNetModuleResult
+from .mvsnet.cas_mvsnet_module import CasMVSNetModule, CasMVSNetModuleResult, ReferenceViewResult, empty_cas_mvsnet_module_result
 from .backbone.feature_extractor import FeatureNet
 from ..encodings.positional_encoding import camera_positional_encoding
 from .backbone.multi_costvolume_transformer_module import MultiCostVolumeTransformerModule
@@ -149,7 +149,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         
         
         self.depth_predictor = DepthPredictorMultiView(
-            feature_channels=cfg.feature_channels,
+            feature_channels=cfg.feature_channels * 4,
             upscale_factor=cfg.downscale_factor,
             num_depth_candidates=cfg.num_depth_candidates,
             costvolume_unet_feat_dim=cfg.costvolume_unet_feat_dim,
@@ -244,12 +244,12 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             self.current_idx += 1
         ################################################### from mvsplat
         with ExecutionTimer("Feature Extraction", switch=self.timer_switch):
-            trans_features = self.backbone(
+            trans_features, cnn_features = self.backbone(
                 context["image"],
                 attn_splits=self.cfg.multiview_trans_attn_split,
-                return_cnn_features=False,
+                return_cnn_features=True,
                 epipolar_kwargs=None,
-            )[0]
+            )
         
         
         tar_extrinsics = context["target_extrinsics"]
@@ -259,7 +259,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         stage_features["stage1"] = trans_features
         stage_features["stage2"] = self.upsamplerx2(stage_features["stage1"].view(b*v, cf, h//4, w//4)).view(b, v, cf//2, h//2, w//2) # (B, V, C, H, W)
         stage_features["stage3"] = self.upsamplerx4(stage_features["stage2"].view(b*v, cf//2, h//2, w//2)).view(b, v, cf//4, h, w) # (B, V, C, H, W)
-        trans_features = stage_features["stage3"]
+        # trans_features = stage_features["stage3"]
         
         if self.training and self.use_vggt:
             with ExecutionTimer("VGGT Module", switch=self.timer_switch):
@@ -270,17 +270,59 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
                 # which will decide the candidate depths in the CasMVSNetModule and voxel range in VoxelizedGaussianAdapterModule.
                 # and context["depth"], context["depth_mask"], which will be used in the loss function.
                 # you can overwrite context["near"], context["far"] to ensure exact camera rendering (though it wonld not happen during training).
+                context["near"] = nears
+                context["far"] = fars
             pass
         
         with ExecutionTimer("CAS-MVSNet Module", switch=self.timer_switch):
-            cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module.forward(
-                context, imgs, masks, extrinsics, intrinsics, nears, fars, outer_features=stage_features if self.cfg.cas_mvsnet_use_out_features else None)
+            cas_module_result = empty_cas_mvsnet_module_result()
+            # cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module.forward(
+            #     context, imgs, masks, extrinsics, intrinsics, nears, fars, outer_features=stage_features if self.cfg.cas_mvsnet_use_out_features else None)
         
-        if self.do_enhance_feat:
-            with ExecutionTimer("Enhance Features", switch=self.timer_switch):
-                trans_features = self.enhance_features(imgs, trans_features)
+        # if self.do_enhance_feat:
+        #     with ExecutionTimer("Enhance Features", switch=self.timer_switch):
+        #         trans_features = self.enhance_features(imgs, trans_features)
+        
+        ########################################################################
+        # We temporally use depth_predictor from mvsplat to troubleshoot the problem.
+        in_feats = trans_features
+        extra_info = {}
+        extra_info['images'] = rearrange(context["image"], "b v c h w -> (v b) c h w")
+        extra_info["scene_names"] = scene_names
+        gpp = self.cfg.gaussians_per_pixel
+        depths, densities, raw_gaussians = self.depth_predictor(
+            in_feats,
+            context["intrinsics"],
+            context["extrinsics"],
+            context["near"],
+            context["far"],
+            gaussians_per_pixel=gpp,
+            deterministic=deterministic,
+            extra_info=extra_info,
+            cnn_features=cnn_features,
+        ) # (B, V, H*W, 1, 1), (B, V, H*W, 1, 1), (B, V, H*W, C)
+        
+        
+        features = rearrange(raw_gaussians, "b v (h w) c -> b v c h w", h=h, w=w)
+        depths = rearrange(depths, "b v (h w) 1 1 -> b v h w", h=h, w=w)
+        depths = list(torch.unbind(depths, dim=1)) # (B, H, W) * V
+        vertices = generate_depth_map_based_point_cloud(depths, extrinsics, intrinsics) # (B, V, 4, H, W)
+        near_fars = torch.stack([nears, fars], dim=-1) # (B, V, 2)
+        # these variable will be used in the Gaussian Adapter Module.
+        cas_module_result.ref_view_result_list = [ReferenceViewResult(torch.tensor(0), {}, {
+            "depth": depths[vi], # (B, H, W)
+        }) for vi in range(v)] # (V)
+        cas_module_result.registed_prob_pcd.vertices = vertices
+        cas_module_result.registed_prob_pcd.vertices_confidence = torch.ones(b, v, h, w, device=imgs.device) # (B, V, H, W)
+        cas_module_result.registed_prob_pcd.vertices_geometry_mask = torch.tensor(0) # (B, V, H, W)
+        if self.training:
+            pseudo_depths = list(torch.unbind(context["depth"], dim=1))
+            pseudo_vertices = generate_depth_map_based_point_cloud(pseudo_depths, extrinsics, intrinsics)
+            cas_module_result.registed_pcd.vertices = pseudo_vertices
+            cas_module_result.registed_pcd.vertices_confidence = torch.ones(b, v, h, w, device=imgs.device)
+            cas_module_result.registed_pcd.vertices_geometry_mask = torch.tensor(0) # (B, V, H, W)
 
-        features = trans_features
+        # features = trans_features
         
         ##########################################################
         with ExecutionTimer("Gaussian Adapter Module", switch=self.timer_switch):
@@ -296,7 +338,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         gaussians.others["cas_module_result"] = cas_module_result
         gaussians.others["nears"] = nears
         gaussians.others["fars"] = fars
-        # gaussians.others["depths"] = depths
+        gaussians.others["depths"] = depths
         return gaussians
 
     @property
