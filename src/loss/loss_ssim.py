@@ -75,8 +75,8 @@ class LossSSIM(Loss[LossSSIMCfg, LossSSIMCfgWrapper]):
         gt = batch["target"]["image"]
         b, v, c, h, w = gt.shape
         loss = 0.
-        for stage, idx in zip(("stage1", "stage2", "stage3"), range(3)):
-            prop = 1 / 2 ** (2 - idx)
+        for idx, stage in enumerate(gaussians.others["stages"]):
+            prop = 1.0 / gaussians.others["scales"][idx]
             render = gaussians.others["stage_renders"][stage].color
             stage_gt = F.interpolate(gt.view(b*v, c, h, w), scale_factor=prop, mode="bilinear", align_corners=False).view(b, v, c, int(h * prop), int(w * prop))
             loss += (1. - ssim(stage_gt.squeeze(1), render.squeeze(1)))

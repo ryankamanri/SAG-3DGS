@@ -124,7 +124,7 @@ class GaussianFeaturesPredictor(nn.Module, IConfigureOptimizers):
         super().__init__()
         assert sh_degree < 4
         self.sh_degree = sh_degree
-        self.cat_volume_feat = True
+        self.cat_volume_feat = False
         self.voxel_feat_dim = voxel_feat_dim
         self.voxel_volume_feat_dim = voxel_feat_dim + volume_feat_dim if self.cat_volume_feat else voxel_feat_dim
         
@@ -491,8 +491,10 @@ def identify_is_current_scale(point_coordinates: torch.Tensor, local_coordinates
 
 class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
 
-    def __init__(self, transformer: VoxelToPointTransformer, costvolume_sampler: CostvolumeSampler, feature_channels=192, voxel_size_list=[32, 128, 512], patch_size_list=[3, 2, 1], sh_degree=3, max_voxels_foreach_processing=1000000) -> None:
+    def __init__(self, scales: list[int], stages: list[str], transformer: nn.ModuleList, costvolume_sampler: CostvolumeSampler, feature_channels=192, voxel_size_list=[32, 128, 512], patch_size_list=[3, 2, 1], sh_degree=3, max_voxels_foreach_processing=1000000, min_thresholds=[0.10, 0.10, 0.10, 0.10]) -> None:
         super().__init__()
+        self.scales = scales
+        self.stages = stages
         self.transformer = transformer
         self.costvolume_sampler = costvolume_sampler
         self.voxel_size_count = len(voxel_size_list)
@@ -500,15 +502,17 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
         self.patch_size_list = patch_size_list
         self.sh_degree = sh_degree
         self.max_voxels_foreach_processing = max_voxels_foreach_processing
-        assert len(patch_size_list) == len(voxel_size_list) == 3 # only 3 level is available
 
-        self.gaussian_features_predictor = GaussianFeaturesPredictor(voxel_feat_dim=feature_channels, volume_feat_dim=feature_channels, sh_degree=sh_degree)
-        self.min_thresholds = [0.10, 0.10, 0.10]
+        self.gaussian_features_predictor = nn.ModuleList([GaussianFeaturesPredictor(voxel_feat_dim=feature_channels, volume_feat_dim=feature_channels, sh_degree=sh_degree) for vi in self.voxel_size_list])
+        self.min_thresholds = min_thresholds
         
         pass
     
     def configure_optimizers(self, cfg):
-        return self.gaussian_features_predictor.configure_optimizers(cfg)
+        res = []
+        for predictor in self.gaussian_features_predictor:
+            res += predictor.configure_optimizers(cfg)
+        return res
         
     def forward(self, 
                 stage_imgs: dict[str, torch.Tensor], # {stage1: (B, V, C, H//4, W//4)}
@@ -523,7 +527,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 is_training: bool, 
                 render_callback: Optional[Callable[[EncoderOutput, int], DecoderOutput]] = None) -> EncoderOutput:
 
-        b, v, c, h, w = stage_features["stage3"].shape
+        b, v, c, h, w = stage_features[self.stages[-1]].shape
         far = fars[0, 0]
         is_trainning = is_training
         batch_gaussians = []
@@ -531,22 +535,21 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
         
         bbox = BoundingBox(
             extrinsics=extrinsics, 
-            intrinsics=stage_intrinsics["stage3"], 
+            intrinsics=stage_intrinsics[self.stages[-1]], 
             nears=nears, 
             fars=fars, 
             width=w, height=h)
 
-        stages = ("stage1", "stage2", "stage3")
-        stage_renders: dict[str, list[DecoderOutput]] = {
-            "stage1": [], 
-            "stage2": [], 
-            "stage3": []
-        }
+        stages = self.stages
+        stage_renders: dict[str, list[DecoderOutput]] = {}
+        for stage in stages:
+            stage_renders[stage] = []
 
         for batch in range(b):
             # for every batch the number of gaussian may be different (LoD)
             local_coordinates = None
             last_voxel_size = 0
+            last_voxel_feature = None
             total_existence_loss, total_current_loss, total_offset_loss, total_color_loss = torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda")
             gaussians = empty_encoder_output(d_sh=(self.sh_degree + 1) ** 2)
             gaussians.others["scales"] = torch.zeros(b, 0, 3, device="cuda")
@@ -561,7 +564,6 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 depths = torch.stack([res.backbone[stage]["depth"] for res in cas_module_result.ref_view_result_list], dim=1) # (B, V, H, W)
                 depth_ndc = depths[batch] / bbox.size[batch]
                 
-                pcd = cas_module_result.registed_pcd[stage]
                 prob_pcd = cas_module_result.registed_prob_pcd[stage]
                 
                 prob_pcd_xyz = prob_pcd.vertices[batch, :, :3] # (V, 3, H, W)
@@ -581,6 +583,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 if is_trainning:
                     with torch.no_grad():
                         # TODO: Remove useless annotations
+                        pcd = cas_module_result.registed_pcd[stage]
                         pcd_xyz = pcd.vertices[batch, :, :3] # (V, 3, H, W)
                         pcd_xyz_ndc = bbox.transform_ndc(pcd_xyz, batch, xyz_shape=(1, 3, 1, 1))
                         pcd_xyz_ndc_reshaped = pcd_xyz_ndc.permute(0, 2, 3, 1)[img_masks[batch]] # (N, 3)
@@ -613,6 +616,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         open3d.visualization.draw_geometries([pcd])
                 
                 # TODO: Create multi-scale voxel according to points.
+                voxel_feature = torch.zeros(c, 0, device="cuda")
                 current_gaussians = empty_encoder_output(d_sh=(self.sh_degree + 1) ** 2)
                 voxel_size = self.voxel_size_list[scale_idx]
                 local_coordinates = create_local_coordinates(
@@ -620,6 +624,11 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                     last_voxel_size=last_voxel_size, 
                     last_coordinates=local_coordinates
                 )
+                # expand last voxel_features to fit current scale
+                if last_voxel_feature is not None:
+                    _, lvn = last_voxel_feature.shape
+                    seg_times = voxel_size // last_voxel_size
+                    last_voxel_feature = last_voxel_feature.view(c, lvn, 1).repeat(1, 1, seg_times ** 3).view(c, lvn * seg_times ** 3) # (C, N' * seg_times^3)
                 
                 point_coordinates = max_resolution_prob_pcd_indices * voxel_size // max_resolution_voxel_size
                 
@@ -638,7 +647,7 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                 
                 for si in SliceIterator(0, vox, self.max_voxels_foreach_processing):
                     # TODO: remove other `SliceIterator`s
-                    voxel_feature: torch.Tensor = self.transformer.forward(
+                    voxel_feature_si: torch.Tensor = self.transformer[scale_idx].forward(
                         imgs=stage_imgs[stage][batch],
                         cnn_features=stage_features[stage][batch], # (V, C, H, W)
                         depths=depth_ndc,
@@ -651,8 +660,12 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         k=self.patch_size_list[scale_idx]
                     ) # (C, N)
                     
-                    current_gaussians_si = self.gaussian_features_predictor.forward(
-                        feature=(voxel_feature).transpose(0, 1), 
+                    # if current scale is not the coursest scale, we treat the current feature as offset of the previous scale.
+                    if last_voxel_feature != None:
+                        voxel_feature_si = voxel_feature_si + last_voxel_feature[:, si]
+                    
+                    current_gaussians_si = self.gaussian_features_predictor[scale_idx].forward(
+                        feature=(voxel_feature_si).transpose(0, 1), 
                         voxel_center=centers_ndc[si],
                         voxel_size=voxel_size, 
                         bbox=bbox, 
@@ -668,7 +681,8 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                         )) # (N, 15)
                     
                     append_gaussians(current_gaussians, current_gaussians_si)
-                    del current_gaussians_si
+                    voxel_feature = torch.cat((voxel_feature, voxel_feature_si), dim=1) # (C, N')
+                    del current_gaussians_si, voxel_feature_si
                     pass
                 
                 if is_trainning:
@@ -694,12 +708,14 @@ class VoxelizedGaussianAdapterModule(nn.Module, IConfigureOptimizers):
                     append_gaussians(gaussians, current_gaussians) # append finest gaussians only
                 # if not the finest scale, render current stage and determine the voxels to split
                 if is_training:
-                    output = render_callback(current_gaussians, scale_idx) # render current gaussians
+                    output = render_callback(current_gaussians, self.scales[scale_idx]) # render current gaussians
                     stage_renders[stage].append(output)
                     gaussian_num += current_gaussians.opacities.shape[1]
                 
                 # next level
                 next_coordinates = local_coordinates[existing] # (N', 3)
+                last_voxel_feature = voxel_feature[:, existing]
+                
                 local_coordinates = next_coordinates
                 last_voxel_size = voxel_size
                 pass

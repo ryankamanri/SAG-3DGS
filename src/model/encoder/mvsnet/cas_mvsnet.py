@@ -106,25 +106,12 @@ class CascadeMVSNet(nn.Module):
         self.cr_base_chs = cr_base_chs
         self.num_stage = len(ndepths)
 
-        assert len(ndepths) == len(depth_interals_ratio)
-
-        self.stage_infos = {
-            "stage1":{
-                "scale": 4.0,
-            },
-            "stage2": {
-                "scale": 2.0,
-            },
-            "stage3": {
-                "scale": 1.0,
-            }
-        }
 
         self.feature = FeatureNet(base_channels=base_channel, stride=4, num_stage=self.num_stage, arch_mode=self.arch_mode)
         if self.share_cr:
             self.cost_regularization = CostRegNet(in_channels=self.feature.out_channels, base_channels=8)
         else:
-            self.cost_regularization = nn.ModuleList([CostRegNet(in_channels=self.feature.out_channels[i],
+            self.cost_regularization = nn.ModuleList([CostRegNet(in_channels=base_channel,
                                                                  base_channels=self.cr_base_chs[i])
                                                       for i in range(self.num_stage)])
         if self.refine:
@@ -141,7 +128,7 @@ class CascadeMVSNet(nn.Module):
             #stage feature, proj_mats, scales
             features_stage = torch.unbind(features["stage{}".format(stage_idx + 1)], dim=1)
             proj_matrices_stage = proj_matrices["stage{}".format(stage_idx + 1)]
-            stage_scale = self.stage_infos["stage{}".format(stage_idx + 1)]["scale"]
+            stage_scale = 2.0 ** (self.num_stage - 1 - stage_idx)
 
             if depth is not None:
                 if self.grad_method == "detach":
@@ -186,15 +173,7 @@ class CascadeMVSNet(nn.Module):
             features = self.feature(imgs) # {'stage1': (B, V, C, H, W), ...}
         else: 
             # use outer features
-            assert type(outer_features) == dict \
-                and outer_features.get("stage1") is not None \
-                and outer_features.get("stage2") is not None \
-                and outer_features.get("stage3") is not None, \
-                "outer_features should be a dict with key stage1-3"
             features = outer_features
-        # for nview_idx in range(imgs.size(1)):  #imgs shape (B, N, C, H, W)
-        #     img = imgs[:, nview_idx]
-        #     features.append(self.feature(img))
 
         outputs_list = []
         for vi in range(v):

@@ -45,29 +45,25 @@ class CasMVSNetModuleResult:
     registed_prob_pcd: dict[str, ViewBasedPointCloudResult]
     
 def empty_cas_mvsnet_module_result():
-    return CasMVSNetModuleResult([], {
-            "stage1": empty_view_based_point_cloud_result(), 
-            "stage2": empty_view_based_point_cloud_result(),
-            "stage3": empty_view_based_point_cloud_result()
-        }, {
-            "stage1": empty_view_based_point_cloud_result(), 
-            "stage2": empty_view_based_point_cloud_result(),
-            "stage3": empty_view_based_point_cloud_result()
-        })
+    return CasMVSNetModuleResult([], {}, {})
 
 
 class CasMVSNetModule(nn.Module):
 
-    def __init__(self, cas_mvsnet_ckpt_path, ndepths=[48, 32, 8], cr_base_chs=[32, 16, 8], base_channel=8, geo_max_dist=0.001, geo_max_depth_diff=0.001, use_backbone=True, load_to_backbone=False) -> None:
+    def __init__(self, feat_scales, cas_mvsnet_ckpt_path, ndepths=[48, 32, 8], cr_base_chs=[32, 16, 8], base_channel=8, geo_max_dist=0.001, geo_max_depth_diff=0.001, use_backbone=True, load_to_backbone=False) -> None:
         super().__init__()
+        self.feat_scales = feat_scales
         self.ndepths = ndepths
         self.geo_max_dist = geo_max_dist
         self.geo_max_depth_diff = geo_max_depth_diff
         self.use_backbone = use_backbone
         self.refine = False
-        print(f"loading checkpoint from {cas_mvsnet_ckpt_path}...")
+        assert len(feat_scales) == len(ndepths) == len(cr_base_chs), "feat_scales, ndepths and cr_base_chs must have the same length."
+        self.feat_scales = feat_scales
+        self.stages = [f"stage{i+1}" for i in range(len(feat_scales))]
+        # print(f"loading checkpoint from {cas_mvsnet_ckpt_path}...")
         # initialize pretrained mvsnet
-        state_dict = torch.load(cas_mvsnet_ckpt_path)
+        # state_dict = torch.load(cas_mvsnet_ckpt_path)
         
         if use_backbone:
             # TODO: remove pretrained_cas_mvsnet
@@ -79,33 +75,29 @@ class CasMVSNetModule(nn.Module):
         # self.pretrained_cas_mvsnet.load_state_dict(state_dict["model"])
         # self.pretrained_cas_mvsnet.eval()
         
-        if use_backbone and load_to_backbone:
-            self.backbone_cas_mvsnet.load_state_dict(state_dict["model"])
+        # if use_backbone and load_to_backbone:
+        #     self.backbone_cas_mvsnet.load_state_dict(state_dict["model"])
             
             
         
     def preprocess(self, imgs: torch.Tensor, extrinsics: torch.Tensor, intrinsics: torch.Tensor, nears: torch.Tensor, fars: torch.Tensor, ndepths = 192):
         b, v, c, h, w = imgs.shape
-        # make the intrinsic mat adapt to feature map (w / 4, w / 4)
-        cloned_intrinsics = intrinsics.clone()
-        cloned_intrinsics[..., :2, :] /= 4
         
-        # multi-stage proj_mats
+        # Initialize projection matrix dictionary
+        proj_mat = {}
+        
         # proj_matrices (B, V, 2(intr & extr), 4, 4)
-        proj_matrices = torch.zeros(b, v, 2, 4, 4, device="cuda")
-        proj_matrices[..., 0, :, :] = extrinsics.inverse()
-        proj_matrices[..., 1, :3, :3] = cloned_intrinsics
+        # Base projection matrix (highest resolution stage)
+        base_proj = torch.zeros(b, v, 2, 4, 4, device="cuda")
+        base_proj[..., 0, :, :] = extrinsics.inverse()  # extr inv
+        base_proj[..., 1, :3, :3] = intrinsics.clone() # origin intr
         
-        stage2_pjmats = proj_matrices.clone()
-        stage2_pjmats[..., 1, :2, :] = proj_matrices[..., 1, :2, :] * 2
-        stage3_pjmats = proj_matrices.clone()
-        stage3_pjmats[..., 1, :2, :] = proj_matrices[..., 1, :2, :] * 4
-
-        proj_mat = {
-            "stage1": proj_matrices,
-            "stage2": stage2_pjmats,
-            "stage3": stage3_pjmats
-        }
+        # Create projection matrices for each scale
+        for stage, scale in zip(self.stages, self.feat_scales):
+            scaled_proj = base_proj.clone()
+            # Adjust the internal parameter matrix to adapt to scaling
+            scaled_proj[..., 1, :2, :] = base_proj[..., 1, :2, :] / scale
+            proj_mat[stage] = scaled_proj
         
         # the intrinsics adapts depth map (w, h), not (w / 4, h / 4)
         # intrinsics[..., :2, :] *= 4
@@ -132,11 +124,10 @@ class CasMVSNetModule(nn.Module):
         result = empty_cas_mvsnet_module_result()
         
         def empty_stage_list():
-            return {
-                "stage1": [], 
-                "stage2": [],
-                "stage3": []
-            }
+            res = {}
+            for stage in self.stages:
+                res[stage] = []
+            return res
         
         pretrained_depths_est = empty_stage_list()  # depth map list
         pretrained_photometric_confidences = empty_stage_list() # photometric confidence map list
@@ -149,21 +140,21 @@ class CasMVSNetModule(nn.Module):
         if self.use_backbone:
             backbone_outputs_list = self.backbone_cas_mvsnet.forward(imgs, proj_mat, depth_values, outer_features)
             
-        stages = ("stage1", "stage2", "stage3")
+        stages = self.stages
             
         # for every reference image, the mvsnet will generate a depth map and a photometric confidence map
         for vi in range(v):
             pretrained_outputs = {}
             if is_training:
                 # pretrained_outputs = pretrained_outputs_list[vi]
-                for stage, idx in zip(stages, range(3)):
-                    prop = 1 / 2 ** (2 - idx)
+                for stage, idx in zip(stages, range(len(stages))):
+                    prop = 1.0 / self.feat_scales[idx]
                     pretrained_depths_est[stage].append(F.interpolate(context["depth"][:, vi].unsqueeze(1), scale_factor=prop, mode="bilinear").squeeze(1))
                     pretrained_photometric_confidences[stage].append(F.interpolate(context["depth_mask"][:, vi].unsqueeze(1), scale_factor=prop, mode="bilinear").squeeze(1))
                 
             backbone_outputs = backbone_outputs_list[vi]
-            for stage, idx in zip(stages, range(3)):
-                prop = 1 / 2 ** (2 - idx)
+            for stage, idx in zip(stages, range(len(stages))):
+                prop = 1.0 / self.feat_scales[idx]
                 backbone_depths_est[stage].append(F.interpolate(backbone_outputs["depth"].unsqueeze(1), scale_factor=prop, mode="bilinear").squeeze(1))
                 backbone_photometric_confidences[stage].append(F.interpolate(backbone_outputs["photometric_confidence"].unsqueeze(1), scale_factor=prop, mode="bilinear").squeeze(1))
                 
@@ -171,7 +162,7 @@ class CasMVSNetModule(nn.Module):
         
         if is_training:
             with torch.no_grad():            
-                for stage, idx in zip(stages, range(3)):
+                for stage, idx in zip(stages, range(len(stages))):
                     result.registed_pcd[stage] = ViewBasedPointCloudResult(
                         vertices=generate_depth_map_based_point_cloud(pretrained_depths_est[stage], extrinsics, proj_mat[stage][..., 1, :3, :3]), 
                         vertices_confidence=torch.stack(pretrained_photometric_confidences[stage], dim=1),
@@ -186,7 +177,7 @@ class CasMVSNetModule(nn.Module):
             pcd.points = open3d.utility.Vector3dVector(prob_vertices.permute(0, 1, 3, 4, 2)[masks][..., :3].detach().cpu())
             pcd.colors = open3d.utility.Vector3dVector(imgs.permute(0, 1, 3, 4, 2)[masks].detach().cpu())
             open3d.visualization.draw_geometries([pcd])      
-        for stage, idx in zip(stages, range(3)):
+        for stage, idx in zip(stages, range(len(stages))):
             result.registed_prob_pcd[stage] = ViewBasedPointCloudResult(
                 vertices=generate_depth_map_based_point_cloud(backbone_depths_est[stage], extrinsics, proj_mat[stage][..., 1, :3, :3]), 
                 vertices_confidence=torch.stack(backbone_photometric_confidences[stage], dim=1), 

@@ -25,7 +25,6 @@ from ...global_cfg import get_cfg
 from .common.gaussian_adapter import GaussianAdapter, GaussianAdapterCfg
 from .encoder import Encoder
 from .mvsnet.cas_mvsnet_module import CasMVSNetModule, CasMVSNetModuleResult
-from .backbone.feature_extractor import FeatureNet
 from ..encodings.positional_encoding import camera_positional_encoding
 from .backbone.multi_costvolume_transformer_module import MultiCostVolumeTransformerModule
 from .backbone.voxelized_gaussian_adapter_module import VoxelizedGaussianAdapterModule
@@ -34,11 +33,12 @@ from .costvolume.depth_predictor_multiview import DepthPredictorMultiView
 from .mvsnet import generate_depth_map_based_point_cloud, generate_geometric_mask
 from .costvolume.ldm_unet.unet import UNetModel
 from ...misc.execution_timer import ExecutionTimer
-
+from .backbone.feature_extractor import FeatureUNet
 
 @dataclass
 class EncoderCascadeCfg:
     name: Literal["cascade"]
+    unet_output_scales: list[int]
     cas_mvsnet_ckpt_path: str
     cas_mvsnet_use_backbone: bool
     cas_mvsnet_load_to_backbone: bool
@@ -60,6 +60,7 @@ class EncoderCascadeCfg:
     voxel_size_begin_steps: list[int]
     patch_size_list: list[int]
     predict_sh_degree: int
+    min_thresholds: list[float]
     # params for multi-view depth predictor
     downscale_factor: int
     num_depth_candidates: int
@@ -87,9 +88,14 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         self.voxel_size_list = cfg.voxel_size_list
         self.voxel_size_begin_steps = cfg.voxel_size_begin_steps
         self.current_idx = 0
+        assert cfg.unet_output_scales[-1] == 1, "The last scale of unet_output_scales must be 1, which is the original size of the image."
+        self.stages = [f"stage{i+1}" for i in range(len(cfg.unet_output_scales))]
+        
         self.use_vggt = self.cfg.use_vggt and get_cfg().mode == "train"
         self.vggt_module = VGGTModule() if self.use_vggt else nn.Module()
+        
         self.cas_mvsnet_module = CasMVSNetModule(
+            feat_scales=cfg.unet_output_scales,
             cas_mvsnet_ckpt_path=cfg.cas_mvsnet_ckpt_path, 
             ndepths=cfg.cas_mvsnet_ndepth, 
             cr_base_chs=cfg.cas_mvsnet_cr_base_channels,
@@ -103,6 +109,11 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         self.feature_channels = cfg.feature_channels
         self.do_enhance_feat = True
         self.timer_switch = False
+        
+        self.feat_extractor = FeatureUNet(
+            output_scales=cfg.unet_output_scales,
+            out_channels=cfg.feature_channels,
+        )
         
         # from mvsplat
         self.backbone = BackboneMultiview(
@@ -184,14 +195,14 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         )
         
         
-        self.transformer = VoxelToPointTransformer(
+        self.transformer = nn.ModuleList([VoxelToPointTransformer(
             num_layers=cfg.transformer_layers, 
             d_model=self.feature_channels, 
             nhead=cfg.transformer_num_head, 
             no_ffn=cfg.no_ffn, 
             ffn_dim_expansion=cfg.ffn_dim_expansion, 
             max_voxels_foreach_processing=cfg.max_voxels_foreach_processing
-        )
+        ) for vi in self.voxel_size_list])
         
         self.costvolume_sampler = CostvolumeSampler(
             max_voxels_foreach_processing=cfg.max_voxels_foreach_processing,
@@ -200,6 +211,8 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         )
         
         self.gaussian_adapter_module = VoxelizedGaussianAdapterModule(
+            scales=cfg.unet_output_scales,
+            stages=self.stages,
             transformer=self.transformer, 
             costvolume_sampler=self.costvolume_sampler,
             feature_channels=self.feature_channels, 
@@ -207,6 +220,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             patch_size_list=cfg.patch_size_list, 
             sh_degree=cfg.predict_sh_degree, 
             max_voxels_foreach_processing=cfg.max_voxels_foreach_processing,
+            min_thresholds=cfg.min_thresholds,
         )
         
         print(cfg)
@@ -240,37 +254,52 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     def preprocess(self, context):
         imgs : torch.Tensor = context["image"] # (B, V, C, H, W), or get the origin size image by context["origin_image"]
         b, v, c, h, w = imgs.shape
-        stage_imgs = {
-            "stage1": torch.nn.functional.interpolate(imgs.view(b*v, c, h, w), scale_factor=0.25, mode='bilinear', align_corners=False).view(b, v, c, h // 4, w // 4), # (B, V, C, H/4, W/4)
-            "stage2": torch.nn.functional.interpolate(imgs.view(b*v, c, h, w), scale_factor=0.5, mode='bilinear', align_corners=False).view(b, v, c, h // 2, w // 2), # (B, V, C, H/2, W/2)
-            "stage3": imgs, # (B, V, C, H, W)
-        }
+
         alphas: torch.Tensor = context["alpha"] # (B, V, H, W)
         c2w_extrinsics : torch.Tensor = context["extrinsics"] # (B, V, 4, 4)
         normalized_intrinsics : torch.Tensor = context["intrinsics"] # (B, V, 3, 3), or get the origin size image by context["origin_intrinsics"]
         nears, fars = context["near"], context["far"] # (B, V)
-        b, v, c, h, w = imgs.shape
+        
         # check the shape of image to adapt to mvsnet and swin transformer (h and w can be devided by 32)
         assert h % 32 == 0 and w % 32 == 0, "The height and width of the image must be divisible by 32"
-        b, v, c, h, w = imgs.shape # update h and w
         
-        # intrinsics adapt to img size
-        intrinsics = normalized_intrinsics.clone()
-        intrinsics[..., 0, :] *= w
-        intrinsics[..., 1, :] *= h
+        stage_imgs = {}
+        stage_masks = {}
+        stage_intrinsics = {}
         
-        stage_intrinsics = {
-            "stage1": torch.stack([normalized_intrinsics[..., 0, :] * w / 4, normalized_intrinsics[..., 1, :] * h / 4, normalized_intrinsics[..., 2, :]], dim=-2), # (B, V, 3)
-            "stage2": torch.stack([normalized_intrinsics[..., 0, :] * w / 2, normalized_intrinsics[..., 1, :] * h / 2, normalized_intrinsics[..., 2, :]], dim=-2), # (B, V, 3)
-            "stage3": torch.stack([normalized_intrinsics[..., 0, :] * w, normalized_intrinsics[..., 1, :] * h, normalized_intrinsics[..., 2, :]], dim=-2), # (B, V, 3)
-        }
-        
-        masks = alphas > 0.9
-        stage_masks = {
-            "stage1": torch.nn.functional.interpolate(alphas.view(b*v, 1, h, w), scale_factor=0.25, mode='nearest').view(b, v, h // 4, w // 4) > 0.9,
-            "stage2": torch.nn.functional.interpolate(alphas.view(b*v, 1, h, w), scale_factor=0.5, mode='nearest').view(b, v, h // 2, w // 2) > 0.9, 
-            "stage3": alphas > 0.9, # (B, V, H, W)
-        }
+        # 对每个尺度进行处理
+        for i, scale in enumerate(self.cfg.unet_output_scales, start=1):
+            scale_key = f"stage{i}"
+            
+            # 图像缩放
+            if scale == 1:
+                stage_imgs[scale_key] = imgs
+            else:
+                scale_factor = 1.0 / scale
+                stage_imgs[scale_key] = torch.nn.functional.interpolate(
+                    imgs.view(b*v, c, h, w), 
+                    scale_factor=scale_factor, 
+                    mode='bilinear', 
+                    align_corners=False
+                ).view(b, v, c, h // scale, w // scale)
+            
+            # 内参调整
+            stage_intrinsics[scale_key] = torch.stack([
+                normalized_intrinsics[..., 0, :] * w / scale,
+                normalized_intrinsics[..., 1, :] * h / scale,
+                normalized_intrinsics[..., 2, :]  # 第三行保持不变
+            ], dim=-2)
+            
+            # 掩码处理
+            if scale == 1:
+                stage_masks[scale_key] = alphas > 0.9
+            else:
+                stage_masks[scale_key] = torch.nn.functional.interpolate(
+                    alphas.view(b*v, 1, h, w),
+                    scale_factor=scale_factor,
+                    mode='nearest'
+                ).view(b, v, h // scale, w // scale) > 0.9
+
         return stage_imgs, stage_masks, c2w_extrinsics, stage_intrinsics, nears, fars
 
     def forward(
@@ -284,27 +313,17 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     ) -> EncoderOutput:
         is_training = self.training
         stage_imgs, stage_masks, extrinsics, stage_intrinsics, nears, fars = self.preprocess(context)
-        imgs, intrinsics = stage_imgs["stage3"], stage_intrinsics["stage3"]
+        imgs, intrinsics = stage_imgs[self.stages[-1]], stage_intrinsics[self.stages[-1]] # origin size images and intrinsics
         b, v, c, h, w = imgs.shape
         while global_step >= self.voxel_size_begin_steps[self.current_idx]:
             self.current_idx += 1
-        ################################################### from mvsplat
+
         with ExecutionTimer("Feature Extraction", switch=self.timer_switch):
-            trans_features = self.backbone(
-                context["image"],
-                attn_splits=self.cfg.multiview_trans_attn_split,
-                return_cnn_features=False,
-                epipolar_kwargs=None,
-            )[0]
-        
-        
-        tar_extrinsics = context["target_extrinsics"]
-        assert tar_extrinsics.shape == (b, 1, 4, 4), "You must ensure the target view is UNIQUE while using the enhanced features"
-        _, _, cf, _, _ = trans_features.shape
-        stage_features = {}
-        stage_features["stage1"] = trans_features
-        stage_features["stage2"] = self.upsamplerx2(stage_features["stage1"].view(b*v, cf, h//4, w//4)).view(b, v, cf//2, h//2, w//2) # (B, V, C, H, W)
-        stage_features["stage3"] = self.upsamplerx4(stage_features["stage2"].view(b*v, cf//2, h//2, w//2)).view(b, v, cf//4, h, w) # (B, V, C, H, W)
+            features_list = self.feat_extractor.forward(imgs.view(b*v, c, h, w)) # (B*V, C, Hn, Wn)
+            stage_features = {}
+            for i in range(len(self.cfg.unet_output_scales)):
+                _, _, hn, wn = features_list[i].shape
+                stage_features[f"stage{i+1}"] = features_list[i].view(b, v, self.feature_channels, hn, wn) # (B, V, C, Hn, Wn)
         
         if is_training and self.use_vggt:
             with ExecutionTimer("VGGT Module", switch=self.timer_switch):
@@ -324,9 +343,6 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module.forward(
                 context, imgs, stage_masks, extrinsics, intrinsics, nears, fars, is_training, outer_features=stage_features if self.cfg.cas_mvsnet_use_out_features else None)
         
-        if self.do_enhance_feat:
-            with ExecutionTimer("Enhance Features", switch=self.timer_switch):
-                stage_features = self.enhance_features(stage_imgs, stage_features)
         
         ##########################################################
         with ExecutionTimer("Gaussian Adapter Module", switch=self.timer_switch):
@@ -343,7 +359,8 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         gaussians.others["cas_module_result"] = cas_module_result
         gaussians.others["nears"] = nears
         gaussians.others["fars"] = fars
-        # gaussians.others["depths"] = depths
+        gaussians.others["stages"] = self.stages
+        gaussians.others["scales"] = self.cfg.unet_output_scales
         return gaussians
 
     @property
@@ -354,6 +371,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
     def configure_optimizers(self, cfg):
         return [
             # {'params': self.vggt_module.parameters(), 'lr': cfg.lr}, # we don't train VGGT, so no need to set lr
+            {'params': self.feat_extractor.parameters(), 'lr': cfg.lr},
             {'params': self.cas_mvsnet_module.parameters(), 'lr': cfg.lr}, 
             {'params': self.backbone.parameters(), 'lr': cfg.lr}, 
             {'params': self.upsamplerx2.parameters(), 'lr': cfg.lr}, 

@@ -69,6 +69,7 @@ class CostvolumeSampler(nn.Module):
         far: torch.Tensor, # (V)
         batch_idx: int
     ):
+        assert False, "CostvolumeSampler is deprecated."
         vox, _, = gaussian_means.shape
         if vox == 0: return torch.zeros(vox, self.out_channels, device=gaussian_means.device)
         _, v, _, h, w = cas_module_result.registed_prob_pcd["stage3"].vertices.shape # (B, V, 4, H, W)
