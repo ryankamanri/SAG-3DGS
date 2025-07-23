@@ -27,6 +27,11 @@ class LossMse(Loss[LossMseCfg, LossMseCfgWrapper]):
         gaussians: EncoderOutput,
         global_step: int,
     ) -> Float[Tensor, ""]:
+        if gaussians.others.get("stages") is None:
+            # not multi-stage training
+            delta = prediction.color - batch["target"]["image"]
+            return (delta**2).mean()
+        
         gt = batch["target"]["image"]
         b, v, c, h, w = gt.shape
         loss = 0.
@@ -36,4 +41,4 @@ class LossMse(Loss[LossMseCfg, LossMseCfgWrapper]):
             stage_gt = F.interpolate(gt.view(b*v, c, h, w), scale_factor=prop, mode="bilinear", align_corners=False).view(b, v, c, int(h * prop), int(w * prop))
             delta = render - stage_gt
             loss += (delta**2).mean()
-        return loss / 3.0 # average over stages
+        return loss / len(gaussians.others["stages"])# average over stages

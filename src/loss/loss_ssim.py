@@ -80,4 +80,4 @@ class LossSSIM(Loss[LossSSIMCfg, LossSSIMCfgWrapper]):
             render = gaussians.others["stage_renders"][stage].color
             stage_gt = F.interpolate(gt.view(b*v, c, h, w), scale_factor=prop, mode="bilinear", align_corners=False).view(b, v, c, int(h * prop), int(w * prop))
             loss += (1. - ssim(stage_gt.squeeze(1), render.squeeze(1)))
-        return loss / 3.0 # average over stages
+        return loss / len(gaussians.others["stages"]) # average over stages

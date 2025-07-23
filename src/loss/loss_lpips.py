@@ -44,6 +44,15 @@ class LossLpips(Loss[LossLpipsCfg, LossLpipsCfgWrapper]):
         # Before the specified step, don't apply the loss.
         if global_step < self.cfg.apply_after_step:
             return torch.tensor(0, dtype=torch.float32, device=image.device)
+        
+        if gaussians.others.get("stages") is None:
+            # not multi-stage training
+            loss = self.lpips.forward(
+                rearrange(prediction.color, "b v c h w -> (b v) c h w"),
+                rearrange(image, "b v c h w -> (b v) c h w"),
+                normalize=True,
+            )
+            return loss.mean()
 
         gt = batch["target"]["image"]
         b, v, c, h, w = gt.shape
@@ -57,4 +66,4 @@ class LossLpips(Loss[LossLpipsCfg, LossLpipsCfgWrapper]):
                 rearrange(stage_gt, "b v c h w -> (b v) c h w"),
                 normalize=True,
             ).mean()
-        return loss / 3.0 # average over stages
+        return loss / len(gaussians.others["stages"]) # average over stages
