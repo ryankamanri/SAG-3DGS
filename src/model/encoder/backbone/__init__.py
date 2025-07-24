@@ -1,1 +1,2 @@
 from .backbone_multiview import BackboneMultiview
+from .backbone_multiview_incremental import BackboneMultiviewIncremental
