@@ -44,7 +44,7 @@ class EncoderCascadeCfg:
     cas_mvsnet_load_to_backbone: bool
     cas_mvsnet_ndepth: list[int]
     cas_mvsnet_cr_base_channels: list[int]
-    cas_mvsnet_base_channel: int
+    cas_mvsnet_in_channels: list[int]
     cas_mvsnet_geo_max_dist: float
     cas_mvsnet_geo_max_depth_diff: float
     cas_mvsnet_use_out_features: bool
@@ -99,7 +99,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
             cas_mvsnet_ckpt_path=cfg.cas_mvsnet_ckpt_path, 
             ndepths=cfg.cas_mvsnet_ndepth, 
             cr_base_chs=cfg.cas_mvsnet_cr_base_channels,
-            base_channel=cfg.cas_mvsnet_base_channel,
+            in_channels=cfg.cas_mvsnet_in_channels,
             geo_max_dist=cfg.cas_mvsnet_geo_max_dist, 
             geo_max_depth_diff=cfg.cas_mvsnet_geo_max_depth_diff, 
             use_backbone=cfg.cas_mvsnet_use_backbone, 
@@ -206,7 +206,7 @@ class EncoderCascade(Encoder[EncoderCascadeCfg]):
         
         self.costvolume_sampler = CostvolumeSampler(
             max_voxels_foreach_processing=cfg.max_voxels_foreach_processing,
-            costvolume_feature_channels=(cfg.feature_channels if cfg.cas_mvsnet_use_out_features else cfg.cas_mvsnet_base_channel) * 4 * 2,  # 8 * 4 * 2
+            costvolume_feature_channels=(cfg.feature_channels if cfg.cas_mvsnet_use_out_features else cfg.cas_mvsnet_in_channels[0]) * 4 * 2,  # 8 * 4 * 2
             out_channels=cfg.feature_channels,
         )
         

@@ -73,18 +73,23 @@ class BackboneMultiviewIncremental(torch.nn.Module):
             no_cross_attn=no_cross_attn,
         ) for i in range(self.num_output_scale - 1, -1, -1)])
         
+        # I hope every stage features have the same channel(the maximum).
         self.upsampler_layers = nn.ModuleList([
             nn.Sequential(
-                nn.ConvTranspose2d(self.feature_dims[i+1], self.feature_dims[i], kernel_size=3, stride=2, padding=1, output_padding=1),
+                nn.ConvTranspose2d(self.feature_dims[-1], self.feature_dims[-1], kernel_size=3, stride=2, padding=1, output_padding=1),
                 nn.ReLU(inplace=True),
             ) for i in range(self.num_output_scale - 1, -1, -1)])
         
         self.unet_decoder_layers = nn.ModuleList([
             nn.Sequential(
-                nn.Conv2d(self.feature_dims[i] * 2, self.feature_dims[i], kernel_size=3, stride=1, padding=1),
+                nn.Conv2d(self.feature_dims[-1] + self.feature_dims[i], self.feature_dims[-1], kernel_size=3, stride=1, padding=1),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(self.feature_dims[i], self.feature_dims[i], kernel_size=3, stride=1, padding=1),
+                nn.Conv2d(self.feature_dims[-1], self.feature_dims[-1], kernel_size=3, stride=1, padding=1),
             ) for i in range(self.num_output_scale - 1, -1, -1)])
+        
+    @property
+    def get_feature_dims(self):
+        return [self.feature_dims[-1] for _ in range(self.num_output_scale)] # from course to fine
 
     def normalize_images(self, images):
         '''Normalize image to match the pretrained GMFlow backbone.
@@ -159,7 +164,7 @@ class BackboneMultiviewIncremental(torch.nn.Module):
             )
             
             # Update the current stage feature
-            last_stage_feat = fused_feat.view(b, v, c, h, w)
-            out_lists.append(fused_feat.view(b, v, c, h, w))  # [B, V, C, H, W]
+            last_stage_feat = fused_feat.view(b, v, self.feature_dims[-1], h, w)
+            out_lists.append(last_stage_feat)  # [B, V, C, H, W]
 
         return out_lists, [torch.stack(stage_feature_list[i+1], dim=1) for i in range(self.num_output_scale)]  # [B, V, C, H, W] for each scale
