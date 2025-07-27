@@ -19,6 +19,7 @@ from ..types import EncoderOutput
 from .backbone import (
     BackboneMultiviewIncremental,
 )
+from .backbone.depth_fuse_net import DepthFuseNet
 from .common.gaussian_adapter import GaussianAdapter, GaussianAdapterCfg
 from .encoder import Encoder
 from .costvolume.depth_predictor_multiview import DepthPredictorMultiView
@@ -151,6 +152,11 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
             use_backbone=cfg.cas_mvsnet_use_backbone, 
             load_to_backbone=cfg.cas_mvsnet_load_to_backbone
             )
+        
+        self.depth_fuse_net = DepthFuseNet(
+            feature_dims=self.backbone.get_feature_dims,
+            fusion_mode="weighted_sum", 
+        )
 
     def map_pdf_to_opacity(
         self,
@@ -282,14 +288,19 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
         # densities (1, 3, 65536, 1, 1)
         # raw_gaussians (1, 3, 65536, 84)
         
+        stage_depths = [[cas_module_result.ref_view_result_list[vi].backbone[stage]["depth"] for vi in range(v)] for stage in self.stages] # [[(B, H, W) * V] * S]
+        stage_depths = [torch.stack(depths, dim=1) for depths in stage_depths] # [(B, V, H, W) * S]
+        
+        # fuse with depth
+        trans_features = self.depth_fuse_net.forward(trans_features, stage_depths, intrinsics, extrinsics.inverse())
+        
+        depths = stage_depths[-1].view(b, v, h*w, 1, 1) # (B, V, H, W) -> (B, V, H*W, 1, 1)
+        
         gaussian_channels = (self.gaussian_adapter.d_in + 2)
         raw_gaussians: torch.Tensor = trans_features[len(self.cfg.unet_output_scales) - 1][:, :, :gaussian_channels, :, :]
         raw_gaussians = raw_gaussians.permute(0, 1, 3, 4, 2).view(b, v, h*w, gaussian_channels)
         
-        depths = [cas_module_result.ref_view_result_list[i].backbone[self.stages[-1]]["depth"] for i in range(v)] # (B, H, W) * V
-        depths = torch.stack(depths, dim=1).view(b, v, h*w, 1, 1) # (B, V, H, W) -> (B, V, H*W, 1, 1)
-        
-        densities: torch.Tensor = trans_features[len(self.cfg.unet_output_scales) - 1][:, :, gaussian_channels:gaussian_channels+1, :, :]
+        densities: torch.Tensor = torch.sigmoid(trans_features[len(self.cfg.unet_output_scales) - 1][:, :, gaussian_channels:gaussian_channels+1, :, :])
         densities = densities.permute(0, 1, 3, 4, 2).view(b, v, h*w, 1, 1) # (B, V, H*W, 1, 1)
 
         # Convert the features and depths into Gaussians.
