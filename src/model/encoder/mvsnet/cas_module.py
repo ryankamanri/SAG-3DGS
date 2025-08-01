@@ -594,7 +594,7 @@ def cas_mvsnet_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
 
 
 
-def get_depth_range_samples(cur_depth, cur_period, ndepth, device, shape):
+def get_depth_range_samples(cur_depth, cur_period, ndepth, device, shape, expansion_factor=4.0):
     #shape: (B, H, W)
     #cur_depth: (B, H, W) or (B, D)
     #return depth_range_samples: (B, D, H, W)
@@ -611,8 +611,8 @@ def get_depth_range_samples(cur_depth, cur_period, ndepth, device, shape):
         near_far = torch.cat((cur_depth_min, cur_depth_max), dim=1).view(b, 2, 1, 1).repeat(1, 1, shape[1], shape[2]) # (B, 2, H, W)
     else:
         b, h, w = cur_depth.shape
-        cur_depth_min = (cur_depth - cur_period / 2).unsqueeze(1) # (B, 1, H, W)
-        cur_depth_max = (cur_depth + cur_period / 2).unsqueeze(1)
+        cur_depth_min = (cur_depth - cur_period * expansion_factor / 2).unsqueeze(1) # (B, 1, H, W)
+        cur_depth_max = (cur_depth + cur_period * expansion_factor / 2).unsqueeze(1)
         cur_period *= 1.0 / (ndepth - 1) # make depth_range_samples between near and far
         
         depth_range_samples = (cur_depth_min + (cur_depth_max - cur_depth_min) * (cur_period * torch.arange(0, ndepth, device=device).reshape(1, -1, 1, 1).repeat(b, 1, h, w)))  #(B, D, H, W)

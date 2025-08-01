@@ -1,7 +1,7 @@
 depth:
   weight: 1.0
   apply_before_step: 300000
-  stage1_weight: 0.25
-  stage2_weight: 0.25
-  stage3_weight: 0.25
-  stage4_weight: 0.25
+  stage1_weight: 0.2
+  stage2_weight: 0.3
+  stage3_weight: 0.4
+  stage4_weight: 0.0

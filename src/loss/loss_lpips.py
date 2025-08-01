@@ -45,7 +45,7 @@ class LossLpips(Loss[LossLpipsCfg, LossLpipsCfgWrapper]):
         if global_step < self.cfg.apply_after_step:
             return torch.tensor(0, dtype=torch.float32, device=image.device)
         
-        if gaussians.others.get("stages") is None:
+        if True:
             # not multi-stage training
             loss = self.lpips.forward(
                 rearrange(prediction.color, "b v c h w -> (b v) c h w"),

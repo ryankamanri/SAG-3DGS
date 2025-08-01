@@ -4,7 +4,7 @@ defaults:
   - override /dataset: [re10k]
   - override /dataset/view_sampler: [interval]
   - override /model/encoder: incremental
-  - override /loss: [mse, lpips]
+  - override /loss: [mse, lpips, depth]
 
 wandb:
   name: re10k

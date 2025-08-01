@@ -27,7 +27,7 @@ class LossMse(Loss[LossMseCfg, LossMseCfgWrapper]):
         gaussians: EncoderOutput,
         global_step: int,
     ) -> Float[Tensor, ""]:
-        if gaussians.others.get("stages") is None:
+        if True:
             # not multi-stage training
             delta = prediction.color - batch["target"]["image"]
             return (delta**2).mean()

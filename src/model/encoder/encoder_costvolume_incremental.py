@@ -9,6 +9,8 @@ from collections import OrderedDict
 
 from ...misc.execution_timer import ExecutionTimer
 
+from .mvsnet.vggt_module import VGGTModule
+
 from .mvsnet.cas_mvsnet_module import CasMVSNetModule, CasMVSNetModuleResult
 
 from ...dataset.shims.bounds_shim import apply_bounds_shim
@@ -69,6 +71,7 @@ class EncoderCostVolumeIncrementalCfg:
     cas_mvsnet_load_to_backbone: bool
     cas_mvsnet_ndepth: list[int]
     cas_mvsnet_cr_base_channels: list[int]
+    cas_mvsnet_in_channels: list[int]
     cas_mvsnet_geo_max_dist: float
     cas_mvsnet_geo_max_depth_diff: float
     cas_mvsnet_use_out_features: bool
@@ -146,7 +149,7 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
             cas_mvsnet_ckpt_path=cfg.cas_mvsnet_ckpt_path, 
             ndepths=cfg.cas_mvsnet_ndepth, 
             cr_base_chs=cfg.cas_mvsnet_cr_base_channels,
-            in_channels=self.backbone.get_feature_dims,
+            in_channels=cfg.cas_mvsnet_in_channels,
             geo_max_dist=cfg.cas_mvsnet_geo_max_dist, 
             geo_max_depth_diff=cfg.cas_mvsnet_geo_max_depth_diff, 
             use_backbone=cfg.cas_mvsnet_use_backbone, 
@@ -157,6 +160,9 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
             feature_dims=self.backbone.get_feature_dims,
             fusion_mode="weighted_sum", 
         )
+            
+        self.use_vggt = True
+        self.vggt_module = VGGTModule() if self.use_vggt else nn.Module()
 
     def map_pdf_to_opacity(
         self,
@@ -266,6 +272,19 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
         cas_module_result: CasMVSNetModuleResult = self.cas_mvsnet_module.forward(
             context, imgs, stage_masks, extrinsics, intrinsics, nears, fars, is_training, outer_features=stage_features if self.cfg.cas_mvsnet_use_out_features else None)
 
+        
+        if is_training and self.use_vggt:
+            depths, _, _ = self.vggt_module.forward(imgs, extrinsics)
+            context["depth"] = depths
+            context["depth_mask"][torch.logical_or(depths < nears.view(b, v, 1, 1), depths > fars.view(b, v, 1, 1))] = 0.0 # remove those too big or small values.
+            # Important note: `nears`, `fars` here covered those loaded from DataLoader, 
+            # which will decide the candidate depths in the CasMVSNetModule and voxel range in VoxelizedGaussianAdapterModule.
+            # and context["depth"], context["depth_mask"], which will be used in the loss function.
+            # you can overwrite context["near"], context["far"] to ensure exact camera rendering (though it wonld not happen during training).
+        else:
+            context["depth"] = torch.ones((b, v, h, w), device=imgs.device) * fars.view(b, v, 1, 1)  # dummy depth map
+            context["depth_mask"] = torch.ones((b, v, h, w), device=imgs.device)  # dummy depth mask
+        
         # # Sample depths from the resulting features.
         # in_feats = trans_features[0]
         # extra_info = {}
@@ -343,7 +362,7 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
         # Optionally apply a per-pixel opacity.
         opacity_multiplier = 1
 
-        return EncoderOutput(
+        res = EncoderOutput(
             rearrange(
                 gaussians.means,
                 "b v r srf spp xyz -> b (v r srf spp) xyz",
@@ -365,6 +384,14 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
                 "b v r srf spp -> b (v r srf spp)",
             ),
         )
+                
+        res.others["cas_module_result"] = cas_module_result
+        res.others["nears"] = nears
+        res.others["fars"] = fars
+        res.others["stages"] = self.stages
+        res.others["scales"] = self.cfg.unet_output_scales
+        
+        return res
 
     def get_data_shim(self) -> DataShim:
         def data_shim(batch: BatchedExample) -> BatchedExample:

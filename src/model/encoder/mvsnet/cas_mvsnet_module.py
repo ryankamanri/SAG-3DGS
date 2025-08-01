@@ -152,12 +152,12 @@ class CasMVSNetModule(nn.Module):
         # for every reference image, the mvsnet will generate a depth map and a photometric confidence map
         for vi in range(v):
             pretrained_outputs = {}
-            if is_training:
-                # pretrained_outputs = pretrained_outputs_list[vi]
-                for stage, idx in zip(stages, range(len(stages))):
-                    prop = 1.0 / self.feat_scales[idx]
-                    pretrained_depths_est[stage].append(F.interpolate(context["depth"][:, vi].unsqueeze(1), scale_factor=prop, mode="bilinear").squeeze(1))
-                    pretrained_photometric_confidences[stage].append(F.interpolate(context["depth_mask"][:, vi].unsqueeze(1), scale_factor=prop, mode="bilinear").squeeze(1))
+            # if is_training:
+            #     # pretrained_outputs = pretrained_outputs_list[vi]
+            #     for stage, idx in zip(stages, range(len(stages))):
+            #         prop = 1.0 / self.feat_scales[idx]
+            #         pretrained_depths_est[stage].append(F.interpolate(context["depth"][:, vi].unsqueeze(1), scale_factor=prop, mode="bilinear").squeeze(1))
+            #         pretrained_photometric_confidences[stage].append(F.interpolate(context["depth_mask"][:, vi].unsqueeze(1), scale_factor=prop, mode="bilinear").squeeze(1))
                 
             backbone_outputs = backbone_outputs_list[vi]
             for stage, idx in zip(stages, range(len(stages))):
@@ -167,13 +167,13 @@ class CasMVSNetModule(nn.Module):
                 
             result.ref_view_result_list.append(ReferenceViewResult(imgs[:, vi], pretrained_outputs, backbone_outputs))
         
-        if is_training:
-            with torch.no_grad():            
-                for stage, idx in zip(stages, range(len(stages))):
-                    result.registed_pcd[stage] = ViewBasedPointCloudResult(
-                        vertices=generate_depth_map_based_point_cloud(pretrained_depths_est[stage], extrinsics, proj_mat[stage][..., 1, :3, :3]), 
-                        vertices_confidence=torch.stack(pretrained_photometric_confidences[stage], dim=1),
-                        vertices_geometry_mask=torch.stack(pretrained_geo_masks[stage], dim=1) if len(pretrained_geo_masks[stage]) > 0 else torch.tensor(0))
+        # if is_training:
+        #     with torch.no_grad():            
+        #         for stage, idx in zip(stages, range(len(stages))):
+        #             result.registed_pcd[stage] = ViewBasedPointCloudResult(
+        #                 vertices=generate_depth_map_based_point_cloud(pretrained_depths_est[stage], extrinsics, proj_mat[stage][..., 1, :3, :3]), 
+        #                 vertices_confidence=torch.stack(pretrained_photometric_confidences[stage], dim=1),
+        #                 vertices_geometry_mask=torch.stack(pretrained_geo_masks[stage], dim=1) if len(pretrained_geo_masks[stage]) > 0 else torch.tensor(0))
             
         
         if False:
