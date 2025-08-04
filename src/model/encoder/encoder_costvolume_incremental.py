@@ -1,11 +1,13 @@
 from dataclasses import dataclass
-from typing import Literal, Optional, List
+from typing import Callable, Literal, Optional, List
 
 import torch
 from einops import rearrange
 from jaxtyping import Float
 from torch import Tensor, nn
 from collections import OrderedDict
+
+from ..decoder.decoder import DecoderOutput
 
 from ...misc.execution_timer import ExecutionTimer
 
@@ -81,6 +83,7 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
     backbone: BackboneMultiviewIncremental
     depth_predictor:  DepthPredictorMultiView
     gaussian_adapter: GaussianAdapter
+    render_callback: Optional[Callable[[EncoderOutput, int], DecoderOutput]] = None
 
     def __init__(self, cfg: EncoderCostVolumeIncrementalCfg) -> None:
         super().__init__(cfg)
@@ -313,83 +316,83 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
         # fuse with depth
         trans_features = self.depth_fuse_net.forward(trans_features, stage_depths, intrinsics, extrinsics.inverse())
         
-        depths = stage_depths[-1].view(b, v, h*w, 1, 1) # (B, V, H, W) -> (B, V, H*W, 1, 1)
+        # multi-stage render
+        stage_renders: dict = {}
+        for idx, stage in enumerate(self.stages):
+            # if we are not on training, we only reander the last stage.
+            if not self.training and idx != len(self.stages) - 1: continue
+            
+            _, _, hi, wi = stage_depths[idx].shape
+            depths = stage_depths[idx].view(b, v, hi*wi, 1, 1) # (B, V, H, W) -> (B, V, H*W, 1, 1)
         
-        gaussian_channels = (self.gaussian_adapter.d_in + 2)
-        raw_gaussians: torch.Tensor = trans_features[len(self.cfg.unet_output_scales) - 1][:, :, :gaussian_channels, :, :]
-        raw_gaussians = raw_gaussians.permute(0, 1, 3, 4, 2).view(b, v, h*w, gaussian_channels)
+            gaussian_channels = (self.gaussian_adapter.d_in + 2)
+            raw_gaussians: torch.Tensor = trans_features[idx][:, :, :gaussian_channels, :, :]
+            raw_gaussians = raw_gaussians.permute(0, 1, 3, 4, 2).view(b, v, hi*wi, gaussian_channels)
         
-        densities: torch.Tensor = torch.sigmoid(trans_features[len(self.cfg.unet_output_scales) - 1][:, :, gaussian_channels:gaussian_channels+1, :, :])
-        densities = densities.permute(0, 1, 3, 4, 2).view(b, v, h*w, 1, 1) # (B, V, H*W, 1, 1)
+            densities: torch.Tensor = torch.sigmoid(trans_features[idx][:, :, gaussian_channels:gaussian_channels+1, :, :])
+            densities = densities.permute(0, 1, 3, 4, 2).view(b, v, hi*wi, 1, 1) # (B, V, H*W, 1, 1)
 
-        # Convert the features and depths into Gaussians.
-        xy_ray, _ = sample_image_grid((h, w), device)
-        xy_ray = rearrange(xy_ray, "h w xy -> (h w) () xy")
-        gaussians = rearrange(
-            raw_gaussians,
-            "... (srf c) -> ... srf c",
-            srf=self.cfg.num_surfaces,
-        )
-        offset_xy = gaussians[..., :2].sigmoid()
-        pixel_size = 1 / torch.tensor((w, h), dtype=torch.float32, device=device)
-        xy_ray = xy_ray + (offset_xy - 0.5) * pixel_size
-        gpp = self.cfg.gaussians_per_pixel
-        gaussians = self.gaussian_adapter.forward(
-            rearrange(context["extrinsics"], "b v i j -> b v () () () i j"),
-            rearrange(context["intrinsics"], "b v i j -> b v () () () i j"),
-            rearrange(xy_ray, "b v r srf xy -> b v r srf () xy"),
-            depths,
-            self.map_pdf_to_opacity(densities, global_step) / gpp,
-            rearrange(
-                gaussians[..., 2:],
-                "b v r srf c -> b v r srf () c",
-            ),
-            (h, w),
-        )
-
-        # Dump visualizations if needed.
-        if visualization_dump is not None:
-            visualization_dump["depth"] = rearrange(
-                depths, "b v (h w) srf s -> b v h w srf s", h=h, w=w
+            # Convert the features and depths into Gaussians.
+            xy_ray, _ = sample_image_grid((hi, wi), device)
+            xy_ray = rearrange(xy_ray, "h w xy -> (h w) () xy")
+            gaussians = rearrange(
+                raw_gaussians,
+                "... (srf c) -> ... srf c",
+                srf=self.cfg.num_surfaces,
             )
-            visualization_dump["scales"] = rearrange(
-                gaussians.scales, "b v r srf spp xyz -> b (v r srf spp) xyz"
-            )
-            visualization_dump["rotations"] = rearrange(
-                gaussians.rotations, "b v r srf spp xyzw -> b (v r srf spp) xyzw"
+            offset_xy = gaussians[..., :2].sigmoid()
+            pixel_size = 1 / torch.tensor((wi, hi), dtype=torch.float32, device=device)
+            xy_ray = xy_ray + (offset_xy - 0.5) * pixel_size
+            gpp = self.cfg.gaussians_per_pixel
+            gaussians = self.gaussian_adapter.forward(
+                rearrange(context["extrinsics"], "b v i j -> b v () () () i j"),
+                rearrange(context["intrinsics"], "b v i j -> b v () () () i j"),
+                rearrange(xy_ray, "b v r srf xy -> b v r srf () xy"),
+                depths,
+                self.map_pdf_to_opacity(densities, global_step) / gpp,
+                rearrange(
+                    gaussians[..., 2:],
+                    "b v r srf c -> b v r srf () c",
+                ),
+                (hi, wi),
             )
 
-        # Optionally apply a per-pixel opacity.
-        opacity_multiplier = 1
 
-        res = EncoderOutput(
-            rearrange(
-                gaussians.means,
-                "b v r srf spp xyz -> b (v r srf spp) xyz",
-            ),
-            rearrange(
-                gaussians.scales, 
-                "b v r srf spp xyz -> b (v r srf spp) xyz"
-            ), 
-            rearrange(
-                gaussians.rotations, 
-                "b v r srf spp xyzw -> b (v r srf spp) xyzw"
-            ), 
-            rearrange(
-                gaussians.harmonics,
-                "b v r srf spp c d_sh -> b (v r srf spp) c d_sh",
-            ),
-            rearrange(
-                opacity_multiplier * gaussians.opacities,
-                "b v r srf spp -> b (v r srf spp)",
-            ),
-        )
+            # Optionally apply a per-pixel opacity.
+            opacity_multiplier = 1
+
+            res = EncoderOutput(
+                rearrange(
+                    gaussians.means,
+                    "b v r srf spp xyz -> b (v r srf spp) xyz",
+                ),
+                rearrange(
+                    gaussians.scales, 
+                    "b v r srf spp xyz -> b (v r srf spp) xyz"
+                ), 
+                rearrange(
+                    gaussians.rotations, 
+                    "b v r srf spp xyzw -> b (v r srf spp) xyzw"
+                ), 
+                rearrange(
+                    gaussians.harmonics,
+                    "b v r srf spp c d_sh -> b (v r srf spp) c d_sh",
+                ),
+                rearrange(
+                    opacity_multiplier * gaussians.opacities,
+                    "b v r srf spp -> b (v r srf spp)",
+                ),
+            )
+            
+            if self.training:
+                stage_renders[stage] = self.render_callback(res, self.cfg.unet_output_scales[idx])
                 
         res.others["cas_module_result"] = cas_module_result
         res.others["nears"] = nears
         res.others["fars"] = fars
         res.others["stages"] = self.stages
         res.others["scales"] = self.cfg.unet_output_scales
+        res.others["stage_renders"] = stage_renders
         
         return res
 

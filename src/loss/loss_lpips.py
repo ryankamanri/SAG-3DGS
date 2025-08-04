@@ -16,6 +16,7 @@ from .loss import Loss, LossCfg
 @dataclass
 class LossLpipsCfg(LossCfg):
     apply_after_step: int
+    stage_weights: list[float]
 
 
 @dataclass
@@ -45,7 +46,7 @@ class LossLpips(Loss[LossLpipsCfg, LossLpipsCfgWrapper]):
         if global_step < self.cfg.apply_after_step:
             return torch.tensor(0, dtype=torch.float32, device=image.device)
         
-        if True:
+        if gaussians.others.get("stages") is None:
             # not multi-stage training
             loss = self.lpips.forward(
                 rearrange(prediction.color, "b v c h w -> (b v) c h w"),
@@ -65,5 +66,5 @@ class LossLpips(Loss[LossLpipsCfg, LossLpipsCfgWrapper]):
                 rearrange(render, "b v c h w -> (b v) c h w"),
                 rearrange(stage_gt, "b v c h w -> (b v) c h w"),
                 normalize=True,
-            ).mean()
-        return loss / len(gaussians.others["stages"]) # average over stages
+            ).mean() * self.cfg.stage_weights[idx]
+        return loss

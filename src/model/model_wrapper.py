@@ -116,7 +116,7 @@ class ModelWrapper(LightningModule):
         _, _, _, h, w = batch["target"]["image"].shape
         
         # if use our CascadeEncoder, we need to set render_callback for spliting voxels. every step we need to update it because the variable in closure is different.
-        if type(self.encoder) == EncoderCascade:
+        if type(self.encoder) in (EncoderCascade, EncoderCostVolumeIncremental):
             def render_callback(gaussians: EncoderOutput, scale: int) -> DecoderOutput:
                 prop = 1.0 / scale
                 output = self.decoder.forward(
@@ -137,7 +137,7 @@ class ModelWrapper(LightningModule):
             batch["context"], self.global_step, False, scene_names=batch["scene"]
         )
 
-        if type(self.encoder) == EncoderCascade:
+        if type(self.encoder) in (EncoderCascade, EncoderCostVolumeIncremental):
             output = gaussians.others["stage_renders"][gaussians.others["stages"][-1]]
         else:
             output = self.decoder.forward(
