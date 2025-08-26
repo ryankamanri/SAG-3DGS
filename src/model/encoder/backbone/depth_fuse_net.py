@@ -123,8 +123,17 @@ class DepthFuseNet(nn.Module):
         self.num_scales = len(feature_dims)
         self.fusion_mode = fusion_mode
         
+        # 深度/焦距特征编码器
+        self.depth_intr_encoder = nn.Sequential(
+            nn.Conv2d(2, 32, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, 1),
+            nn.ReLU(inplace=True)
+        )
+        
         # 创建多尺度融合模块（从低分辨率到高分辨率）
         self.fusion_blocks = nn.ModuleList()
+        self.embeddings = nn.ModuleList()
         for i, dim in enumerate(feature_dims):  # i=0: 最低分辨率
             self.fusion_blocks.append(
                 MultiScaleFusionBlock(
@@ -133,7 +142,17 @@ class DepthFuseNet(nn.Module):
                     scale_level=i  # 0=最低分辨率
                 )
             )
+            self.embeddings.append(
+                nn.Sequential(
+                    nn.Conv2d(dim + 64, dim, 1),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(dim, dim, 1),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(dim, dim, 1),
+                )
+            )
         
+            
 
     def forward(self, features_pyramid, depths_pyramid, intrinsics, extrinsics):
         """
@@ -178,6 +197,29 @@ class DepthFuseNet(nn.Module):
             # 存储当前尺度结果
             fused_pyramid.append(fused)
             prev_fused = fused  # 为下一尺度准备
+            
+        for scale_idx in range(self.num_scales):
+            # 深度/焦距信息嵌入
+            fused = fused_pyramid[scale_idx]
+            depths = depths_pyramid[scale_idx]
+            intrinsics_inv_scaled = intrinsics_pyramid[scale_idx].inverse()
+            b, v, hi, wi = depths.shape
+            
+            depth_intr_embedding = self.depth_intr_encoder(
+                torch.cat([
+                    depths.view(b*v, 1, hi, wi), 
+                    (intrinsics_inv_scaled[:, :, 0, 0] + intrinsics_inv_scaled[:, :, 1, 1]).view(b*v, 1, 1, 1).expand(b*v, 1, hi, wi)
+                ], dim=1)
+            ).view(b, v, -1, hi, wi)
+            
+            fused_pyramid[scale_idx] = self.embeddings[scale_idx](
+                torch.cat([
+                    fused, 
+                    depth_intr_embedding,
+                ], dim=2).view(-1, fused.shape[2] + 64, fused.shape[3], fused.shape[4])
+            ).view(*fused.shape)
+            
+            pass
         
         return fused_pyramid
 
