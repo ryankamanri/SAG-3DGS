@@ -179,7 +179,8 @@ class VGGTModule():
         target_size = (518, 518)
         vggt_imgs = adapt_size(target_size, imgs, pad_value=1.0)
         with torch.inference_mode(mode=self.inference_mode):
-            predictions = self.vggt(vggt_imgs)
+            with torch.amp.autocast("cuda", enabled=True, dtype=torch.bfloat16):
+                predictions = self.vggt(vggt_imgs)
             vggt_extrinsics_3x4, _ = pose_encoding_to_extri_intri(predictions["pose_enc"], build_intrinsics=False)
             vggt_extrinsics = torch.eye(4, device=imgs.device).unsqueeze(0).unsqueeze(0).repeat(b, v, 1, 1)
             vggt_extrinsics[:, :, :3, :4] = vggt_extrinsics_3x4

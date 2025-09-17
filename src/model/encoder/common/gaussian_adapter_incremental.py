@@ -4,6 +4,7 @@ import torch
 from einops import einsum, rearrange
 from jaxtyping import Float
 from torch import Tensor, nn
+import torch.nn.functional as F
 
 from ....geometry.projection import get_world_rays
 from ....misc.sh_rotation import rotate_sh
@@ -80,9 +81,13 @@ class GaussianAdapter(nn.Module):
         )
 
         # Scale 特征映射到有效范围
-        scale_min = self.cfg.gaussian_scale_min
-        scale_max = self.cfg.gaussian_scale_max
-        scales = scale_min + (scale_max - scale_min) * scales.sigmoid()
+        # scale_min = self.cfg.gaussian_scale_min
+        # scale_max = self.cfg.gaussian_scale_max
+        # scales = scale_min + (scale_max - scale_min) * scales.sigmoid()
+        
+        # refer AnySplat
+        scales = 0.001 * F.softplus(scales)
+        scales = scales.clamp_max(0.3)
 
         # 归一化四元数
         rotations = rotations / (rotations.norm(dim=-1, keepdim=True) + eps)
@@ -95,7 +100,7 @@ class GaussianAdapter(nn.Module):
         covariances = build_covariance(scales, rotations)
 
         # ✅ 修正后的 means
-        final_means = means + mean_offset
+        final_means = means + mean_offset * 0.001
         
         # compute the opacities
         densities: torch.Tensor = torch.sigmoid(densities)

@@ -40,7 +40,7 @@ class BackboneMultiviewIncremental(torch.nn.Module):
     def __init__(
         self,
         feature_channels=128,
-        num_transformer_layers=4,
+        num_transformer_layers=6,
         ffn_dim_expansion=4,
         no_self_attn=False,
         no_cross_attn=False,
@@ -146,9 +146,10 @@ class BackboneMultiviewIncremental(torch.nn.Module):
             cur_stage_feat = feature_add_position_list(
                 cur_stage_feat, attn_splits, self.feature_dims_inverse[i + 1])
 
-            # Transformer
-            cur_stage_feat = self.transformers[i](
-                cur_stage_feat, attn_num_splits=attn_splits * 2 ** i)
+            # Transformer, now only for the deepest feature map.
+            if i == 0:
+                cur_stage_feat = self.transformers[i](
+                    cur_stage_feat, attn_num_splits=attn_splits * 2 ** i)
 
             v = len(cur_stage_feat)
             b, c, h, w = cur_stage_feat[0].shape

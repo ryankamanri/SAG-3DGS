@@ -263,10 +263,10 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
             epipolar_kwargs=epipolar_kwargs,
         )
         
-        stage_features = {}
+        stage_features = {} # for depth prediction
         for i in range(len(self.cfg.unet_output_scales)):
             _, _, c, hn, wn = trans_features[i].shape
-            stage_features[f"stage{i+1}"] = trans_features[i].view(b, v, c, hn, wn) # (B, V, C, Hn, Wn)
+            stage_features[f"stage{i+1}"] = trans_features[i].view(b, v, c, hn, wn)[:, :, :self.cfg.cas_mvsnet_in_channels[i], :, :] # (B, V, C, Hn, Wn)
         
         stage_imgs, stage_masks, extrinsics, stage_intrinsics, nears, fars = self.preprocess(context)
         imgs, intrinsics = stage_imgs[self.stages[-1]], stage_intrinsics[self.stages[-1]] # origin size images and intrinsics

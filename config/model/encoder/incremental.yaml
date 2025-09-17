@@ -51,8 +51,8 @@ cas_mvsnet_use_backbone: true
 cas_mvsnet_load_to_backbone: false
 cas_mvsnet_ndepth: [64, 32, 16]
 cas_mvsnet_cr_base_channels: [32, 16, 8]
-cas_mvsnet_base_channel: 32
+cas_mvsnet_base_channel: 8
 cas_mvsnet_geo_max_dist: 0.01
 cas_mvsnet_geo_max_depth_diff: 0.01
 cas_mvsnet_use_out_features: true
-cas_mvsnet_in_channels: [96, 96, 96]
+cas_mvsnet_in_channels: [32, 16, 8]

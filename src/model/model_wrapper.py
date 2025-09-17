@@ -44,6 +44,7 @@ from ..visualization.validation_in_3d import render_cameras, render_projections
 from .decoder.decoder import Decoder, DecoderOutput, DepthRenderingMode
 from .encoder import Encoder
 from .encoder.encoder_cascade import EncoderCascade
+from .encoder.encoder_costvolume_incremental import EncoderCostVolumeIncremental
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
 from .types import EncoderOutput, TrainCfg, TestCfg, OptimizerCfg, FineTuneGaussianWrapper
 from ..utils import l1_loss, ssim as ssim_fn
