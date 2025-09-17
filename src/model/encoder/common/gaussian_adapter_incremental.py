@@ -71,6 +71,7 @@ class GaussianAdapter(nn.Module):
         self,
         raw_gaussians: Float[Tensor, "*#batch _"],
         means: Float[Tensor, "*#batch 3"],   # 粗略值
+        voxel_size: float,
         global_step: int, 
         eps: float = 1e-8,
     ) -> Gaussians:
@@ -86,7 +87,7 @@ class GaussianAdapter(nn.Module):
         # scales = scale_min + (scale_max - scale_min) * scales.sigmoid()
         
         # refer AnySplat
-        scales = 0.001 * F.softplus(scales)
+        scales = voxel_size * F.softplus(scales)
         scales = scales.clamp_max(0.3)
 
         # 归一化四元数
@@ -100,7 +101,7 @@ class GaussianAdapter(nn.Module):
         covariances = build_covariance(scales, rotations)
 
         # ✅ 修正后的 means
-        final_means = means + mean_offset * 0.001
+        final_means = means + mean_offset * voxel_size
         
         # compute the opacities
         densities: torch.Tensor = torch.sigmoid(densities)

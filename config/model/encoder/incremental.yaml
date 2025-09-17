@@ -56,3 +56,5 @@ cas_mvsnet_geo_max_dist: 0.01
 cas_mvsnet_geo_max_depth_diff: 0.01
 cas_mvsnet_use_out_features: true
 cas_mvsnet_in_channels: [32, 16, 8]
+
+voxel_size_list: [0.004, 0.002, 0.001]

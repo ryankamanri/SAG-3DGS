@@ -24,7 +24,7 @@ from .backbone import (
     BackboneMultiviewIncremental,
 )
 from .backbone.depth_fuse_net import DepthFuseNet
-from .common.gaussian_adapter_incremental import GaussianAdapter, GaussianAdapterCfg
+from .common.gaussian_adapter_incremental import GaussianAdapter, GaussianAdapterCfg, Gaussians
 from .encoder import Encoder
 from .costvolume.depth_predictor_multiview import DepthPredictorMultiView
 from .visualization.encoder_visualizer_costvolume_cfg import EncoderVisualizerCostVolumeCfg
@@ -33,6 +33,7 @@ from ...global_cfg import get_cfg
 
 from .epipolar.epipolar_sampler import EpipolarSampler
 from ..encodings.positional_encoding import PositionalEncoding
+from .backbone.voxel_attention import VoxelAttentionTaichi, prepare_sorted_pointcloud
 
 
 @dataclass
@@ -77,7 +78,132 @@ class EncoderCostVolumeIncrementalCfg:
     cas_mvsnet_geo_max_dist: float
     cas_mvsnet_geo_max_depth_diff: float
     cas_mvsnet_use_out_features: bool
+    voxel_size_list: list[float]
 
+class BoundingBox:
+    origin: torch.Tensor # 3D Vector (B, 3)
+    size: torch.Tensor # scalar (B)
+    
+    def __init__(
+        self, 
+        extrinsics: torch.Tensor, # (B, V, 4, 4)
+        intrinsics: torch.Tensor, # (B, V, 3, 3)
+        nears: torch.Tensor, # (B, V)
+        fars: torch.Tensor, # (B, V)
+        width: int, 
+        height: int):
+        b, v, _, _ = extrinsics.shape
+        extrinsics = extrinsics.view(b * v, 4, 4)
+        intrinsics = intrinsics.view(b * v, 3, 3)
+        nears = nears.view(b * v, 1, 1)
+        fars = fars.view(b * v, 1, 1)
+        
+        uv_border = torch.tensor([
+            [0, 0, 1], 
+            [0, height, 1], 
+            [width, 0, 1], 
+            [width, height, 1]
+        ], device=extrinsics.device, dtype=torch.float32).view(1, 4, 3).permute(0, 2, 1) # (1, 3, 4)
+        
+        
+        far_border = torch.cat(
+            (
+                torch.matmul(torch.linalg.inv(intrinsics), uv_border) * fars, 
+                torch.ones(b * v, 1, 4, device=extrinsics.device)
+                ), dim=1
+            ) # (1, 4, 4)
+        
+        near_border = torch.cat(
+            (
+                torch.matmul(torch.linalg.inv(intrinsics), uv_border) * nears, 
+                torch.ones(b * v, 1, 4, device=extrinsics.device)
+                ), dim=1
+            ) # (1, 4, 4)
+        
+        border_xyz = torch.matmul(extrinsics, torch.cat((far_border, near_border), dim=-1)) # (B*V, 4, 8)
+        
+        border_points = border_xyz.view(b, v, 4, -1).permute(0, 2, 1, 3).reshape(b, 4, -1) # (B, 4, V * 8)
+        min_point, max_point = border_points.min(dim=-1).values, border_points.max(dim=-1).values
+        
+        self.origin = min_point[:, :3] # (B, 3)
+        self.size = (max_point - min_point).max(dim=-1).values # (B)
+        pass
+    
+    def transform_ndc(self, voxel_center: torch.Tensor, batch: int, xyz_shape: tuple):
+        return (voxel_center - self.origin[batch].view(*xyz_shape)) / self.size[batch]
+    
+    def transform_from_ndc(self, ndc: torch.Tensor, batch: int, xyz_shape: tuple):
+        return ndc * self.size[batch] + self.origin[batch].view(*xyz_shape)
+    
+    def compute_ndc(self, coordinates: torch.Tensor, voxel_size: int):
+        """
+        ### Mapping cooordinates to normalized voxel center with origin `0` and length `1`.
+        mapping (0, 0, 0) -> o',
+                (S-1, S-1, S-1) -> 1 - o',
+                (S, S, S) -> 1 + o'
+                
+        note that o' is normalized o.
+        
+        input:
+            `coordinates`: coordinates with shape [N, 3] int
+            
+        output:
+            voxel center with shape [N, 3] float
+        """
+        return (coordinates / voxel_size) + (0.5 / voxel_size)
+    
+    def compute_voxel_indices(self, ndc: torch.Tensor, voxel_size: int):
+        """
+        ### The inverse function of `compute_ndc` with origin `0`
+        mapping (0, 0, 0) <- o' (+-o'),
+                (S-1, S-1, S-1) <- 1 - o' (+-o'),
+                (S, S, S) <- 1 + o' (+-o')
+        
+        input:
+            `ndc`: voxel center with shape [N, 3] float
+            
+        output:
+            coordinates with shape [N, 3] int
+        """
+        return ((ndc - (0.5 / voxel_size)) * voxel_size).round().int()
+    
+
+    pass
+
+def combine_batch_gaussians(batch_gaussians: list[Gaussians]) -> EncoderOutput:
+    b, dim = 1, 3
+    gaussian_size = 0
+    means_list, scales_list, rotations_list, harmonics_list, opacities_list = [], [], [], [], []
+    append_size_list = []
+    for gaussian in batch_gaussians:
+        if gaussian.opacities.shape[0] > gaussian_size:
+            gaussian_size = gaussian.opacities.shape[0]
+            
+    for gaussian in batch_gaussians:
+        append_size = gaussian_size - gaussian.opacities.shape[0]
+        if append_size > 0: 
+            gaussian.means = torch.cat((gaussian.means, torch.zeros(b, append_size, dim, device=gaussian.means.device)), dim=1)
+            gaussian.scales = torch.cat((gaussian.scales, torch.zeros(b, append_size, dim, device=gaussian.means.device)), dim=1)
+            gaussian.rotations = torch.cat((gaussian.rotations, torch.zeros(b, append_size, 4, device=gaussian.means.device)), dim=1)
+            gaussian.harmonics = torch.cat((gaussian.harmonics, torch.zeros(b, append_size, 3, gaussian.harmonics.shape[-1], device=gaussian.means.device)), dim=1)
+            gaussian.opacities = torch.cat((gaussian.opacities, torch.zeros(b, append_size, device=gaussian.means.device)), dim=1)
+        means_list.append(gaussian.means)
+        scales_list.append(gaussian.scales)
+        rotations_list.append(gaussian.rotations)
+        harmonics_list.append(gaussian.harmonics)
+        opacities_list.append(gaussian.opacities)
+        append_size_list.append(append_size)
+        
+    combined_gaussian = EncoderOutput(
+        means = torch.stack(means_list, dim=0), 
+        scales = torch.stack(scales_list, dim=0), 
+        rotations = torch.stack(rotations_list, dim=0), 
+        harmonics = torch.stack(harmonics_list, dim=0), 
+        opacities = torch.stack(opacities_list, dim=0)
+    )
+    
+    combined_gaussian.others["append_size_list"] = append_size_list
+    return combined_gaussian
 
 class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
     backbone: BackboneMultiviewIncremental
@@ -122,6 +248,8 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
                 # is_strict_loading = not cfg.wo_backbone_cross_attn
                 # self.backbone.load_state_dict(updated_state_dict, strict=is_strict_loading)
 
+        # voxel_adapter
+        self.voxel_attention = VoxelAttentionTaichi(in_channels=cfg.d_feature * 3, hidden_channels=cfg.d_feature * 3)
         # gaussians convertor
         self.gaussian_adapter = GaussianAdapter(cfg.gaussian_adapter)
 
@@ -316,6 +444,16 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
         # fuse with depth
         trans_features = self.depth_fuse_net.forward(trans_features, stage_depths, intrinsics, extrinsics.inverse())
         
+        # compute bounding box
+        bbox = BoundingBox(
+            extrinsics=extrinsics,
+            intrinsics=intrinsics,
+            nears=nears,
+            fars=fars,
+            width=w,
+            height=h
+        )
+        
         # multi-stage render
         stage_renders: dict = {}
         for idx, stage in enumerate(self.stages):
@@ -323,6 +461,7 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
             if not self.training and idx != len(self.stages) - 1: continue
             
             _, _, hi, wi = stage_depths[idx].shape
+            _, _, c, _, _ = trans_features[idx].shape
             
             # depths = stage_depths[idx].view(b, v, hi*wi, 1, 1) # (B, V, H, W) -> (B, V, H*W, 1, 1)
         
@@ -388,8 +527,8 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
             depths = stage_depths[idx].view(b, v*hi*wi) # (B, V, H, W) -> (B, V*H*W)
         
             gaussian_channels = self.gaussian_adapter.d_in
-            raw_gaussians: torch.Tensor = trans_features[idx][:, :, :gaussian_channels, :, :]
-            raw_gaussians = raw_gaussians.permute(0, 1, 3, 4, 2).reshape(b, v*hi*wi, gaussian_channels) # (B, V*H*W, C)
+            raw_gaussians: torch.Tensor = trans_features[idx]
+            raw_gaussians = raw_gaussians.permute(0, 1, 3, 4, 2).reshape(b, v*hi*wi, c) # (B, V*H*W, C)
 
             # compute course xyz
             course_xyz1 = cas_module_result.registed_prob_pcd[stage].vertices.permute(0, 1, 3, 4, 2).reshape(b, v*hi*wi, 4) # (B, V*H*W, 4)
@@ -399,24 +538,47 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
             gaussians = []
             for batch_idx in range(b):
                 # TODO: we will handle the case of unequal number of gaussians in the future
+                voxel_size = self.cfg.voxel_size_list[idx] * bbox.size[batch_idx] # voxel size should be related to the size of bounding box
+                
+                # APPLY VOXEL ATTENTION MODULE
+                # prepare sorted point cloud (sorted by its voxel index)
+                sorted_points, sorted_features, sorted_voxel_centers, point_counts, start_indices, num_voxels = prepare_sorted_pointcloud(
+                    course_xyz[batch_idx], raw_gaussians[batch_idx], voxel_size
+                )
+                
+                uni_voxel_centers = sorted_voxel_centers[start_indices]
+                
+                # apply voxel attention
+                voxel_features = self.voxel_attention.forward(
+                    sorted_points,
+                    sorted_features,
+                    sorted_voxel_centers,
+                    point_counts,
+                    start_indices,
+                    num_voxels,
+                    voxel_size, 
+                    idx)
+                
                 gaussians.append(
                     self.gaussian_adapter.forward(
-                        raw_gaussians[batch_idx],
-                        course_xyz[batch_idx], 
+                        voxel_features[:, :gaussian_channels],
+                        uni_voxel_centers, 
+                        voxel_size,
                         global_step
                     )
                 )
             
-            # Optionally apply a per-pixel opacity.
-            opacity_multiplier = 1
+            
 
-            res = EncoderOutput(
-                torch.stack([gaussians_per_scene.means for gaussians_per_scene in gaussians], dim=0),
-                torch.stack([gaussians_per_scene.scales for gaussians_per_scene in gaussians], dim=0),
-                torch.stack([gaussians_per_scene.rotations for gaussians_per_scene in gaussians], dim=0),
-                torch.stack([gaussians_per_scene.harmonics for gaussians_per_scene in gaussians], dim=0),
-                opacity_multiplier * torch.stack([gaussians_per_scene.opacities for gaussians_per_scene in gaussians], dim=0),
-            )
+            # res = EncoderOutput(
+            #     torch.stack([gaussians_per_scene.means for gaussians_per_scene in gaussians], dim=0),
+            #     torch.stack([gaussians_per_scene.scales for gaussians_per_scene in gaussians], dim=0),
+            #     torch.stack([gaussians_per_scene.rotations for gaussians_per_scene in gaussians], dim=0),
+            #     torch.stack([gaussians_per_scene.harmonics for gaussians_per_scene in gaussians], dim=0),
+            #     torch.stack([gaussians_per_scene.opacities for gaussians_per_scene in gaussians], dim=0),
+            # )
+            
+            res = combine_batch_gaussians(gaussians)
             #####################################################################################################
             
             if self.training:
