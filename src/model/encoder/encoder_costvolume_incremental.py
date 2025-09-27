@@ -445,14 +445,14 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
         trans_features = self.depth_fuse_net.forward(trans_features, stage_depths, intrinsics, extrinsics.inverse())
         
         # compute bounding box
-        bbox = BoundingBox(
-            extrinsics=extrinsics,
-            intrinsics=intrinsics,
-            nears=nears,
-            fars=fars,
-            width=w,
-            height=h
-        )
+        # bbox = BoundingBox(
+        #     extrinsics=extrinsics,
+        #     intrinsics=intrinsics,
+        #     nears=nears,
+        #     fars=fars,
+        #     width=w,
+        #     height=h
+        # )
         
         # multi-stage render
         stage_renders: dict = {}
@@ -538,7 +538,7 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
             gaussians = []
             for batch_idx in range(b):
                 # TODO: we will handle the case of unequal number of gaussians in the future
-                voxel_size = self.cfg.voxel_size_list[idx] * bbox.size[batch_idx] # voxel size should be related to the size of bounding box
+                voxel_size = self.cfg.voxel_size_list[idx]
                 
                 # APPLY VOXEL ATTENTION MODULE
                 # prepare sorted point cloud (sorted by its voxel index)

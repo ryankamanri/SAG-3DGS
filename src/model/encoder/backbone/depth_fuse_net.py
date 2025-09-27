@@ -198,28 +198,28 @@ class DepthFuseNet(nn.Module):
             fused_pyramid.append(fused)
             prev_fused = fused  # 为下一尺度准备
             
-        for scale_idx in range(self.num_scales):
-            # 深度/焦距信息嵌入
-            fused = fused_pyramid[scale_idx]
-            depths = depths_pyramid[scale_idx]
-            intrinsics_inv_scaled = intrinsics_pyramid[scale_idx].inverse()
-            b, v, hi, wi = depths.shape
+        # for scale_idx in range(self.num_scales):
+        #     # 深度/焦距信息嵌入
+        #     fused = fused_pyramid[scale_idx]
+        #     depths = depths_pyramid[scale_idx]
+        #     intrinsics_inv_scaled = intrinsics_pyramid[scale_idx].inverse()
+        #     b, v, hi, wi = depths.shape
             
-            depth_intr_embedding = self.depth_intr_encoder(
-                torch.cat([
-                    depths.view(b*v, 1, hi, wi), 
-                    (intrinsics_inv_scaled[:, :, 0, 0] + intrinsics_inv_scaled[:, :, 1, 1]).view(b*v, 1, 1, 1).expand(b*v, 1, hi, wi)
-                ], dim=1)
-            ).view(b, v, -1, hi, wi)
+        #     depth_intr_embedding = self.depth_intr_encoder(
+        #         torch.cat([
+        #             depths.view(b*v, 1, hi, wi), 
+        #             (intrinsics_inv_scaled[:, :, 0, 0] + intrinsics_inv_scaled[:, :, 1, 1]).view(b*v, 1, 1, 1).expand(b*v, 1, hi, wi)
+        #         ], dim=1)
+        #     ).view(b, v, -1, hi, wi)
             
-            fused_pyramid[scale_idx] = self.embeddings[scale_idx](
-                torch.cat([
-                    fused, 
-                    depth_intr_embedding,
-                ], dim=2).view(-1, fused.shape[2] + 64, fused.shape[3], fused.shape[4])
-            ).view(*fused.shape)
+        #     fused_pyramid[scale_idx] = self.embeddings[scale_idx](
+        #         torch.cat([
+        #             fused, 
+        #             depth_intr_embedding,
+        #         ], dim=2).view(-1, fused.shape[2] + 64, fused.shape[3], fused.shape[4])
+        #     ).view(*fused.shape)
             
-            pass
+        #     pass
         
         return fused_pyramid
 

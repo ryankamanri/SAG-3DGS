@@ -2,7 +2,7 @@ re10k:
   name: re10k
   weight: 0.75
   view_sampler: interval
-  roots: [datasets/re10k_pt]
+  roots: [datasets/re10k]
   make_baseline_1: false
   augment: true
 
