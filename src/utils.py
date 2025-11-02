@@ -96,3 +96,19 @@ def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
     L = build_scaling_rotation(scaling_modifier * scaling, rotation)
     actual_covariance = L @ L.transpose(1, 2)
     return actual_covariance.view(-1, 9)
+
+
+def check_tensor(tensor, name):
+    """检查张量是否包含NaN或Inf"""
+    if torch.isnan(tensor).any():
+        print(tensor)
+        raise ValueError(f"NaN found in {name}")
+    if torch.isinf(tensor).any():
+        print(tensor)
+        raise ValueError(f"Inf found in {name}")
+    # 检查极端值
+    if tensor.numel() > 0:  # 确保张量不为空
+        max_val = tensor.max().item()
+        min_val = tensor.min().item()
+        if max_val > 1e10 or min_val < -1e10:
+            print(f"Warning: Extreme values in {name}: min={min_val}, max={max_val}")

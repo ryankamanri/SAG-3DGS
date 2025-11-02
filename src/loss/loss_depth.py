@@ -68,8 +68,8 @@ class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
             for idx, stage in enumerate(stages):
                 mask = depth_gt_mask_stages[idx][:, view_idx] == 1.
                 if not mask.any(): continue # Skip if no valid pixels in this view for this stage.
-                delta_d = torch.Tensor(depth_gt_stages[idx][:, view_idx][mask] - ref_view_result.backbone[stage]["depth"][mask]).abs() # (N)
-                delta_d_normalized = delta_d / (fars[:, view_idx] - nears[:, view_idx]) # (N)
+                delta_d = torch.Tensor(depth_gt_stages[idx][:, view_idx] - ref_view_result.backbone[stage]["depth"]).abs() # (N)
+                delta_d_normalized = delta_d / (fars[:, view_idx] - nears[:, view_idx]).view(b, 1, 1) # (N)
                 loss += (delta_d_normalized).mean() * self.stage_weights[idx+1]
             view_idx += 1
             # TODO: Add a cascade loss?

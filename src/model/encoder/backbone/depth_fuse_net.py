@@ -74,35 +74,10 @@ class MultiScaleFusionBlock(nn.Module):
             enhanced_target = target_features
         
         # 2. 多视图特征融合 (当前尺度)
-        if self.fusion_mode == 'weighted_sum':
-            # 简单平均融合
-            fused = warped_features.mean(dim=2)  # [B, V, C, H, W]
-        
-        elif self.fusion_mode == 'variance':
-            # 方差融合 (保留多视图一致性)
-            fused = torch.var(warped_features, dim=2)  # [B, V, C, H, W]
-            fused = self.variance_fusion(fused.view(B*V, C, H, W))
-            fused = fused.view(B, V, C, H, W)
-        
-        elif self.fusion_mode == 'attention':
-            # 深度特征编码
-            depth_feats = self.depth_encoder(
-                target_depths.view(B*V, 1, H, W)
-            ).view(B, V, 64, H, W)  # [B, V, 64, H, W]
-            
-            # 计算注意力权重
-            concat_feats = torch.cat([
-                warped_features.mean(dim=2),  # [B, V, C, H, W]
-                depth_feats
-            ], dim=2)  # [B, V, C+64, H, W]
-            
-            # 计算注意力权重 [B, V, 1, H, W]
-            attention_weights = self.attention(
-                concat_feats.view(B*V, self.feature_dim+64, H, W)
-            ).view(B, V, 1, H, W)
-            
-            # 加权融合
-            fused = torch.sum(warped_features * attention_weights.unsqueeze(3), dim=2)
+        # 方差融合 (保留多视图一致性)
+        fused = torch.var(torch.cat((warped_features, target_features.unsqueeze(2)), dim=2), dim=2)  # [B, V, C, H, W]
+        fused = self.variance_fusion(fused.view(B*V, C, H, W))
+        fused = fused.view(B, V, C, H, W)
         
         # 3. 与增强后的目标特征融合
         combined = 0.6 * fused + 0.4 * enhanced_target

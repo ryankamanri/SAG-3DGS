@@ -123,6 +123,7 @@ class CascadeMVSNet(nn.Module):
         outputs = {}
         depth, cur_depth = None, None
         cur_period = 1
+        depth_range = (depth_values[:, 0], depth_values[:, -1]) # ((B), (B))
         b, v, c, h, w = imgs_shape
         for stage_idx in range(self.num_stage):
             # print("*********************stage{}*********************".format(stage_idx + 1))
@@ -142,8 +143,9 @@ class CascadeMVSNet(nn.Module):
             else:
                 cur_depth = depth_values
             depth_range_samples, cur_period, near_far = get_depth_range_samples(cur_depth=cur_depth,
-                                                        cur_period=cur_period, 
+                                                        period=cur_period, 
                                                         ndepth=self.ndepths[stage_idx],
+                                                        depth_range=depth_range, 
                                                         device=depth_values.device,
                                                         shape=[b, h//int(stage_scale), w//int(stage_scale)])
 

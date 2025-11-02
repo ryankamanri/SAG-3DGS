@@ -24,7 +24,7 @@ from .backbone import (
     BackboneMultiviewIncremental,
 )
 from .backbone.depth_fuse_net import DepthFuseNet
-from .common.gaussian_adapter_incremental import GaussianAdapter, GaussianAdapterCfg, Gaussians
+from .common.gaussian_adapter_incremental import GaussianAdapter, GaussianAdapterCfg, Gaussians, get_default_gaussians
 from .encoder import Encoder
 from .costvolume.depth_predictor_multiview import DepthPredictorMultiView
 from .visualization.encoder_visualizer_costvolume_cfg import EncoderVisualizerCostVolumeCfg
@@ -182,11 +182,8 @@ def combine_batch_gaussians(batch_gaussians: list[Gaussians]) -> EncoderOutput:
     for gaussian in batch_gaussians:
         append_size = gaussian_size - gaussian.opacities.shape[0]
         if append_size > 0: 
-            gaussian.means = torch.cat((gaussian.means, torch.zeros(b, append_size, dim, device=gaussian.means.device)), dim=1)
-            gaussian.scales = torch.cat((gaussian.scales, torch.zeros(b, append_size, dim, device=gaussian.means.device)), dim=1)
-            gaussian.rotations = torch.cat((gaussian.rotations, torch.zeros(b, append_size, 4, device=gaussian.means.device)), dim=1)
-            gaussian.harmonics = torch.cat((gaussian.harmonics, torch.zeros(b, append_size, 3, gaussian.harmonics.shape[-1], device=gaussian.means.device)), dim=1)
-            gaussian.opacities = torch.cat((gaussian.opacities, torch.zeros(b, append_size, device=gaussian.means.device)), dim=1)
+            pad_gaussians = get_default_gaussians(append_size, d_sh=gaussian.harmonics.shape[-1], device=gaussian.means.device)
+            gaussian += pad_gaussians
         means_list.append(gaussian.means)
         scales_list.append(gaussian.scales)
         rotations_list.append(gaussian.rotations)

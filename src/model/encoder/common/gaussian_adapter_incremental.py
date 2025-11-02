@@ -19,6 +19,32 @@ class Gaussians:
     rotations: Float[Tensor, "*batch 4"]
     harmonics: Float[Tensor, "*batch 3 _"]
     opacities: Float[Tensor, " *batch"]
+    
+    def __iadd__(self, other: "Gaussians") -> "Gaussians":
+        """
+        In-place addition of another Gaussians.
+        """
+        self.means = torch.cat([self.means, other.means], dim=0)
+        self.covariances = torch.cat([self.covariances, other.covariances], dim=0)
+        self.scales = torch.cat([self.scales, other.scales], dim=0)
+        self.rotations = torch.cat([self.rotations, other.rotations], dim=0)
+        self.harmonics = torch.cat([self.harmonics, other.harmonics], dim=0)
+        self.opacities = torch.cat([self.opacities, other.opacities], dim=0)
+        return self
+    
+
+def get_default_gaussians(batch: int, d_sh: int, device="cuda") -> Gaussians:
+    """
+    Create an empty Gaussians with the specified dimensions.
+    """
+    return Gaussians(
+        means=torch.zeros(batch, 3, device=device),
+        covariances=torch.zeros(batch, 3, 3, device=device), # note that covariances is not used. and should't be
+        scales=torch.zeros(batch, 3, device=device) + 1e-6, # avoid nan 
+        rotations=torch.cat((torch.zeros(batch, 3, device=device), torch.ones(batch, 1, device=device)), dim=-1), # identity quaternion
+        harmonics=torch.zeros(batch, 3, d_sh, device=device), 
+        opacities=torch.zeros(batch, device=device) + 1e-6 # avoid nan
+    )
 
 @dataclass
 class OpacityMappingCfg:
