@@ -227,40 +227,53 @@ class VoxelAttentionTaichi(nn.Module):
         self.num_heads = num_heads
         assert hidden_channels % num_heads == 0, "hidden_channels must be divisible by num_heads"
 
-        self.query_proj = nn.Sequential(
+        self.query_proj = nn.Linear(in_channels, hidden_channels)
+        self.key_proj = nn.Linear(in_channels, hidden_channels)
+        self.value_proj = nn.Linear(in_channels, hidden_channels)
+        self.out_proj = nn.Linear(hidden_channels, self.out_channels) if hidden_channels != self.out_channels else None
+        
+        self.voxel_size_encoding = nn.Sequential(
             nn.Linear(1, hidden_channels // 4), 
             nn.ReLU(),
             nn.Linear(hidden_channels // 4, hidden_channels // 2),
             nn.ReLU(),
             nn.Linear(hidden_channels // 2, hidden_channels)
         )  
-        self.key_proj = nn.Linear(in_channels, hidden_channels)
-        self.value_proj = nn.Linear(in_channels, hidden_channels)
-        self.out_proj = nn.Linear(hidden_channels, self.out_channels) if hidden_channels != self.out_channels else None
 
-        self.position_encoding = nn.Linear(3, hidden_channels)
+        self.position_encoding = nn.Sequential(
+            nn.Linear(3, hidden_channels // 4), 
+            nn.ReLU(),
+            nn.Linear(hidden_channels // 4, hidden_channels // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_channels // 2, hidden_channels)
+        )  
 
-    def forward(self, points, features, voxel_centers, voxel_point_counts, voxel_start_indices, num_voxels, voxel_size, stage_idx):
+    def forward(self, points, point_features, voxel_centers, voxel_center_features, voxel_point_counts, voxel_start_indices, num_voxels, voxel_size, stage_idx):
         """
         Forward propagation (optimized version)
 
         Args:
-            features: Point features [N, C], sorted by voxel index
-            voxel_centers: Corresponding voxel center coordinates [N, C]
+            points: Point positions [N, 3], sorted by voxel index
+            point_features: Point features [N, C], sorted by voxel index
+            voxel_centers: Corresponding voxel center coordinates [N, 3], NOT unique
+            voxel_center_features: Initial voxel center features [M, C], unique
             voxel_point_counts: Number of points in each voxel [M]
             voxel_start_indices: Start index of each voxel in the sorted array [M]
             num_voxels: Total number of voxels M
         """
-        voxel_size = torch.tensor([voxel_size], device=points.device)  # (1,)
 
         # Project query, key, and value
-        projected_q: torch.Tensor = self.query_proj(voxel_size)  # (H, )
-        projected_q = projected_q.unsqueeze(0).repeat(voxel_point_counts.shape[0], 1)  # (M, H)
-        projected_k = self.key_proj(features)
-        projected_v = self.value_proj(features)
+        projected_q: torch.Tensor = self.query_proj(voxel_center_features)  # (M, D)
+        projected_k = self.key_proj(point_features)
+        projected_v = self.value_proj(point_features)
 
+        # Compute voxel_size encoding & add to query
+        voxel_size = torch.tensor([voxel_size], device=points.device)  # (1,)
+        voxel_size_encoding = self.voxel_size_encoding(1e-2 / voxel_size).unsqueeze(0)  # (1, D), 1e-2 / voxel_size to represent scale
+        projected_q = projected_q + voxel_size_encoding
+        
         # Compute relative position encoding & add to key
-        relative_position_encoding = self.position_encoding(points - voxel_centers)  # (N, C)
+        relative_position_encoding = self.position_encoding((points - voxel_centers) / voxel_size)  # (N, D)
         projected_k = projected_k + relative_position_encoding
 
         # Compute attention using Taichi
@@ -348,6 +361,8 @@ if __name__ == "__main__":
     sorted_points, sorted_features, sorted_voxel_centers, point_counts, start_indices, num_voxels = prepare_sorted_pointcloud(
         points, point_features, voxel_size
     )
+    
+    sorted_voxel_center_features = torch.rand(num_voxels, in_channels, device="cuda")  # Random voxel center features (Vox, C)
 
     # Create attention module
     attention = VoxelAttentionTaichi(in_channels, hidden_channels).to("cuda")
@@ -358,6 +373,7 @@ if __name__ == "__main__":
             sorted_points,
             sorted_features,
             sorted_voxel_centers,
+            sorted_voxel_center_features,
             point_counts,
             start_indices,
             num_voxels,

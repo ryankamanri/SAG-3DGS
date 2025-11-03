@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Callable, Literal, Optional, List
 
 import torch
+import torch.nn.functional as F
 from einops import rearrange
 from jaxtyping import Float
 from torch import Tensor, nn
@@ -201,6 +202,54 @@ def combine_batch_gaussians(batch_gaussians: list[Gaussians]) -> EncoderOutput:
     
     combined_gaussian.others["append_size_list"] = append_size_list
     return combined_gaussian
+
+
+def mean_project(xyz: torch.Tensor, features: torch.Tensor, extrinsics: torch.Tensor, intrinsics: torch.Tensor) -> torch.Tensor:
+    """
+    ## Mean pooling multi-view features at 3D points by differentiable projection.
+    ### for initialize voxel features
+    Params:
+        xyz: (N, 3)
+        features: (V, C, H, W)
+        extrinsics: (V, 4, 4), c2w
+        intrinsics: (V, 3, 3)
+        
+    Returns:
+        mean_feature: (N, C)
+    """
+    V, C, H, W = features.shape
+    N = xyz.shape[0]
+
+    # world 2 cam
+    xyz_h = torch.cat([xyz, torch.ones_like(xyz[:, :1])], dim=-1)       # (N, 4)
+    xyz_h = xyz_h.unsqueeze(0).expand(V, N, 4)                          # (V, N, 4)
+    cam_xyz = torch.bmm(xyz_h, extrinsics.inverse().transpose(1, 2))    # (V, N, 4)
+
+    # cam 2 uv
+    cam_xyz_3 = cam_xyz[..., :3]                                   # (V, N, 3)
+    uv_h = torch.bmm(cam_xyz_3, intrinsics.transpose(1, 2))        # (V, N, 3)
+    u = uv_h[..., 0] / uv_h[..., 2]
+    v = uv_h[..., 1] / uv_h[..., 2]
+
+    # normalize
+    u_norm = 2 * (u / (W - 1)) - 1
+    v_norm = 2 * (v / (H - 1)) - 1
+    grid = torch.stack([u_norm, v_norm], dim=-1).view(V, N, 1, 2)  # (V, N, 1, 2)
+
+    sampled = F.grid_sample(
+        features,
+        grid,
+        mode="bilinear",
+        align_corners=True, 
+        padding_mode="border",
+    )  # (V, C, N, 1)
+    sampled = sampled.squeeze(-1).permute(2, 0, 1)  # (N, V, C)
+
+    # mean pooling
+    mean_feature = sampled.mean(dim=1)  # (N, C)
+
+    return mean_feature
+
 
 class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
     backbone: BackboneMultiviewIncremental
@@ -454,7 +503,7 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
         # multi-stage render
         stage_renders: dict = {}
         for idx, stage in enumerate(self.stages):
-            # if we are not on training, we only reander the last stage.
+            # if we are not on training, we only render the last stage.
             if not self.training and idx != len(self.stages) - 1: continue
             
             _, _, hi, wi = stage_depths[idx].shape
@@ -543,13 +592,16 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
                     course_xyz[batch_idx], raw_gaussians[batch_idx], voxel_size
                 )
                 
+                # prepare unique voxel centers & features
                 uni_voxel_centers = sorted_voxel_centers[start_indices]
+                uni_voxel_center_features = mean_project(uni_voxel_centers, trans_features[idx][batch_idx], extrinsics[batch_idx], stage_intrinsics[stage][batch_idx]) # (num_voxels, C)
                 
                 # apply voxel attention
                 voxel_features = self.voxel_attention.forward(
                     sorted_points,
                     sorted_features,
                     sorted_voxel_centers,
+                    uni_voxel_center_features, 
                     point_counts,
                     start_indices,
                     num_voxels,
