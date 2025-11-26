@@ -112,10 +112,7 @@ class GaussianAdapter(nn.Module):
         # scale_max = self.cfg.gaussian_scale_max
         # scales = scale_min + (scale_max - scale_min) * scales.sigmoid()
         
-        # refer AnySplat
-        scales = voxel_size * F.softplus(scales)
-        scales = scales.clamp_max(0.3)
-
+        scales = torch.exp(scales - 3)
         # 归一化四元数
         rotations = rotations / (rotations.norm(dim=-1, keepdim=True) + eps)
 

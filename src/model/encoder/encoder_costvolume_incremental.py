@@ -295,7 +295,7 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
                 # self.backbone.load_state_dict(updated_state_dict, strict=is_strict_loading)
 
         # voxel_adapter
-        self.voxel_attention = VoxelAttentionTaichi(in_channels=cfg.d_feature * 3, hidden_channels=cfg.d_feature * 3)
+        self.voxel_attentions = nn.ModuleList([VoxelAttentionTaichi(in_channels=cfg.d_feature * 3, hidden_channels=cfg.d_feature * 3) for _ in range(len(cfg.unet_output_scales))])
         # gaussians convertor
         self.gaussian_adapter = GaussianAdapter(cfg.gaussian_adapter)
 
@@ -488,7 +488,7 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
         stage_depths = [torch.stack(depths, dim=1) for depths in stage_depths] # [(B, V, H, W) * S]
         
         # fuse with depth
-        trans_features = self.depth_fuse_net.forward(trans_features, stage_depths, intrinsics, extrinsics.inverse())
+        trans_features = self.depth_fuse_net.forward(stage_imgs, trans_features, stage_depths, intrinsics, extrinsics.inverse())
         
         # compute bounding box
         # bbox = BoundingBox(
@@ -597,7 +597,7 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
                 uni_voxel_center_features = mean_project(uni_voxel_centers, trans_features[idx][batch_idx], extrinsics[batch_idx], stage_intrinsics[stage][batch_idx]) # (num_voxels, C)
                 
                 # apply voxel attention
-                voxel_features = self.voxel_attention.forward(
+                voxel_features = self.voxel_attentions[idx].forward(
                     sorted_points,
                     sorted_features,
                     sorted_voxel_centers,

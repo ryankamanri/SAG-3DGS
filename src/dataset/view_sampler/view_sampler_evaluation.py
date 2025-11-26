@@ -19,6 +19,7 @@ class ViewSamplerEvaluationCfg:
     name: Literal["evaluation"]
     index_path: str
     num_context_views: int
+    num_target_views: int
 
 
 class ViewSamplerEvaluation(ViewSampler[ViewSamplerEvaluationCfg]):
@@ -58,12 +59,12 @@ class ViewSamplerEvaluation(ViewSampler[ViewSamplerEvaluationCfg]):
             raise ValueError(f"No indices available for scene {scene}.")
         context_indices = torch.tensor(entry.context, dtype=torch.int64, device=device)
         target_indices = torch.tensor(entry.target, dtype=torch.int64, device=device)
-        return context_indices, target_indices[idx:idx+1]
+        return context_indices, target_indices
 
     @property
     def num_context_views(self) -> int:
-        return 2
+        return self.cfg.num_context_views
 
     @property
     def num_target_views(self) -> int:
-        return 1
+        return self.cfg.num_target_views

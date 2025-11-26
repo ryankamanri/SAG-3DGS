@@ -60,3 +60,22 @@ def get_mixed_dataset(
 
     return MixedDataset(datasets, weights)
 
+
+# original
+def get_dataset(
+    cfgs: dict,
+    view_sampler: str, 
+    stage: Stage,
+    step_tracker: StepTracker | None,
+) -> Dataset:
+    cfg = cfgs["re10k"]
+    view_sampler_dict = cfgs["view_sampler"][cfg.view_sampler]
+    view_sampler = get_view_sampler(
+        VIEW_SAMPLER_CFGS[cfg.view_sampler](**view_sampler_dict),
+        stage,
+        cfg.overfit_to_scene is not None,
+        cfg.cameras_are_circular,
+        step_tracker,
+    )
+    dataset = DatasetRE10k(cfg, stage, view_sampler)
+    return dataset

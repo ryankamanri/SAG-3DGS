@@ -43,12 +43,14 @@ class MultiScaleFusionBlock(nn.Module):
         
         # 特征精炼模块
         self.refine = nn.Sequential(
-            nn.Conv2d(feature_dim, feature_dim * 2, 3, padding=1),
+            nn.Conv2d(feature_dim + 3, feature_dim * 2, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(feature_dim * 2, feature_dim * 2, 3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(feature_dim * 2, feature_dim, 3, padding=1),
         )
 
-    def forward(self, target_features, warped_features, target_depths, prev_fused=None):
+    def forward(self, images, target_features, warped_features, target_depths, prev_fused=None):
         """
         :param target_features: 目标视图原始特征 [B, V, C, H, W]
         :param warped_features: 重投影特征 [B, V, N, C, H, W] (N=源视图数)
@@ -69,7 +71,7 @@ class MultiScaleFusionBlock(nn.Module):
             skip = skip.view(B, V, C, H, W)
             
             # 特征增强 (结合低分辨率上下文)
-            enhanced_target = 0.5 * skip + 0.5 * upsampled
+            enhanced_target = 0.7 * skip + 0.3 * upsampled
         else:
             enhanced_target = target_features
         
@@ -80,10 +82,13 @@ class MultiScaleFusionBlock(nn.Module):
         fused = fused.view(B, V, C, H, W)
         
         # 3. 与增强后的目标特征融合
-        combined = 0.6 * fused + 0.4 * enhanced_target
+        combined = 0.3 * fused + 0.7 * enhanced_target
         
         # 4. 特征精炼
-        refined = self.refine(combined.view(B*V, C, H, W))
+        refined = self.refine(torch.cat((
+            combined.view(B*V, C, H, W), 
+            images.view(B*V, 3, H, W),
+        ), dim=1))
         return refined.view(B, V, C, H, W)
 
 
@@ -100,10 +105,9 @@ class DepthFuseNet(nn.Module):
         
         # 深度/焦距特征编码器
         self.depth_intr_encoder = nn.Sequential(
-            nn.Conv2d(2, 32, 1),
+            nn.Conv2d(2, 8, 1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, 1),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(8, 16, 1)
         )
         
         # 创建多尺度融合模块（从低分辨率到高分辨率）
@@ -119,17 +123,17 @@ class DepthFuseNet(nn.Module):
             )
             self.embeddings.append(
                 nn.Sequential(
-                    nn.Conv2d(dim + 64, dim, 1),
+                    nn.Conv2d(dim + 16, dim * 2, 3, padding=1),
                     nn.ReLU(inplace=True),
-                    nn.Conv2d(dim, dim, 1),
+                    nn.Conv2d(dim * 2, dim * 2, 3, padding=1),
                     nn.ReLU(inplace=True),
-                    nn.Conv2d(dim, dim, 1),
+                    nn.Conv2d(dim * 2, dim, 3, padding=1),
                 )
             )
         
             
 
-    def forward(self, features_pyramid, depths_pyramid, intrinsics, extrinsics):
+    def forward(self, images_pyramid, features_pyramid, depths_pyramid, intrinsics, extrinsics):
         """
         :param features_pyramid: 多尺度特征金字塔 [尺度0, 尺度1, ...] 
                                 其中尺度0=最低分辨率，尺度N=最高分辨率
@@ -163,6 +167,7 @@ class DepthFuseNet(nn.Module):
             
             # 应用当前尺度的融合块
             fused = self.fusion_blocks[scale_idx](
+                images=images_pyramid[f"stage{scale_idx+1}"],
                 target_features=features,
                 warped_features=warped_features,
                 target_depths=depths,
@@ -173,28 +178,30 @@ class DepthFuseNet(nn.Module):
             fused_pyramid.append(fused)
             prev_fused = fused  # 为下一尺度准备
             
-        # for scale_idx in range(self.num_scales):
-        #     # 深度/焦距信息嵌入
-        #     fused = fused_pyramid[scale_idx]
-        #     depths = depths_pyramid[scale_idx]
-        #     intrinsics_inv_scaled = intrinsics_pyramid[scale_idx].inverse()
-        #     b, v, hi, wi = depths.shape
+        for scale_idx in range(self.num_scales):
+            # depth/intr embedding & color residual
+            fused = fused_pyramid[scale_idx]
+            depths = depths_pyramid[scale_idx]
+            intrinsics_inv_scaled = intrinsics_pyramid[scale_idx].inverse()
+            b, v, hi, wi = depths.shape
             
-        #     depth_intr_embedding = self.depth_intr_encoder(
-        #         torch.cat([
-        #             depths.view(b*v, 1, hi, wi), 
-        #             (intrinsics_inv_scaled[:, :, 0, 0] + intrinsics_inv_scaled[:, :, 1, 1]).view(b*v, 1, 1, 1).expand(b*v, 1, hi, wi)
-        #         ], dim=1)
-        #     ).view(b, v, -1, hi, wi)
+            depth_intr = torch.cat((
+                depths.view(b*v, 1, hi, wi) * (intrinsics_inv_scaled[:, :, 0, 0]).view(b*v, 1, 1, 1), 
+                depths.view(b*v, 1, hi, wi) * (intrinsics_inv_scaled[:, :, 1, 1]).view(b*v, 1, 1, 1)
+            ), dim=1)
             
-        #     fused_pyramid[scale_idx] = self.embeddings[scale_idx](
-        #         torch.cat([
-        #             fused, 
-        #             depth_intr_embedding,
-        #         ], dim=2).view(-1, fused.shape[2] + 64, fused.shape[3], fused.shape[4])
-        #     ).view(*fused.shape)
+            depth_intr_embedding = self.depth_intr_encoder(
+                torch.log(torch.clamp(depth_intr, min=1e-6))
+            ).view(b, v, -1, hi, wi)
             
-        #     pass
+            fused_pyramid[scale_idx] = self.embeddings[scale_idx](
+                torch.cat([
+                    fused, 
+                    depth_intr_embedding,
+                ], dim=2).view(-1, fused.shape[2] + 16, fused.shape[3], fused.shape[4])
+            ).view(*fused.shape)
+            
+            pass
         
         return fused_pyramid
 
@@ -331,6 +338,8 @@ class DepthFuseNet(nn.Module):
         points_homo = points_homo.view(B, H*W, 4, 1)
         points_src = torch.matmul(transform.view(B, 1, 4, 4), points_homo).squeeze(-1)
         points_src = points_src.view(B, H, W, 4)
+        
+        torch.clamp_(points_src[..., 2], min=0.1) # avoid division by zero!
         
         # 投影到图像平面
         x = points_src[..., 0] / points_src[..., 2]

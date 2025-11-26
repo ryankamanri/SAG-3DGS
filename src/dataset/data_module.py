@@ -9,7 +9,7 @@ from torch import Generator, nn
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 
 from ..misc.step_tracker import StepTracker
-from . import get_mixed_dataset
+from . import get_mixed_dataset, get_dataset
 from .types import DataShim, Stage
 from .validation_wrapper import ValidationWrapper
 
@@ -113,8 +113,8 @@ class DataModule(LightningDataModule):
         )
 
     def test_dataloader(self):
-        dataset = get_mixed_dataset(
-            self.dataset_cfgs,
+        dataset = get_dataset(
+            self.dataset_cfgs['re10k'],
             "test",
             self.step_tracker,
         )

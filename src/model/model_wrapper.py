@@ -108,6 +108,11 @@ class ModelWrapper(LightningModule):
         if self.test_cfg.compute_scores:
             self.test_step_outputs = {}
             self.time_skip_steps_dict = {"encoder": 0, "decoder": 0, "fine_tune": 0}
+            self.average_score = {
+                "psnr": 0.0,
+                "ssim": 0.0,
+                "lpips": 0.0,
+            }
             
         if self.test_cfg.use_network_gui:
             network_gui.init()
@@ -398,7 +403,7 @@ class ModelWrapper(LightningModule):
                 add_label(vcat(*torch.cat((depth_map(depth_prob), depth_map(depth_prob_ft)))), "Target depth (w/o | w fine-tune)"),
             )
             self.logger.log_image(
-                "comparison",
+                f"comparison_{scene}",
                 [prep_image(add_border(comparison))],
                 step=self.global_step,
                 caption=batch["scene"],
@@ -412,7 +417,7 @@ class ModelWrapper(LightningModule):
                                     extra_label="(Softmax)",
                                 )[0])
             self.logger.log_image(
-                "projection",
+                f"projection_{scene}",
                 [prep_image(add_border(projections))],
                 step=self.global_step,
             )
@@ -452,8 +457,6 @@ class ModelWrapper(LightningModule):
         del gaussians
         if self.test_cfg.fine_tune:
             del fine_tuned_gaussians
-        torch.cuda.empty_cache()
-        gc.collect()
                     
         # compute scores
         if self.test_cfg.compute_scores:
@@ -487,11 +490,22 @@ class ModelWrapper(LightningModule):
             self.test_step_outputs[f"ssim_ft"].append(ssim_ft)
             self.test_step_outputs[f"lpips_ft"].append(lpips_ft)
             
+            # compute average score for all scenes
+            if self.eval_cnt > 0:
+                prod_coef = self.eval_cnt / (self.eval_cnt + 1)
+                self.average_score["psnr"] = (self.average_score["psnr"] * prod_coef) + (psnr / (self.eval_cnt + 1))
+                self.average_score["ssim"] = (self.average_score["ssim"] * prod_coef) + (ssim / (self.eval_cnt + 1))
+                self.average_score["lpips"] = (self.average_score["lpips"] * prod_coef) + (lpips / (self.eval_cnt + 1))
+            else:
+                self.average_score["psnr"] = psnr
+                self.average_score["ssim"] = ssim
+                self.average_score["lpips"] = lpips
+            
             print()
             print(f"Evaluate scene {batch['scene']}: ")
-            print(f"PSNR(origin/ft): {psnr}/{psnr_ft}")
-            print(f"SSIM(origin/ft): {ssim}/{ssim_ft}")
-            print(f"LPIPS(origin/ft): {lpips}/{lpips_ft}")
+            print(f"PSNR(origin/ft/avg): {psnr}/{psnr_ft}/{self.average_score['psnr']}")
+            print(f"SSIM(origin/ft/avg): {ssim}/{ssim_ft}/{self.average_score['ssim']}")
+            print(f"LPIPS(origin/ft/avg): {lpips}/{lpips_ft}/{self.average_score['lpips']}")
             print()
             
             # append scene results
@@ -520,6 +534,8 @@ class ModelWrapper(LightningModule):
             self.test_step_outputs["scene_result"][scene_name]["psnr_ft"].append(psnr_ft)
             self.test_step_outputs["scene_result"][scene_name]["ssim_ft"].append(ssim_ft)
             self.test_step_outputs["scene_result"][scene_name]["lpips_ft"].append(lpips_ft)
+            
+            self.eval_cnt += 1
             
 
     def on_test_end(self) -> None:
