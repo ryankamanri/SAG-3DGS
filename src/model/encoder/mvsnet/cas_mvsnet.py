@@ -13,7 +13,6 @@ class DepthNet(nn.Module):
         self.return_photometric_confidence = return_photometric_confidence
 
     def forward(self, stage_idx, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None):
-        proj_matrices = torch.unbind(proj_matrices, 1)
         assert len(features) == len(proj_matrices), "Different number of images and projection matrices"
         assert depth_values.shape[1] == num_depth, "depth_values.shape[1]:{}  num_depth:{}".format(depth_values.shapep[1], num_depth)
         num_views = len(features)
@@ -92,7 +91,7 @@ class DepthNet(nn.Module):
 
 
 class CascadeMVSNet(nn.Module):
-    def __init__(self, use_dot_similarity=False, refine=False, ndepths=[48, 32, 8], depth_interals_ratio=[4, 2, 1], share_cr=False,
+    def __init__(self, use_dot_similarity=False, refine=False, ndepths=[48, 32, 8], depth_interals_ratio=[4, 2, 1], share_cr=False, source_view_num=2,
                  grad_method="detach", in_channels=[64, 48, 32], arch_mode="fpn", cr_base_chs=[8, 8, 8], return_volume=False, return_photometric_confidence=False):
         super(CascadeMVSNet, self).__init__()
         self.use_dot_similarity = use_dot_similarity
@@ -106,6 +105,7 @@ class CascadeMVSNet(nn.Module):
         self.arch_mode = arch_mode
         self.cr_base_chs = cr_base_chs
         self.num_stage = len(ndepths)
+        self.source_view_num = source_view_num
 
 
         self.feature = FeatureNet(base_channels=self.base_channel, stride=4, num_stage=self.num_stage, arch_mode=self.arch_mode)
@@ -125,11 +125,32 @@ class CascadeMVSNet(nn.Module):
         cur_period = 1
         depth_range = (depth_values[:, 0], depth_values[:, -1]) # ((B), (B))
         b, v, c, h, w = imgs_shape
+        
+        assert v >= self.source_view_num + 1, "Input view number {} is smaller than required {}".format(v, self.source_view_num + 1)
+        # select source views, note that proj_matrices and features have been shifted (0 is target view)
+        if v > self.source_view_num + 1:
+            positions = proj_matrices["stage1"][:, :, 0, :3, 3] # (B, V, 3)
+            src_relative_pos = positions - positions[:, :1] # (B, V, 3)
+            nearest_k_indices = torch.topk(torch.norm(src_relative_pos, dim=-1, p=2), self.source_view_num + 1, dim=-1, largest=False).indices # (B, source_view_num + 1)
+            
         for stage_idx in range(self.num_stage):
             # print("*********************stage{}*********************".format(stage_idx + 1))
             #stage feature, proj_mats, scales
-            features_stage = torch.unbind(features["stage{}".format(stage_idx + 1)], dim=1)
+            
+            features_stage = features["stage{}".format(stage_idx + 1)]
             proj_matrices_stage = proj_matrices["stage{}".format(stage_idx + 1)]
+            
+            if v > self.source_view_num + 1:
+                features_stage_filtered, proj_matrices_stage_filtered = torch.zeros_like(features_stage)[:, :self.source_view_num + 1, ...], torch.zeros_like(proj_matrices_stage)[:, :self.source_view_num + 1, ...]
+                features_stage_filtered.scatter_(1, nearest_k_indices.view(b, self.source_view_num + 1, 1, 1, 1).expand_as(features_stage_filtered), features_stage)
+                proj_matrices_stage_filtered.scatter_(1, nearest_k_indices.view(b, self.source_view_num + 1, 1, 1, 1).expand_as(proj_matrices_stage_filtered), proj_matrices_stage)
+            
+                features_stage, proj_matrices_stage = features_stage_filtered, proj_matrices_stage_filtered
+                
+            
+            features_stage = torch.unbind(features_stage, dim=1)  # tuple of (B, C, H, W)
+            proj_matrices_stage = torch.unbind(proj_matrices_stage, dim=1)
+            
             stage_scale = 2.0 ** (self.num_stage - 1 - stage_idx)
 
             if depth is not None:

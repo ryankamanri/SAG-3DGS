@@ -114,7 +114,7 @@ class DataModule(LightningDataModule):
 
     def test_dataloader(self):
         dataset = get_dataset(
-            self.dataset_cfgs['re10k'],
+            self.dataset_cfgs,
             "test",
             self.step_tracker,
         )

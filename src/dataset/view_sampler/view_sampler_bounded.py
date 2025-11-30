@@ -58,9 +58,8 @@ class ViewSamplerBounded(ViewSampler[ViewSamplerBoundedCfg]):
             min_gap = self.cfg.min_distance_between_context_views
 
         # Pick the gap between the context views.
-        # NOTE: we keep the bug untouched to follow initial pixelsplat cfgs
         if not self.cameras_are_circular:
-            max_gap = min(num_views - 1, min_gap)
+            max_gap = min(num_views - 1, max_gap)
         min_gap = max(2 * self.cfg.min_distance_to_context_views, min_gap)
         if max_gap < min_gap:
             raise ValueError("Example does not have enough frames!")
@@ -85,7 +84,21 @@ class ViewSamplerBounded(ViewSampler[ViewSamplerBoundedCfg]):
             index_context_left *= 0
             index_context_right *= 0
             index_context_right += max_gap
-
+        context_indices = torch.tensor(
+            [index_context_left, index_context_right],
+            device=device, dtype=torch.long
+        )
+        if self.cfg.num_context_views > 2:
+            extra_context = torch.randint(
+                index_context_left + 1,
+                index_context_right,   
+                size=(self.cfg.num_context_views - 2,),
+                device=device,
+                dtype=torch.long
+            )
+            context_indices = torch.cat([context_indices, extra_context])
+            context_indices, _ = torch.sort(context_indices)
+        
         # Pick the target view indices.
         if self.stage == "test":
             # When testing, pick all.
@@ -106,16 +119,13 @@ class ViewSamplerBounded(ViewSampler[ViewSamplerBoundedCfg]):
         # Apply modulo for circular datasets.
         if self.cameras_are_circular:
             index_target %= num_views
-            index_context_right %= num_views
+            context_indices %= num_views
 
-        return (
-            torch.tensor((index_context_left, index_context_right)),
-            index_target,
-        )
+        return context_indices, index_target
 
     @property
     def num_context_views(self) -> int:
-        return 2
+        return self.cfg.num_context_views
 
     @property
     def num_target_views(self) -> int:

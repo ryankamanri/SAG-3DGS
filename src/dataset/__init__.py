@@ -64,11 +64,10 @@ def get_mixed_dataset(
 # original
 def get_dataset(
     cfgs: dict,
-    view_sampler: str, 
     stage: Stage,
     step_tracker: StepTracker | None,
 ) -> Dataset:
-    cfg = cfgs["re10k"]
+    cfg = list(cfgs.values())[0] # get the first config
     view_sampler_dict = cfgs["view_sampler"][cfg.view_sampler]
     view_sampler = get_view_sampler(
         VIEW_SAMPLER_CFGS[cfg.view_sampler](**view_sampler_dict),
