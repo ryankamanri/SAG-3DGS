@@ -177,6 +177,10 @@ class ModelWrapper(LightningModule):
             loss_str += f"{loss_fn.name}: {loss:.6} * {loss_fn.cfg.weight}; "
         total_loss /= total_weight
         self.log("loss/total", total_loss)
+        
+        self.log(f"scale_from_umeyama", gaussians.others.get("s", torch.tensor(-1.0)).mean())
+        self.log("depth_gt_mean", gaussians.others.get("depth_gt_mean", torch.tensor(-1.0)))
+        self.log("depth_pred_mean", gaussians.others.get("depth_pred_mean", torch.tensor(-1.0)))
 
         if (
             self.global_rank == 0
@@ -189,6 +193,10 @@ class ModelWrapper(LightningModule):
             print(
                 f"[{time.strftime('%Y-%m-%d %H:%M:%S')}]: "
                 f"train step {self.global_step}; "
+                f"time remaining(hours) = {((self.trainer.max_steps - self.global_step) * elapsed_seconds_per_step / 3600):.2f}; "
+                f"scale_from_umeyama = {gaussians.others.get('s', torch.tensor(-1.0)).mean():.6f}; "
+                f"depth_gt_mean = {gaussians.others.get('depth_gt_mean', torch.tensor(-1.0)):.6f}; "
+                f"depth_pred_mean = {gaussians.others.get('depth_pred_mean', torch.tensor(-1.0)):.6f}; "
                 f"scene = {[x for x in batch['scene']]}; "
                 f"context = {batch['context']['index'].tolist()}; "
                 f"target = {batch['target']['index'].tolist()}; "
@@ -196,7 +204,6 @@ class ModelWrapper(LightningModule):
                 f"gaussians = {gaussians.opacities.shape[1]}; "
                 f"loss = [{loss_str}]; "
                 f"total loss = {total_loss:.6f}; "
-                f"time remaining(hours) = {((self.trainer.max_steps - self.global_step) * elapsed_seconds_per_step / 3600):.2f}"
             )
         self.log("info/near", batch["context"]["near"].detach().cpu().numpy().mean())
         self.log("info/far", batch["context"]["far"].detach().cpu().numpy().mean())

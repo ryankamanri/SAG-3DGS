@@ -451,14 +451,15 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
 
         
         if is_training and self.use_vggt:
-            depths, _, _ = self.vggt_module.forward(imgs, extrinsics)
+            depths, _, _, s = self.vggt_module.forward(imgs, extrinsics)
             context["depth"] = depths
-            context["depth_mask"][torch.logical_or(depths < nears.view(b, v, 1, 1), depths > fars.view(b, v, 1, 1))] = 0.0 # remove those too big or small values.
+            context["depth_mask"] = torch.ones((b, v, h, w), device=imgs.device)
             # Important note: `nears`, `fars` here covered those loaded from DataLoader, 
             # which will decide the candidate depths in the CasMVSNetModule and voxel range in VoxelizedGaussianAdapterModule.
             # and context["depth"], context["depth_mask"], which will be used in the loss function.
             # you can overwrite context["near"], context["far"] to ensure exact camera rendering (though it wonld not happen during training).
         else:
+            s = torch.tensor(0., device=imgs.device)
             context["depth"] = torch.ones((b, v, h, w), device=imgs.device) * fars.view(b, v, 1, 1)  # dummy depth map
             context["depth_mask"] = torch.ones((b, v, h, w), device=imgs.device)  # dummy depth mask
         
@@ -639,6 +640,7 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
         res.others["stages"] = self.stages
         res.others["scales"] = self.cfg.unet_output_scales
         res.others["stage_renders"] = stage_renders
+        res.others["s"] = s
         
         return res
 

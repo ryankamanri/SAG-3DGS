@@ -2,7 +2,7 @@
 
 defaults:
   - override /dataset: [re10k]
-  - override /model/encoder: [costvolume]
+  - override /model/encoder: [incremental]
   - override /loss: [mse, lpips]
 
 wandb:
@@ -31,6 +31,7 @@ model:
 
 dataset: 
   re10k:
+    name: acid # we explicit set the dataset name to avoid confusion in dataloader
     roots: [datasets/acid]
 
 test:

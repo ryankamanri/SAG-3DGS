@@ -1,5 +1,6 @@
 evaluation:
   name: evaluation
 
-  index_path: assets/evaluation_index_re10k_video.json
-  num_context_views: 2
+  index_path: assets/evaluation_index_acid_insert1.json
+  num_context_views: 3
+  num_target_views: 3

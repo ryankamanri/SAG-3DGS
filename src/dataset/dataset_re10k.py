@@ -166,7 +166,7 @@ class DatasetRE10k(IterableDataset):
 
                 extrinsics, intrinsics, nears, fars = self.convert_poses(example["cameras"])
                 
-                if self.cfg.name == "re10k":
+                if self.cfg.name in ["re10k", "acid"]:
                     # we need to put extra near & far bounds for re10k
                     # we use the near & far from here when training
                     nears = torch.ones_like(nears) * 1.0

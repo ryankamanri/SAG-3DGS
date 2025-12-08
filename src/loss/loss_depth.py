@@ -61,16 +61,28 @@ class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
         cas_module_result: CasMVSNetModuleResult = gaussians.others["cas_module_result"]
         nears: torch.Tensor = gaussians.others["nears"] # (B, V)
         fars: torch.Tensor = gaussians.others["fars"]
+        umeyama_relative_scale: torch.Tensor = gaussians.others["s"] # (B)
         b, v = nears.shape
         loss = torch.tensor(0., device="cuda")
+        depth_gt_mean, depth_pred_mean = torch.tensor(0., device="cuda"), torch.tensor(0., device="cuda")
         view_idx = 0
         for ref_view_result in cas_module_result.ref_view_result_list:
             for idx, stage in enumerate(stages):
                 mask = depth_gt_mask_stages[idx][:, view_idx] == 1.
                 if not mask.any(): continue # Skip if no valid pixels in this view for this stage.
-                delta_d = torch.Tensor(depth_gt_stages[idx][:, view_idx] - ref_view_result.backbone[stage]["depth"]).abs() # (N)
-                delta_d_normalized = delta_d / (fars[:, view_idx] - nears[:, view_idx]).view(b, 1, 1) # (N)
-                loss += (delta_d_normalized).mean() * self.stage_weights[idx+1]
+                depth_gt_mean += (depth_gt_stages[idx][:, view_idx]).mean() * self.stage_weights[idx+1]
+                depth_pred_mean += (ref_view_result.backbone[stage]["depth"]).mean() * self.stage_weights[idx+1]
+                relative_scale = ref_view_result.backbone[stage]["depth"].view(b, -1).mean(dim=-1) / (depth_gt_stages[idx][:, view_idx].view(b, -1).mean(dim=-1) + 1e-8)
+                stack_2_scale = torch.stack((relative_scale, umeyama_relative_scale), dim=1)
+                with torch.no_grad():
+                    confidence = (stack_2_scale.min(dim=1).values / stack_2_scale.max(dim=1).values) ** 2 # (B)
+                # relative_scale = ref_view_result.backbone[stage]["depth"].view(b, -1).mean(dim=-1) / (depth_gt_stages[idx][:, view_idx].view(b, -1).mean(dim=-1) + 1e-8)
+                # delta_d = torch.Tensor(depth_gt_stages[idx][:, view_idx] * relative_scale.view(b, 1, 1) - ref_view_result.backbone[stage]["depth"]).abs() # (N)
+                # sigma = (depth_gt_stages[idx][:, view_idx] * relative_scale.view(b, 1, 1)).view(b, -1).std(dim=-1) + 1e-8
+                # delta_d_normalized = delta_d / (sigma * 6).view(b, 1, 1) # (N)
+                delta_d = torch.Tensor(depth_gt_stages[idx][:, view_idx] * umeyama_relative_scale.view(b, 1, 1) - ref_view_result.backbone[stage]["depth"]).abs() # (N)
+                delta_d_normalized = delta_d / (fars[:, view_idx] - nears[:, view_idx]).view(b, 1, 1) # (N)                
+                loss += (delta_d_normalized * confidence.view(b, 1, 1)).mean() * self.stage_weights[idx+1]
             view_idx += 1
             # TODO: Add a cascade loss?
             # delta_d = torch.Tensor(ref_view_result.pretrained["depth"] - gaussians.others["depths"][view_idx]).abs() # (B, H, W)
@@ -79,5 +91,9 @@ class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
             # loss += (delta_d_normalized * confidence).mean()
             # view_idx += 1
         
+        depth_gt_mean /= len(cas_module_result.ref_view_result_list)
+        depth_pred_mean /= len(cas_module_result.ref_view_result_list)
+        gaussians.others["depth_gt_mean"] = depth_gt_mean
+        gaussians.others["depth_pred_mean"] = depth_pred_mean
         loss /= len(cas_module_result.ref_view_result_list)
         return loss

@@ -108,10 +108,7 @@ def align_pred_to_gt_batch(T_pred, T_gt, depth_pred):
     T_aligned[:, :, :3, :3] = R_aligned
     T_aligned[:, :, :3, 3] = t_aligned
     
-    # Step 3: 缩放深度
-    depth_scaled = depth_pred * s.view(B, 1, 1, 1)  # (B, N, H, W)
-    
-    return T_aligned, depth_scaled
+    return T_aligned, depth_pred, s
 
 def adapt_size(target_size: tuple, imgs: torch.Tensor, pad_value=1.0):
     b, v, c, h, w = imgs.shape
@@ -183,13 +180,13 @@ class VGGTModule():
             vggt_extrinsics_3x4, _ = pose_encoding_to_extri_intri(predictions["pose_enc"], build_intrinsics=False)
             vggt_extrinsics = torch.eye(4, device=imgs.device).unsqueeze(0).unsqueeze(0).repeat(b, v, 1, 1)
             vggt_extrinsics[:, :, :3, :4] = vggt_extrinsics_3x4
-            vggt_extrinsics_aligned, depth_values = align_pred_to_gt_batch(vggt_extrinsics, extrinsics, predictions["depth"].squeeze(-1))
+            vggt_extrinsics_aligned, depth_values, s = align_pred_to_gt_batch(vggt_extrinsics, extrinsics, predictions["depth"].squeeze(-1))
             
             # visualize_cameras(vggt_extrinsics_aligned[:, :, :3, 3].reshape(-1, 3).cpu(), extrinsics[:, :, :3, 3].reshape(-1, 3).cpu())
             depths = adapt_size(imgs.shape[3:], depth_values.unsqueeze(2), pad_value=0.0).squeeze(2)
             nears, fars = compute_bounds(depths)
             
-        return depths.clone(), nears.clone(), fars.clone()
+        return depths.clone(), nears.clone(), fars.clone(), s
     
     
           

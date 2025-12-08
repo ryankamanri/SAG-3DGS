@@ -141,11 +141,8 @@ class CascadeMVSNet(nn.Module):
             proj_matrices_stage = proj_matrices["stage{}".format(stage_idx + 1)]
             
             if v > self.source_view_num + 1:
-                features_stage_filtered, proj_matrices_stage_filtered = torch.zeros_like(features_stage)[:, :self.source_view_num + 1, ...], torch.zeros_like(proj_matrices_stage)[:, :self.source_view_num + 1, ...]
-                features_stage_filtered.scatter_(1, nearest_k_indices.view(b, self.source_view_num + 1, 1, 1, 1).expand_as(features_stage_filtered), features_stage)
-                proj_matrices_stage_filtered.scatter_(1, nearest_k_indices.view(b, self.source_view_num + 1, 1, 1, 1).expand_as(proj_matrices_stage_filtered), proj_matrices_stage)
-            
-                features_stage, proj_matrices_stage = features_stage_filtered, proj_matrices_stage_filtered
+                features_stage = features_stage.gather(1, nearest_k_indices.view(b, self.source_view_num + 1, 1, 1, 1).expand_as(features_stage[:, :self.source_view_num + 1, ...]))
+                proj_matrices_stage = proj_matrices_stage.gather(1, nearest_k_indices.view(b, self.source_view_num + 1, 1, 1, 1).expand_as(proj_matrices_stage[:, :self.source_view_num + 1, ...]))
                 
             
             features_stage = torch.unbind(features_stage, dim=1)  # tuple of (B, C, H, W)

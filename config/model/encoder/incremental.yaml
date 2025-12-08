@@ -49,7 +49,7 @@ unet_output_scales: [4, 2, 1]
 cas_mvsnet_ckpt_path: pretrained/casmvsnet_smooth_000015.ckpt
 cas_mvsnet_use_backbone: true
 cas_mvsnet_load_to_backbone: false
-cas_mvsnet_ndepth: [64, 32, 16]
+cas_mvsnet_ndepth: [128, 32, 16]
 cas_mvsnet_cr_base_channels: [32, 16, 8]
 cas_mvsnet_base_channel: 8
 cas_mvsnet_geo_max_dist: 0.01
