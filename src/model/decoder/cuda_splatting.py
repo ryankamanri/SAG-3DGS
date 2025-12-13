@@ -258,7 +258,7 @@ def render_depth_cuda(
         near,
         far,
         image_shape,
-        torch.zeros((b, 3), dtype=fake_color.dtype, device=fake_color.device),
+        torch.ones((b, 3), dtype=fake_color.dtype, device=fake_color.device) * fake_color.max(),
         gaussian_means,
         gaussian_covariances,
         repeat(fake_color, "b g -> b g c ()", c=3),

@@ -70,26 +70,27 @@ class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
             for idx, stage in enumerate(stages):
                 mask = depth_gt_mask_stages[idx][:, view_idx] == 1.
                 if not mask.any(): continue # Skip if no valid pixels in this view for this stage.
-                depth_gt_mean += (depth_gt_stages[idx][:, view_idx]).mean() * self.stage_weights[idx+1]
-                depth_pred_mean += (ref_view_result.backbone[stage]["depth"]).mean() * self.stage_weights[idx+1]
-                relative_scale = ref_view_result.backbone[stage]["depth"].view(b, -1).mean(dim=-1) / (depth_gt_stages[idx][:, view_idx].view(b, -1).mean(dim=-1) + 1e-8)
-                stack_2_scale = torch.stack((relative_scale, umeyama_relative_scale), dim=1)
+                cur_depth_gt_origin, cur_depth_pred = depth_gt_stages[idx][:, view_idx], ref_view_result.backbone[stage]["depth"] # (B, H, W)
+                cur_depth_gt = cur_depth_gt_origin * umeyama_relative_scale.view(b, 1, 1)
+
+                # compute confidence of depth from umeyama
                 with torch.no_grad():
+                    depth_gt_mean += cur_depth_gt.mean() * self.stage_weights[idx+1]
+                    depth_pred_mean += cur_depth_pred.mean() * self.stage_weights[idx+1]
+                    relative_scale = cur_depth_pred.view(b, -1).mean(dim=-1) / (cur_depth_gt_origin.view(b, -1).mean(dim=-1) + 1e-8)
+                    stack_2_scale = torch.stack((relative_scale, umeyama_relative_scale), dim=1)
                     confidence = (stack_2_scale.min(dim=1).values / stack_2_scale.max(dim=1).values) ** 2 # (B)
-                # relative_scale = ref_view_result.backbone[stage]["depth"].view(b, -1).mean(dim=-1) / (depth_gt_stages[idx][:, view_idx].view(b, -1).mean(dim=-1) + 1e-8)
-                # delta_d = torch.Tensor(depth_gt_stages[idx][:, view_idx] * relative_scale.view(b, 1, 1) - ref_view_result.backbone[stage]["depth"]).abs() # (N)
-                # sigma = (depth_gt_stages[idx][:, view_idx] * relative_scale.view(b, 1, 1)).view(b, -1).std(dim=-1) + 1e-8
-                # delta_d_normalized = delta_d / (sigma * 6).view(b, 1, 1) # (N)
-                delta_d = torch.Tensor(depth_gt_stages[idx][:, view_idx] * umeyama_relative_scale.view(b, 1, 1) - ref_view_result.backbone[stage]["depth"]).abs() # (N)
-                delta_d_normalized = delta_d / (fars[:, view_idx] - nears[:, view_idx]).view(b, 1, 1) # (N)                
-                loss += (delta_d_normalized * confidence.view(b, 1, 1)).mean() * self.stage_weights[idx+1]
+                    
+                # compute depth mask, according to whether cur_depth_gt is in range
+                with torch.no_grad():
+                    depth_near_far = ref_view_result.backbone[stage]["depth_near_far"] # (B, 2, H, W)
+                    depth_mask = torch.logical_and(cur_depth_gt >= depth_near_far[:, 0], cur_depth_gt <= depth_near_far[:, 1])
+                    
+                delta_d = torch.Tensor((cur_depth_gt - cur_depth_pred) / (depth_near_far[:, 1] - depth_near_far[:, 0])).abs() # (N)
+            
+                if depth_mask.any():
+                    loss += (delta_d[depth_mask] * confidence.view(b, 1, 1)).mean() * self.stage_weights[idx+1]
             view_idx += 1
-            # TODO: Add a cascade loss?
-            # delta_d = torch.Tensor(ref_view_result.pretrained["depth"] - gaussians.others["depths"][view_idx]).abs() # (B, H, W)
-            # delta_d_normalized = delta_d / (fars[:, view_idx] - nears[:, view_idx]).view(b, 1, 1) # (B, H, W)
-            # confidence = torch.Tensor(ref_view_result.pretrained["photometric_confidence"]) # (B, H, W)
-            # loss += (delta_d_normalized * confidence).mean()
-            # view_idx += 1
         
         depth_gt_mean /= len(cas_module_result.ref_view_result_list)
         depth_pred_mean /= len(cas_module_result.ref_view_result_list)

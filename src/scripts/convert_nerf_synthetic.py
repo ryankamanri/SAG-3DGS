@@ -83,7 +83,7 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
         saved_fy = fy / h
         saved_cx = cx / w
         saved_cy = cy / h
-        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 2.0, 6.0]
+        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 2.0, 10.0]
 
         camera.extend(w2c[:3].flatten().tolist())
         cameras.append(np.array(camera))

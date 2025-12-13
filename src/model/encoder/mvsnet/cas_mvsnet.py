@@ -28,9 +28,7 @@ class DepthNet(nn.Module):
         if self.use_dot_similarity:
             prob_volume_pre = torch.zeros(b, num_depth, h, w, device=ref_feature.device)
         else:
-            volume_sum = ref_volume
-            volume_sq_sum = ref_volume ** 2
-            del ref_volume
+            volume_sum = torch.zeros(b, c, num_depth, h, w, device=ref_feature.device)
         for src_fea, src_proj in zip(src_features, src_projs):
             #warpped features
             src_proj_new = src_proj[:, 0].clone()
@@ -45,16 +43,15 @@ class DepthNet(nn.Module):
                 del similarity
             else:   
                 if self.training:
-                    volume_sum = volume_sum + warped_volume
-                    volume_sq_sum = volume_sq_sum + warped_volume ** 2
+                    volume_sum = volume_sum + (warped_volume - ref_volume) ** 2
                 else:
                     # TODO: this is only a temporal solution to save memory, better way?
-                    volume_sum += warped_volume
-                    volume_sq_sum += warped_volume.pow_(2)  # the memory of warped_volume has been modified
+                    warped_volume -= ref_volume
+                    volume_sum += warped_volume.pow_(2)
             del warped_volume
         if not self.use_dot_similarity:
             # aggregate multiple feature volumes by variance
-            volume_variance = volume_sq_sum.div_(num_views).sub_(volume_sum.div_(num_views).pow_(2))
+            volume_variance = volume_sum.div_(num_views) # actually it is mean((xi - x0)^2)
 
             # step 3. cost volume regularization
             cost_reg = cost_regularization(volume_variance, stage_idx)
@@ -127,7 +124,7 @@ class CascadeMVSNet(nn.Module):
         b, v, c, h, w = imgs_shape
         
         assert v >= self.source_view_num + 1, "Input view number {} is smaller than required {}".format(v, self.source_view_num + 1)
-        # select source views, note that proj_matrices and features have been shifted (0 is target view)
+        # DEPRECATED: select source views, note that proj_matrices and features have been shifted (0 is target view)
         if v > self.source_view_num + 1:
             positions = proj_matrices["stage1"][:, :, 0, :3, 3] # (B, V, 3)
             src_relative_pos = positions - positions[:, :1] # (B, V, 3)
@@ -140,9 +137,9 @@ class CascadeMVSNet(nn.Module):
             features_stage = features["stage{}".format(stage_idx + 1)]
             proj_matrices_stage = proj_matrices["stage{}".format(stage_idx + 1)]
             
-            if v > self.source_view_num + 1:
-                features_stage = features_stage.gather(1, nearest_k_indices.view(b, self.source_view_num + 1, 1, 1, 1).expand_as(features_stage[:, :self.source_view_num + 1, ...]))
-                proj_matrices_stage = proj_matrices_stage.gather(1, nearest_k_indices.view(b, self.source_view_num + 1, 1, 1, 1).expand_as(proj_matrices_stage[:, :self.source_view_num + 1, ...]))
+            # if v > self.source_view_num + 1:
+            #     features_stage = features_stage.gather(1, nearest_k_indices.view(b, self.source_view_num + 1, 1, 1, 1).expand_as(features_stage[:, :self.source_view_num + 1, ...]))
+            #     proj_matrices_stage = proj_matrices_stage.gather(1, nearest_k_indices.view(b, self.source_view_num + 1, 1, 1, 1).expand_as(proj_matrices_stage[:, :self.source_view_num + 1, ...]))
                 
             
             features_stage = torch.unbind(features_stage, dim=1)  # tuple of (B, C, H, W)

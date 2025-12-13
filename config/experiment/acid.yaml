@@ -3,7 +3,7 @@
 defaults:
   - override /dataset: [re10k]
   - override /model/encoder: [incremental]
-  - override /loss: [mse, lpips]
+  - override /loss: [mse, lpips, depth]
 
 wandb:
   name: acid
@@ -33,6 +33,10 @@ dataset:
   re10k:
     name: acid # we explicit set the dataset name to avoid confusion in dataloader
     roots: [datasets/acid]
+    test_times_per_scene: 1
+  view_sampler:
+    evaluation:
+      index_path: assets/evaluation_index_acid_insert1.json
 
 test:
   eval_time_skip_steps: 5

@@ -594,7 +594,7 @@ def cas_mvsnet_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
 
 
 
-def get_depth_range_samples(cur_depth, period, ndepth, depth_range, device, shape, expansion_factor=4.0, inverse_depth=True):
+def get_depth_range_samples(cur_depth, period, ndepth, depth_range, device, shape, expansion_factor=8.0, inverse_depth=True):
     #shape: (B, H, W)
     #cur_depth: (B, H, W) or (B, D)
     # depth_range: tuple(near: (B), far: (B))

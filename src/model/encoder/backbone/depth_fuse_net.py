@@ -318,7 +318,7 @@ class DepthFuseNet(nn.Module):
         
         return points
 
-    def batch_project_points(self, points, target_extrinsics, source_extrinsics, source_intrinsics):
+    def batch_project_points(self, points, target_extrinsics, source_extrinsics, source_intrinsics, min_clamp=1e-3):
         """批量3D点投影到源视图"""
         B, H, W, _ = points.shape
         device = points.device
@@ -342,8 +342,8 @@ class DepthFuseNet(nn.Module):
         torch.clamp_(points_src[..., 2], min=0.1) # avoid division by zero!
         
         # 投影到图像平面
-        x = points_src[..., 0] / points_src[..., 2]
-        y = points_src[..., 1] / points_src[..., 2]
+        x = points_src[..., 0] / points_src[..., 2].clamp(min=min_clamp)
+        y = points_src[..., 1] / points_src[..., 2].clamp(min=min_clamp)
         
         # 内参分解
         fx = source_intrinsics[:, 0, 0].view(B, 1, 1)

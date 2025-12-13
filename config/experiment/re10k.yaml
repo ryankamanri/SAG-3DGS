@@ -2,7 +2,7 @@
 
 defaults:
   - override /dataset: [re10k]
-  - override /dataset/view_sampler: [interval]
+  - override /dataset/view_sampler: [bounded]
   - override /model/encoder: incremental
   - override /loss: [mse, lpips, depth]
 
@@ -36,7 +36,11 @@ model:
 dataset: 
   re10k:
     roots: [datasets/re10k]
-    view_sampler: interval
+    view_sampler: bounded
+    test_times_per_scene: 1
+  view_sampler:
+    evaluation:
+      index_path: assets/evaluation_index_re10k_insert1.json
 
 test:
   eval_time_skip_steps: 5
