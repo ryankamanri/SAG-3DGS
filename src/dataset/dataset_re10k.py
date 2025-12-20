@@ -192,7 +192,7 @@ class DatasetRE10k(IterableDataset):
                     # print(context_indices)
                 except Exception as e:
                     # raise e
-                    print(f"Failed to sample views for {scene} with run index {run_idx}. skip it.")
+                    # print(f"Failed to sample views for {scene} with run index {run_idx}. skip it.")
                     # Skip because the example doesn't have enough frames.
                     continue
 

@@ -76,8 +76,9 @@ class MultiScaleFusionBlock(nn.Module):
             enhanced_target = target_features
         
         # 2. 多视图特征融合 (当前尺度)
-        # 方差融合 (保留多视图一致性)
-        fused = torch.var(torch.cat((warped_features, target_features.unsqueeze(2)), dim=2), dim=2)  # [B, V, C, H, W]
+        # 点积融合 (保留多视图一致性)
+        dot_weight = torch.softmax((warped_features * target_features.unsqueeze(2)).sum(dim=3) / (torch.tensor(C) ** 0.5), dim=2) # (B, V, N, H, W)
+        fused = (warped_features * dot_weight.unsqueeze(dim=3)).sum(dim=2)
         fused = self.variance_fusion(fused.view(B*V, C, H, W))
         fused = fused.view(B, V, C, H, W)
         

@@ -42,19 +42,16 @@ class DepthNet(nn.Module):
                 prob_volume_pre = prob_volume_pre + similarity
                 del similarity
             else:   
-                if self.training:
-                    volume_sum = volume_sum + (warped_volume - ref_volume) ** 2
-                else:
-                    # TODO: this is only a temporal solution to save memory, better way?
-                    warped_volume -= ref_volume
-                    volume_sum += warped_volume.pow_(2)
+                volume_sum = volume_sum + ((warped_volume - ref_volume) ** 2)
+
             del warped_volume
         if not self.use_dot_similarity:
             # aggregate multiple feature volumes by variance
-            volume_variance = volume_sum.div_(num_views) # actually it is mean((xi - x0)^2)
+            volume_mean, volume_std = volume_sum.detach().view(b, -1).mean(dim=1).view(b, 1, 1, 1, 1), volume_sum.detach().view(b, -1).std(dim=1).view(b, 1, 1, 1, 1) # to avoid implace operation in var()
+            volume_norm = (volume_sum - volume_mean) / (volume_std + 1e-3)
 
             # step 3. cost volume regularization
-            cost_reg = cost_regularization(volume_variance, stage_idx)
+            cost_reg = cost_regularization(volume_norm, stage_idx)
             # cost_reg = F.upsample(cost_reg, [num_depth * 4, img_height, img_width], mode='trilinear')
             prob_volume_pre = cost_reg.squeeze(1)
 
@@ -69,9 +66,9 @@ class DepthNet(nn.Module):
         
         if not self.use_dot_similarity and self.return_volume:
             # TODO: remove the inplace operation if needed (referenced by multiple tensors)
-            volume_context = volume_sum.div_(num_views)
-            feature_volume = torch.cat((volume_variance, volume_context), dim=1)
-            result["volume"] = feature_volume
+            # volume_context = volume_sum.div_(num_views)
+            # feature_volume = torch.cat((volume_variance, volume_context), dim=1)
+            result["volume"] = None
         
         if not self.return_photometric_confidence:
             return result

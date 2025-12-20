@@ -86,7 +86,7 @@ class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
                     depth_near_far = ref_view_result.backbone[stage]["depth_near_far"] # (B, 2, H, W)
                     depth_mask = torch.logical_and(cur_depth_gt >= depth_near_far[:, 0], cur_depth_gt <= depth_near_far[:, 1])
                     
-                delta_d = torch.Tensor((cur_depth_gt - cur_depth_pred) / (depth_near_far[:, 1] - depth_near_far[:, 0])).abs() # (N)
+                delta_d = torch.Tensor(1. / cur_depth_pred.clamp(min=1e-3) - 1. / cur_depth_gt.clamp(min=1e-3)).abs() / (1. / depth_near_far[:, 0].clamp(min=1e-3) - 1. / depth_near_far[:, 1].clamp(min=1e-3)) # (N)
             
                 if depth_mask.any():
                     loss += (delta_d[depth_mask] * confidence.view(b, 1, 1)).mean() * self.stage_weights[idx+1]
