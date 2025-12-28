@@ -5,6 +5,7 @@ import torch.nn as nn
 import taichi as ti
 import numpy as np
 from torch.autograd import Function
+import torch.nn.functional as F
 
 # 初始化 Taichi
 ti.init(arch=ti.gpu, default_fp=ti.f32, debug=False)
@@ -222,7 +223,6 @@ class VoxelAttentionTaichi(nn.Module):
         super().__init__()
         self.in_channels = in_channels
         self.hidden_channels = hidden_channels
-        self.out_channels = out_channels or in_channels
         self.stages = stages
         self.num_heads = num_heads
         assert hidden_channels % num_heads == 0, "hidden_channels must be divisible by num_heads"
@@ -230,7 +230,7 @@ class VoxelAttentionTaichi(nn.Module):
         self.query_proj = nn.Linear(in_channels, hidden_channels)
         self.key_proj = nn.Linear(in_channels, hidden_channels)
         self.value_proj = nn.Linear(in_channels, hidden_channels)
-        self.out_proj = nn.Linear(hidden_channels, self.out_channels) if hidden_channels != self.out_channels else None
+        self.out_proj = nn.Linear(hidden_channels, in_channels)
         
         self.voxel_size_encoding = nn.Sequential(
             nn.Linear(1, hidden_channels // 4), 
@@ -286,9 +286,50 @@ class VoxelAttentionTaichi(nn.Module):
         if self.out_proj is not None:
             aggregated = self.out_proj(aggregated)
 
-        return aggregated
+        return voxel_center_features + aggregated
+    
+def flat_3d_coordinates(voxel_coords: torch.Tensor) -> torch.Tensor:
+    min_coords = voxel_coords.min(dim=0)[0]
+    max_coords = voxel_coords.max(dim=0)[0]
+    voxel_grid_dims = max_coords - min_coords + 1
 
+    hashed_indices = (
+        (voxel_coords[:, 0] - min_coords[0]) * voxel_grid_dims[1] * voxel_grid_dims[2] +
+        (voxel_coords[:, 1] - min_coords[1]) * voxel_grid_dims[2] +
+        (voxel_coords[:, 2] - min_coords[2])
+    )
+    return hashed_indices
 
+def voxel_down_sample(pcd: torch.Tensor, voxel_indices: torch.Tensor, need_sort=True):
+    """
+    input:
+        pcd: [N, C]
+        voxel_indices: [N, 3(ijk)]
+        
+    output:
+        downsampled_pcd: [N', C]
+        downsampled_pcd_origin: [N, C]
+        unique_voxel_indices: [N', 3]
+    """
+    if need_sort:
+        flat_voxel_indices = flat_3d_coordinates(voxel_indices)
+        indices = flat_voxel_indices.sort().indices
+        voxel_indices = voxel_indices[indices]
+        pcd = pcd[indices]
+    
+    unique_voxel_indices, inverse_indices, counts = voxel_indices.unique(dim=0, return_inverse=True, return_counts=True) # (N', 3), (N), (N)
+    
+    cum_pcd, cum_counts = torch.cumsum(pcd, dim=0, dtype=torch.float64), torch.cumsum(counts, dim=0) # (N, C), (N)
+    # Add zero to end for the index of first element
+    cum_pcd, cum_counts = F.pad(cum_pcd, (0, 0, 0, 1)), F.pad(cum_counts, (0, 1)) # (N+1, C), (N+1)
+    # compute the first and the last index
+    last_idx = cum_counts - 1
+    first_idx = last_idx.roll(shifts=1)
+    
+    downsampled_pcd = ((cum_pcd[last_idx] - cum_pcd[first_idx])[:-1] / counts.unsqueeze(-1)).float()
+    downsampled_pcd_origin = downsampled_pcd[inverse_indices]
+    
+    return downsampled_pcd, downsampled_pcd_origin, unique_voxel_indices
 
 # Helper function: prepare sorted point cloud data
 def prepare_sorted_pointcloud(points, point_features, voxel_size):
@@ -303,7 +344,7 @@ def prepare_sorted_pointcloud(points, point_features, voxel_size):
     Returns:
         sorted_points: Point positions sorted by voxel index (N, 3)
         sorted_features: Point features sorted by voxel index (N, C)
-        sorted_voxel_centers: Voxel centers sorted by voxel index (N, C)
+        sorted_voxel_centers: Point centers sorted by voxel index (N, C)
         voxel_point_counts: Number of points in each voxel (Vox,)
         voxel_start_indices: Start index of each voxel in the sorted array (Vox,)
         num_voxels: Total number of voxels
@@ -311,19 +352,8 @@ def prepare_sorted_pointcloud(points, point_features, voxel_size):
     # Compute voxel coordinates
     voxel_coords = torch.floor(points / voxel_size).long()
 
-    # Compute voxel centers
-    voxel_centers = (voxel_coords + 0.5) * voxel_size
-
     # Convert 3D voxel coordinates to 1D hashed indices
-    min_coords = voxel_coords.min(dim=0)[0]
-    max_coords = voxel_coords.max(dim=0)[0]
-    voxel_grid_dims = max_coords - min_coords + 1
-
-    hashed_indices = (
-        (voxel_coords[:, 0] - min_coords[0]) * voxel_grid_dims[1] * voxel_grid_dims[2] +
-        (voxel_coords[:, 1] - min_coords[1]) * voxel_grid_dims[2] +
-        (voxel_coords[:, 2] - min_coords[2])
-    )
+    hashed_indices = flat_3d_coordinates(voxel_coords)
 
     # Get unique voxels and point counts
     unique_hashed, inverse_indices, counts = torch.unique(
@@ -335,13 +365,15 @@ def prepare_sorted_pointcloud(points, point_features, voxel_size):
     sorted_indices = torch.argsort(inverse_indices)
     sorted_points = points[sorted_indices]
     sorted_features = point_features[sorted_indices]
-    sorted_voxel_centers = voxel_centers[sorted_indices]
+    
+    # compute point centers
+    sorted_point_centers = voxel_down_sample(sorted_points, voxel_coords[sorted_indices], need_sort=False)[1] # (N, 3)
 
     # Compute start index of each voxel in the sorted array
     start_indices = torch.zeros(num_voxels, dtype=torch.int, device=points.device)
     start_indices[1:] = torch.cumsum(counts, dim=0)[:-1]
 
-    return sorted_points, sorted_features, sorted_voxel_centers, counts.int(), start_indices, num_voxels
+    return sorted_points, sorted_features, sorted_point_centers, counts.int(), start_indices, num_voxels
 
 
 

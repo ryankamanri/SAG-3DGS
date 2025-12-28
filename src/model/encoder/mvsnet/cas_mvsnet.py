@@ -5,12 +5,37 @@ from .cas_module import *
 
 Align_Corners_Range = False
 
+class RunningMeanLayer(nn.Module):
+    def __init__(self, feat_shape=(1,), momentum=0.1, eps=1e-5):
+        super().__init__()
+        self.feat_shape = feat_shape
+        self.momentum = momentum
+        self.eps = eps
+        
+        self.register_buffer('running_mean', torch.zeros(feat_shape))
+    
+    def forward(self, x, n_samples=1):
+        # 当前batch统计
+        batch_mean = x.mean(dim=0)
+        
+        # 更新running stats
+        with torch.no_grad():
+            self.running_mean = (1 - self.momentum) * self.running_mean + \
+                                self.momentum * batch_mean
+        
+        return self.running_mean
+
 class DepthNet(nn.Module):
-    def __init__(self, use_dot_similarity, return_volume=False, return_photometric_confidence=False):
+    def __init__(self, num_stage, use_dot_similarity, return_volume=False, return_photometric_confidence=False):
         super(DepthNet, self).__init__()
+        self.num_stage = num_stage
         self.use_dot_similarity = use_dot_similarity
         self.return_volume = return_volume
         self.return_photometric_confidence = return_photometric_confidence
+        
+        self.stat_mean_layers = nn.ModuleList(
+            [RunningMeanLayer(feat_shape=(1,)) for _ in range(num_stage)]
+        )
 
     def forward(self, stage_idx, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None):
         assert len(features) == len(proj_matrices), "Different number of images and projection matrices"
@@ -46,9 +71,11 @@ class DepthNet(nn.Module):
 
             del warped_volume
         if not self.use_dot_similarity:
-            # aggregate multiple feature volumes by variance
-            volume_mean, volume_std = volume_sum.detach().view(b, -1).mean(dim=1).view(b, 1, 1, 1, 1), volume_sum.detach().view(b, -1).std(dim=1).view(b, 1, 1, 1, 1) # to avoid implace operation in var()
-            volume_norm = (volume_sum - volume_mean) / (volume_std + 1e-3)
+            # aggregate multiple feature volumes
+            num_src_views = num_views - 1
+            volume_mean = volume_sum / num_src_views
+            stat_mean = self.stat_mean_layers[stage_idx](volume_mean.view(-1, 1), n_samples=num_src_views) # (1)
+            volume_norm = stat_mean + (num_src_views ** 0.5) * (volume_mean - stat_mean)
 
             # step 3. cost volume regularization
             cost_reg = cost_regularization(volume_norm, stage_idx)
@@ -61,8 +88,11 @@ class DepthNet(nn.Module):
         prob_volume = F.softmax(prob_volume_pre, dim=1)
         depth = depth_regression(prob_volume, depth_values=depth_values)
         
+        pdf_max = prob_volume.max(dim=1)[0] # B, H, W
+        
         result = {}
         result["depth"] = depth
+        result["pdf_max"] = pdf_max
         
         if not self.use_dot_similarity and self.return_volume:
             # TODO: remove the inplace operation if needed (referenced by multiple tensors)
@@ -111,7 +141,7 @@ class CascadeMVSNet(nn.Module):
                                                       for i in range(self.num_stage)])
         if self.refine:
             self.refine_network = RefineNet()
-        self.DepthNet = DepthNet(use_dot_similarity=use_dot_similarity, return_volume=return_volume, return_photometric_confidence=return_photometric_confidence)
+        self.DepthNet = DepthNet(num_stage=self.num_stage, use_dot_similarity=use_dot_similarity, return_volume=return_volume, return_photometric_confidence=return_photometric_confidence)
 
     def backbone(self, ref_img: torch.Tensor, features: dict, proj_matrices, depth_values, imgs_shape: tuple):
         outputs = {}

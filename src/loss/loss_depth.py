@@ -81,15 +81,10 @@ class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
                     stack_2_scale = torch.stack((relative_scale, umeyama_relative_scale), dim=1)
                     confidence = (stack_2_scale.min(dim=1).values / stack_2_scale.max(dim=1).values) ** 2 # (B)
                     
-                # compute depth mask, according to whether cur_depth_gt is in range
-                with torch.no_grad():
-                    depth_near_far = ref_view_result.backbone[stage]["depth_near_far"] # (B, 2, H, W)
-                    depth_mask = torch.logical_and(cur_depth_gt >= depth_near_far[:, 0], cur_depth_gt <= depth_near_far[:, 1])
-                    
-                delta_d = torch.Tensor(1. / cur_depth_pred.clamp(min=1e-3) - 1. / cur_depth_gt.clamp(min=1e-3)).abs() / (1. / depth_near_far[:, 0].clamp(min=1e-3) - 1. / depth_near_far[:, 1].clamp(min=1e-3)) # (N)
-            
-                if depth_mask.any():
-                    loss += (delta_d[depth_mask] * confidence.view(b, 1, 1)).mean() * self.stage_weights[idx+1]
+                near, far = nears[0, 0], fars[0, 0]
+                delta_d = torch.Tensor(1. / cur_depth_pred.clamp(min=1e-3) - 1. / cur_depth_gt.clamp(min=1e-3)).abs() / (1. / near - 1. / far) # (N)
+                loss += (delta_d * confidence.view(b, 1, 1)).mean() * self.stage_weights[idx+1]
+                
             view_idx += 1
         
         depth_gt_mean /= len(cas_module_result.ref_view_result_list)

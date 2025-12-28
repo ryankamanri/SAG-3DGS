@@ -162,8 +162,8 @@ class CasMVSNetModule(nn.Module):
             backbone_outputs = backbone_outputs_list[vi]
             for stage, idx in zip(stages, range(len(stages))):
                 prop = 1.0 / self.feat_scales[idx]
-                backbone_depths_est[stage].append(F.interpolate(backbone_outputs["depth"].unsqueeze(1), scale_factor=prop, mode="bilinear").squeeze(1))
-                backbone_photometric_confidences[stage].append(F.interpolate(backbone_outputs["photometric_confidence"].unsqueeze(1), scale_factor=prop, mode="bilinear").squeeze(1))
+                backbone_depths_est[stage].append(backbone_outputs[stage]["depth"])
+                backbone_photometric_confidences[stage].append(backbone_outputs[stage]["photometric_confidence"])
                 
             result.ref_view_result_list.append(ReferenceViewResult(imgs[:, vi], pretrained_outputs, backbone_outputs))
         

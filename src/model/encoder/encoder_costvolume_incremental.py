@@ -487,9 +487,11 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
         
         stage_depths = [[cas_module_result.ref_view_result_list[vi].backbone[stage]["depth"] for vi in range(v)] for stage in self.stages] # [[(B, H, W) * V] * S]
         stage_depths = [torch.stack(depths, dim=1) for depths in stage_depths] # [(B, V, H, W) * S]
+        stage_pdf_max = [[cas_module_result.ref_view_result_list[vi].backbone[stage]["pdf_max"] for vi in range(v)] for stage in self.stages] # [[(B, H, W) * V] * S]
+        stage_pdf_max = [torch.stack(depths, dim=1) for depths in stage_pdf_max] # [(B, V, H, W) * S]
         
         # fuse with depth
-        trans_features = self.depth_fuse_net.forward(stage_imgs, trans_features, stage_depths, intrinsics, extrinsics.inverse())
+        trans_features = self.depth_fuse_net.forward(stage_imgs, trans_features, stage_depths, stage_pdf_max, intrinsics, extrinsics.inverse())
         
         # compute bounding box
         # bbox = BoundingBox(

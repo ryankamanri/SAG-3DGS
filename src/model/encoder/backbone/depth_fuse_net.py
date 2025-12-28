@@ -9,14 +9,6 @@ class MultiScaleFusionBlock(nn.Module):
         self.scale_level = scale_level
         self.feature_dim = feature_dim
         
-        # 深度特征编码器
-        self.depth_encoder = nn.Sequential(
-            nn.Conv2d(1, 32, 5, padding=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, 3, padding=1),
-            nn.ReLU(inplace=True)
-        )
-        
         # 跨尺度连接处理
         if scale_level > 0:
             self.upsample = nn.Sequential(
@@ -25,21 +17,6 @@ class MultiScaleFusionBlock(nn.Module):
             )
             self.skip_conv = nn.Conv2d(feature_dim, feature_dim, 1)
         
-        # 特征融合模块
-        self.fusion_mode = fusion_mode
-        if fusion_mode == 'attention':
-            self.attention = nn.Sequential(
-                nn.Conv2d(feature_dim + 64, 128, 1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(128, 1, 1),
-                nn.Sigmoid()
-            )
-        elif fusion_mode == 'variance':
-            self.variance_fusion = nn.Sequential(
-                nn.Conv2d(feature_dim, feature_dim, 3, padding=1),
-                nn.GroupNorm(8, feature_dim),
-                nn.ReLU(inplace=True)
-            )
         
         # 特征精炼模块
         self.refine = nn.Sequential(
@@ -79,8 +56,6 @@ class MultiScaleFusionBlock(nn.Module):
         # 点积融合 (保留多视图一致性)
         dot_weight = torch.softmax((warped_features * target_features.unsqueeze(2)).sum(dim=3) / (torch.tensor(C) ** 0.5), dim=2) # (B, V, N, H, W)
         fused = (warped_features * dot_weight.unsqueeze(dim=3)).sum(dim=2)
-        fused = self.variance_fusion(fused.view(B*V, C, H, W))
-        fused = fused.view(B, V, C, H, W)
         
         # 3. 与增强后的目标特征融合
         combined = 0.3 * fused + 0.7 * enhanced_target
@@ -106,7 +81,7 @@ class DepthFuseNet(nn.Module):
         
         # 深度/焦距特征编码器
         self.depth_intr_encoder = nn.Sequential(
-            nn.Conv2d(2, 8, 1),
+            nn.Conv2d(3, 8, 1),
             nn.ReLU(inplace=True),
             nn.Conv2d(8, 16, 1)
         )
@@ -134,11 +109,12 @@ class DepthFuseNet(nn.Module):
         
             
 
-    def forward(self, images_pyramid, features_pyramid, depths_pyramid, intrinsics, extrinsics):
+    def forward(self, images_pyramid, features_pyramid, depths_pyramid, pdf_max_pyramid, intrinsics, extrinsics):
         """
         :param features_pyramid: 多尺度特征金字塔 [尺度0, 尺度1, ...] 
                                 其中尺度0=最低分辨率，尺度N=最高分辨率
         :param depths_pyramid: 多尺度深度图（同特征金字塔顺序）
+        :param pdf_max_pyramid: 多尺度pdf_max图（同特征金字塔顺序）
         :param intrinsics: 相机内参 [B, V, 3, 3]（原始分辨率）
         :param extrinsics: 相机外参 [B, V, 4, 4] (World to Camera)
         :return: 多尺度融合特征金字塔 [B, V, C, H, W] * num_scales（同输入顺序）
@@ -183,6 +159,7 @@ class DepthFuseNet(nn.Module):
             # depth/intr embedding & color residual
             fused = fused_pyramid[scale_idx]
             depths = depths_pyramid[scale_idx]
+            max_pdf = pdf_max_pyramid[scale_idx]
             intrinsics_inv_scaled = intrinsics_pyramid[scale_idx].inverse()
             b, v, hi, wi = depths.shape
             
@@ -192,7 +169,10 @@ class DepthFuseNet(nn.Module):
             ), dim=1)
             
             depth_intr_embedding = self.depth_intr_encoder(
-                torch.log(torch.clamp(depth_intr, min=1e-6))
+                torch.cat((
+                    torch.log(torch.clamp(depth_intr, min=1e-6)),
+                    max_pdf.view(b*v, 1, hi, wi)
+                ), dim=1)
             ).view(b, v, -1, hi, wi)
             
             fused_pyramid[scale_idx] = self.embeddings[scale_idx](
