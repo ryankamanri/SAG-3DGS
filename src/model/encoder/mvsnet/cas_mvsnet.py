@@ -67,7 +67,7 @@ class DepthNet(nn.Module):
                 prob_volume_pre = prob_volume_pre + similarity
                 del similarity
             else:   
-                volume_sum = volume_sum + ((warped_volume - ref_volume) ** 2)
+                volume_sum = volume_sum + torch.log(1 + (warped_volume - ref_volume) ** 2)
 
             del warped_volume
         if not self.use_dot_similarity:

@@ -232,21 +232,6 @@ class VoxelAttentionTaichi(nn.Module):
         self.value_proj = nn.Linear(in_channels, hidden_channels)
         self.out_proj = nn.Linear(hidden_channels, in_channels)
         
-        self.voxel_size_encoding = nn.Sequential(
-            nn.Linear(1, hidden_channels // 4), 
-            nn.ReLU(),
-            nn.Linear(hidden_channels // 4, hidden_channels // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_channels // 2, hidden_channels)
-        )  
-
-        self.position_encoding = nn.Sequential(
-            nn.Linear(3, hidden_channels // 4), 
-            nn.ReLU(),
-            nn.Linear(hidden_channels // 4, hidden_channels // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_channels // 2, hidden_channels)
-        )  
 
     def forward(self, points, point_features, voxel_centers, voxel_center_features, voxel_point_counts, voxel_start_indices, num_voxels, voxel_size, stage_idx):
         """
@@ -266,15 +251,6 @@ class VoxelAttentionTaichi(nn.Module):
         projected_q: torch.Tensor = self.query_proj(voxel_center_features)  # (M, D)
         projected_k = self.key_proj(point_features)
         projected_v = self.value_proj(point_features)
-
-        # Compute voxel_size encoding & add to query
-        voxel_size = torch.tensor([voxel_size], device=points.device)  # (1,)
-        voxel_size_encoding = self.voxel_size_encoding(1e-2 / voxel_size).unsqueeze(0)  # (1, D), 1e-2 / voxel_size to represent scale
-        projected_q = projected_q + voxel_size_encoding
-        
-        # Compute relative position encoding & add to key
-        relative_position_encoding = self.position_encoding((points - voxel_centers) / voxel_size)  # (N, D)
-        projected_k = projected_k + relative_position_encoding
 
         # Compute attention using Taichi
         aggregated = VoxelAttentionTaichiFunction.apply(
@@ -318,15 +294,11 @@ def voxel_down_sample(pcd: torch.Tensor, voxel_indices: torch.Tensor, need_sort=
         pcd = pcd[indices]
     
     unique_voxel_indices, inverse_indices, counts = voxel_indices.unique(dim=0, return_inverse=True, return_counts=True) # (N', 3), (N), (N)
+        
+    downsampled_pcd = torch.zeros((unique_voxel_indices.shape[0], pcd.shape[1]), device=pcd.device, dtype=pcd.dtype)
+    downsampled_pcd.scatter_add_(0, inverse_indices.unsqueeze(-1).expand(-1, pcd.shape[1]), pcd)
+    downsampled_pcd = downsampled_pcd / counts.unsqueeze(-1).float()
     
-    cum_pcd, cum_counts = torch.cumsum(pcd, dim=0, dtype=torch.float64), torch.cumsum(counts, dim=0) # (N, C), (N)
-    # Add zero to end for the index of first element
-    cum_pcd, cum_counts = F.pad(cum_pcd, (0, 0, 0, 1)), F.pad(cum_counts, (0, 1)) # (N+1, C), (N+1)
-    # compute the first and the last index
-    last_idx = cum_counts - 1
-    first_idx = last_idx.roll(shifts=1)
-    
-    downsampled_pcd = ((cum_pcd[last_idx] - cum_pcd[first_idx])[:-1] / counts.unsqueeze(-1)).float()
     downsampled_pcd_origin = downsampled_pcd[inverse_indices]
     
     return downsampled_pcd, downsampled_pcd_origin, unique_voxel_indices

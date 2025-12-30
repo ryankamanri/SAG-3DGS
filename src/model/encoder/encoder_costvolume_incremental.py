@@ -228,8 +228,8 @@ def mean_project(xyz: torch.Tensor, features: torch.Tensor, extrinsics: torch.Te
     # cam 2 uv
     cam_xyz_3 = cam_xyz[..., :3]                                   # (V, N, 3)
     uv_h = torch.bmm(cam_xyz_3, intrinsics.transpose(1, 2))        # (V, N, 3)
-    u = uv_h[..., 0] / uv_h[..., 2]
-    v = uv_h[..., 1] / uv_h[..., 2]
+    u = uv_h[..., 0] / uv_h[..., 2].clamp(min=1e-3)
+    v = uv_h[..., 1] / uv_h[..., 2].clamp(min=1e-3)
 
     # normalize
     u_norm = 2 * (u / (W - 1)) - 1
