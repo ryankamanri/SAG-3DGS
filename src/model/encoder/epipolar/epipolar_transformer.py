@@ -43,7 +43,7 @@ class EpipolarTransformer(nn.Module):
         d_in: int,
     ) -> None:
         super().__init__()
-        num_context_views = get_cfg().dataset.view_sampler.num_context_views
+        num_context_views = get_cfg()[get_cfg().mode].num_context_views
 
         self.cfg = cfg
         self.epipolar_sampler = EpipolarSampler(num_context_views, cfg.num_samples)
