@@ -17,8 +17,9 @@ from .view_sampler import ViewSampler
 @dataclass
 class ViewSamplerEvaluationCfg:
     name: Literal["evaluation"]
-    index_path: Path
+    index_path: str
     num_context_views: int
+    num_target_views: int
 
 
 class ViewSamplerEvaluation(ViewSampler[ViewSamplerEvaluationCfg]):
@@ -35,7 +36,7 @@ class ViewSamplerEvaluation(ViewSampler[ViewSamplerEvaluationCfg]):
         super().__init__(cfg, stage, is_overfitting, cameras_are_circular, step_tracker)
 
         dacite_config = Config(cast=[tuple])
-        with cfg.index_path.open("r") as f:
+        with Path(cfg.index_path).open("r") as f:
             self.index = {
                 k: None if v is None else from_dict(IndexEntry, v, dacite_config)
                 for k, v in json.load(f).items()
@@ -58,12 +59,12 @@ class ViewSamplerEvaluation(ViewSampler[ViewSamplerEvaluationCfg]):
             raise ValueError(f"No indices available for scene {scene}.")
         context_indices = torch.tensor(entry.context, dtype=torch.int64, device=device)
         target_indices = torch.tensor(entry.target, dtype=torch.int64, device=device)
-        return context_indices, target_indices[idx:idx+1]
+        return context_indices, target_indices
 
     @property
     def num_context_views(self) -> int:
-        return 2
+        return self.cfg.num_context_views
 
     @property
     def num_target_views(self) -> int:
-        return 1
+        return self.cfg.num_target_views

@@ -236,6 +236,7 @@ def compute_voxel_interpolate_and_knn_features(
     voxel_xyz = voxel_xyz.permute(0, 2, 1) # (B, 4, N)
     voxel_cam_xyz = torch.matmul(torch.linalg.inv(extrinsics), voxel_xyz) # (B, 4, N)
     voxel_centers_uvd = torch.matmul(intrinsics, voxel_cam_xyz[:, :3]) # (B, 4, N) -> (B, 3, N)
+    torch.clamp_(voxel_centers_uvd[:, 2], min=0.1) # avoid division by zero!
     voxel_centers_uv = (voxel_centers_uvd[:, :2] / voxel_centers_uvd[:, 2:]).permute(0, 2, 1) # (B, 3, N) -> (B, N, 2)
     # knn features
     if False: # use knn method, slowly
@@ -400,8 +401,9 @@ class VoxelToPointTransformer(nn.Module):
             
             # voxel size embedding
             if not self.wo_voxel_size_embedding:
-                voxel_scale = voxel_length / voxel_depths # (B, V)
+                voxel_scale = voxel_length / voxel_depths * (intrinsics[:, 0, 0] + intrinsics[:, 1, 1]).unsqueeze(-1) / 2 # (B, V)
                 voxel_size_emb = self.scale_weights_predictor(voxel_scale.unsqueeze(-1)) # (B, V, C)
+                voxel_size_emb = torch.softmax(voxel_size_emb, dim=-1) * c # (B, V, C)
                 source *= voxel_size_emb
                 target *= voxel_size_emb.view(b, vi, 1, c)
             

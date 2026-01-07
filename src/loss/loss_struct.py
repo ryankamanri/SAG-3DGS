@@ -33,9 +33,11 @@ class LossStruct(Loss[LossStructCfg, LossStructCfgWrapper]):
         offset_loss = Tensor(gaussians.others["offset_loss"]).mean()
         
         # gaussian structure also need to be restricted.
-        scales = gaussians.scales
-        sorted_scale = scales.sort(dim=2).values
-        gaussian_struct_loss = (1 - (sorted_scale[..., 1] / (sorted_scale[..., 2] + 1e-6)).mean(dim=1)).mean() ** 2
+        # TODO: Remove it
+        # scales = gaussians.scales
+        # sorted_scale = scales.sort(dim=2).values
+        # gaussian_struct_loss = (1 - (sorted_scale[..., 1] / (sorted_scale[..., 2] + 1e-6)).mean(dim=1)).mean() ** 2
+        gaussian_struct_loss = 0.
         
         return (
             self.cfg.weight_existence_loss * existence_loss +

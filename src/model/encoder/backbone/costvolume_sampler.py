@@ -20,24 +20,24 @@ class CostvolumeSampler(nn.Module):
         self.feature_channels = costvolume_feature_channels
         self.out_channels = out_channels
         self.feature_enhancer = nn.Sequential(
-            nn.Linear(costvolume_feature_channels, costvolume_feature_channels),
+            nn.Linear(costvolume_feature_channels, costvolume_feature_channels // 2),
             nn.GELU(),
-            nn.Linear(costvolume_feature_channels, costvolume_feature_channels),
+            nn.Linear(costvolume_feature_channels // 2, costvolume_feature_channels // 4),
             nn.GELU(),
-            nn.Linear(costvolume_feature_channels, costvolume_feature_channels),
+            nn.Linear(costvolume_feature_channels // 4, costvolume_feature_channels // 4),
         )
         self.weight_predictor = nn.Sequential(
-            nn.Linear(costvolume_feature_channels+3, costvolume_feature_channels),
+            nn.Linear(costvolume_feature_channels // 4 + 3, costvolume_feature_channels // 4),
             nn.GELU(),
-            nn.Linear(costvolume_feature_channels, 8),
+            nn.Linear(costvolume_feature_channels // 4, 8),
             nn.GELU(), 
             nn.Linear(8, 1), 
         )
         
         self.out_predictor = nn.Sequential(
-            nn.Linear(costvolume_feature_channels, costvolume_feature_channels),
+            nn.Linear(costvolume_feature_channels // 4, costvolume_feature_channels // 4),
             nn.GELU(),
-            nn.Linear(costvolume_feature_channels, out_channels)
+            nn.Linear(costvolume_feature_channels // 4, out_channels)
         )
         
     def weight_features(
@@ -69,9 +69,10 @@ class CostvolumeSampler(nn.Module):
         far: torch.Tensor, # (V)
         batch_idx: int
     ):
+        assert False, "CostvolumeSampler is deprecated."
         vox, _, = gaussian_means.shape
         if vox == 0: return torch.zeros(vox, self.out_channels, device=gaussian_means.device)
-        _, v, _, h, w = cas_module_result.registed_prob_pcd.vertices.shape # (B, V, 4, H, W)
+        _, v, _, h, w = cas_module_result.registed_prob_pcd["stage3"].vertices.shape # (B, V, 4, H, W)
         stage_volumes, stage_near_fars = [], []
         for stage in range(3):
             stage_volumes.append([
@@ -99,6 +100,7 @@ class CostvolumeSampler(nn.Module):
                 stage_intrinsics = intrinsic[vidx].unsqueeze(0).clone() # V -> 1
                 stage_intrinsics[:, :2] *= prop # (V, 3, 3) 4 -> 2 -> 1
                 means_uvd_slice = torch.matmul(stage_intrinsics, means_cam_slice[vidx].unsqueeze(0)) # (V, 3, Voxi)
+                torch.clamp_(means_uvd_slice[:, 2], min=near[vidx].view(vi, 1), max=far[vidx].view(vi, 1)) # (V, 3, Voxi) for safe grad
                 means_uvd_slice = torch.stack((
                     means_uvd_slice[:, 0] / means_uvd_slice[:, 2], 
                     means_uvd_slice[:, 1] / means_uvd_slice[:, 2], 

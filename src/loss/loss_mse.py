@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from jaxtyping import Float
 from torch import Tensor
+import torch.nn.functional as F
 
 from ..dataset.types import BatchedExample
 from ..model.decoder.decoder import DecoderOutput
@@ -11,6 +12,7 @@ from .loss import Loss, LossCfg
 
 @dataclass
 class LossMseCfg(LossCfg):
+    stage_weights: list[float]
     pass
 
 @dataclass
@@ -26,5 +28,18 @@ class LossMse(Loss[LossMseCfg, LossMseCfgWrapper]):
         gaussians: EncoderOutput,
         global_step: int,
     ) -> Float[Tensor, ""]:
-        delta = prediction.color - batch["target"]["image"]
-        return (delta**2).mean()
+        if gaussians.others.get("stages") is None:
+            # not multi-stage training
+            delta = prediction.color - batch["target"]["image"]
+            return (delta**2).mean()
+        
+        gt = batch["target"]["image"]
+        b, v, c, h, w = gt.shape
+        loss = 0.
+        for idx, stage in enumerate(gaussians.others["stages"]):
+            prop = 1.0 / gaussians.others["scales"][idx]
+            render = gaussians.others["stage_renders"][stage].color
+            stage_gt = F.interpolate(gt.view(b*v, c, h, w), scale_factor=prop, mode="bilinear", align_corners=False).view(b, v, c, int(h * prop), int(w * prop))
+            delta = render - stage_gt
+            loss += (delta**2).mean() * self.cfg.stage_weights[idx]
+        return loss

@@ -17,6 +17,7 @@ from .decoder import Decoder, DecoderOutput
 @dataclass
 class DecoderSplattingCUDACfg:
     name: Literal["splatting_cuda"]
+    background_color: list[float]
 
 
 class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
@@ -25,12 +26,11 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
     def __init__(
         self,
         cfg: DecoderSplattingCUDACfg,
-        dataset_cfg: DatasetCfg,
     ) -> None:
-        super().__init__(cfg, dataset_cfg)
+        super().__init__(cfg)
         self.register_buffer(
             "background_color",
-            torch.tensor(dataset_cfg.background_color, dtype=torch.float32),
+            torch.tensor(cfg.background_color, dtype=torch.float32),
             persistent=False,
         )
 
@@ -46,6 +46,15 @@ class DecoderSplattingCUDA(Decoder[DecoderSplattingCUDACfg]):
     ) -> DecoderOutput:
         b, v, _, _ = extrinsics.shape
         _, g, _ = gaussians.means.shape
+        # the cuda operator can NOT handle the situation of 0 gaussian
+        # it will throw `RuntimeError: Function _RasterizeGaussiansBackward returned an invalid gradient at index 2 - got [0, 0, 3] but expected shape compatible with [0, 9, 3]` during backward pass
+        # so we need to check if there are any gaussians
+        if g == 0:
+            # return empty color and depth
+            color = torch.zeros((b, v, 3, *image_shape), dtype=torch.float32, device=extrinsics.device)
+            depth = None if depth_mode is None else torch.zeros((b, v, *image_shape), dtype=torch.float32, device=extrinsics.device)
+            return DecoderOutput(color, depth)
+        
         color = render_cuda(
             rearrange(extrinsics, "b v i j -> (b v) i j"),
             rearrange(intrinsics, "b v i j -> (b v) i j"),

@@ -9,7 +9,7 @@ from torch import Generator, nn
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 
 from ..misc.step_tracker import StepTracker
-from . import DatasetCfg, get_dataset
+from . import get_mixed_dataset, get_dataset
 from .types import DataShim, Stage
 from .validation_wrapper import ValidationWrapper
 
@@ -56,7 +56,7 @@ def worker_init_fn(worker_id: int) -> None:
 
 
 class DataModule(LightningDataModule):
-    dataset_cfg: DatasetCfg
+    dataset_cfgs: dict
     data_loader_cfg: DataLoaderCfg
     step_tracker: StepTracker | None
     dataset_shim: DatasetShim
@@ -64,14 +64,14 @@ class DataModule(LightningDataModule):
 
     def __init__(
         self,
-        dataset_cfg: DatasetCfg,
+        dataset_cfgs: dict,
         data_loader_cfg: DataLoaderCfg,
         step_tracker: StepTracker | None = None,
         dataset_shim: DatasetShim = lambda dataset, _: dataset,
         global_rank: int = 0,
     ) -> None:
         super().__init__()
-        self.dataset_cfg = dataset_cfg
+        self.dataset_cfgs = dataset_cfgs
         self.data_loader_cfg = data_loader_cfg
         self.step_tracker = step_tracker
         self.dataset_shim = dataset_shim
@@ -88,7 +88,7 @@ class DataModule(LightningDataModule):
         return generator
 
     def train_dataloader(self):
-        dataset = get_dataset(self.dataset_cfg, "train", self.step_tracker)
+        dataset = get_mixed_dataset(self.dataset_cfgs, "train", self.step_tracker)
         dataset = self.dataset_shim(dataset, "train")
         return DataLoader(
             dataset,
@@ -101,7 +101,7 @@ class DataModule(LightningDataModule):
         )
 
     def val_dataloader(self):
-        dataset = get_dataset(self.dataset_cfg, "val", self.step_tracker)
+        dataset = get_mixed_dataset(self.dataset_cfgs, "val", self.step_tracker)
         dataset = self.dataset_shim(dataset, "val")
         return DataLoader(
             ValidationWrapper(dataset, 1),
@@ -112,9 +112,9 @@ class DataModule(LightningDataModule):
             persistent_workers=self.get_persistent(self.data_loader_cfg.val),
         )
 
-    def test_dataloader(self, dataset_cfg=None):
+    def test_dataloader(self):
         dataset = get_dataset(
-            self.dataset_cfg if dataset_cfg is None else dataset_cfg,
+            self.dataset_cfgs,
             "test",
             self.step_tracker,
         )

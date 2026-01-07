@@ -72,5 +72,12 @@ class LossSSIM(Loss[LossSSIMCfg, LossSSIMCfgWrapper]):
         gaussians: EncoderOutput,
         global_step: int,
     ) -> Float[Tensor, ""]:
-        
-        return (1. - ssim(batch["target"]["image"].squeeze(1), prediction.color.squeeze(1)))
+        gt = batch["target"]["image"]
+        b, v, c, h, w = gt.shape
+        loss = 0.
+        for idx, stage in enumerate(gaussians.others["stages"]):
+            prop = 1.0 / gaussians.others["scales"][idx]
+            render = gaussians.others["stage_renders"][stage].color
+            stage_gt = F.interpolate(gt.view(b*v, c, h, w), scale_factor=prop, mode="bilinear", align_corners=False).view(b, v, c, int(h * prop), int(w * prop))
+            loss += (1. - ssim(stage_gt.squeeze(1), render.squeeze(1)))
+        return loss / len(gaussians.others["stages"]) # average over stages

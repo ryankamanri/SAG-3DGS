@@ -16,20 +16,20 @@ from pytorch_lightning.callbacks import (
 from pytorch_lightning.loggers.wandb import WandbLogger
 
 # Configure beartype and jaxtyping.
-with install_import_hook(
-    ("src",),
-    ("beartype", "beartype"),
-):
-    from src.config import load_typed_root_config
-    from src.dataset.data_module import DataModule
-    from src.global_cfg import set_cfg
-    from src.loss import get_losses
-    from src.misc.LocalLogger import LocalLogger
-    from src.misc.step_tracker import StepTracker
-    from src.misc.wandb_tools import update_checkpoint_path
-    from src.model.decoder import get_decoder
-    from src.model.encoder import get_encoder
-    from src.model.model_wrapper import ModelWrapper
+# with install_import_hook(
+#     ("src",),
+#     ("beartype", "beartype"),
+# ):
+from src.config import load_typed_root_config
+from src.dataset.data_module import DataModule
+from src.global_cfg import set_cfg
+from src.loss import get_losses
+from src.misc.LocalLogger import LocalLogger
+from src.misc.step_tracker import StepTracker
+from src.misc.wandb_tools import update_checkpoint_path
+from src.model.decoder import get_decoder
+from src.model.encoder import get_encoder
+from src.model.model_wrapper import ModelWrapper
 
 
 def cyan(text: str) -> str:
@@ -116,8 +116,8 @@ def train(cfg_dict: DictConfig):
         callbacks=callbacks,
         val_check_interval=cfg.trainer.val_check_interval,
         enable_progress_bar=cfg.mode == "test",
-        gradient_clip_val=cfg.trainer.gradient_clip_val,
-        max_steps=cfg.trainer.max_steps // cfg.data_loader.train.batch_size,
+        gradient_clip_val=cfg.trainer.gradient_clip_val, 
+        max_steps=cfg.trainer.max_steps,
         num_sanity_val_steps=cfg.trainer.num_sanity_val_steps,
     )
     torch.manual_seed(cfg_dict.seed + trainer.global_rank)
@@ -130,7 +130,7 @@ def train(cfg_dict: DictConfig):
         "train_cfg": cfg.train,
         "encoder": encoder,
         "encoder_visualizer": encoder_visualizer,
-        "decoder": get_decoder(cfg.model.decoder, cfg.dataset),
+        "decoder": get_decoder(cfg.model.decoder),
         "losses": get_losses(cfg.loss),
         "step_tracker": step_tracker,
     }

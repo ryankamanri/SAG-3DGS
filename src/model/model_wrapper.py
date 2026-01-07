@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import time
 from typing import Optional, Protocol, runtime_checkable
-
+import gc
 import moviepy.editor as mpy
 import torch
 from tqdm import tqdm
@@ -41,11 +41,13 @@ from ..visualization.color_map import apply_color_map_to_image
 from ..visualization.layout import add_border, hcat, vcat
 from ..visualization import layout
 from ..visualization.validation_in_3d import render_cameras, render_projections
-from .decoder.decoder import Decoder, DepthRenderingMode
+from .decoder.decoder import Decoder, DecoderOutput, DepthRenderingMode
 from .encoder import Encoder
+from .encoder.encoder_cascade import EncoderCascade
+from .encoder.encoder_costvolume_incremental import EncoderCostVolumeIncremental
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
 from .types import EncoderOutput, TrainCfg, TestCfg, OptimizerCfg, FineTuneGaussianWrapper
-from ..utils import l1_loss, ssim
+from ..utils import l1_loss, ssim as ssim_fn
     
 
 @runtime_checkable
@@ -87,7 +89,6 @@ class ModelWrapper(LightningModule):
         self.test_cfg = test_cfg
         self.train_cfg = train_cfg
         self.step_tracker = step_tracker
-
         # Set up the model.
         
         # initialize pretrained mvsnet
@@ -107,6 +108,11 @@ class ModelWrapper(LightningModule):
         if self.test_cfg.compute_scores:
             self.test_step_outputs = {}
             self.time_skip_steps_dict = {"encoder": 0, "decoder": 0, "fine_tune": 0}
+            self.average_score = {
+                "psnr": 0.0,
+                "ssim": 0.0,
+                "lpips": 0.0,
+            }
             
         if self.test_cfg.use_network_gui:
             network_gui.init()
@@ -114,21 +120,41 @@ class ModelWrapper(LightningModule):
     def training_step(self, batch, batch_idx):
         batch: BatchedExample = self.data_shim(batch)
         _, _, _, h, w = batch["target"]["image"].shape
+        
+        # if use our CascadeEncoder, we need to set render_callback for spliting voxels. every step we need to update it because the variable in closure is different.
+        if type(self.encoder) in (EncoderCascade, EncoderCostVolumeIncremental):
+            def render_callback(gaussians: EncoderOutput, scale: int) -> DecoderOutput:
+                prop = 1.0 / scale
+                output = self.decoder.forward(
+                    gaussians,
+                    batch["target"]["extrinsics"],
+                    batch["target"]["intrinsics"],
+                    batch["target"]["near"],
+                    batch["target"]["far"],
+                    (int(h * prop), int(w * prop)),
+                    depth_mode=self.train_cfg.depth_mode,
+                )
+                return output
+                
+            self.encoder.render_callback = render_callback
 
         # Run the model.
         gaussians: EncoderOutput = self.encoder(
             batch["context"], self.global_step, False, scene_names=batch["scene"]
         )
 
-        output = self.decoder.forward(
-            gaussians,
-            batch["target"]["extrinsics"],
-            batch["target"]["intrinsics"],
-            batch["target"]["near"],
-            batch["target"]["far"],
-            (h, w),
-            depth_mode=self.train_cfg.depth_mode,
-        )
+        if type(self.encoder) in (EncoderCascade, EncoderCostVolumeIncremental):
+            output = gaussians.others["stage_renders"][gaussians.others["stages"][-1]]
+        else:
+            output = self.decoder.forward(
+                gaussians,
+                batch["target"]["extrinsics"],
+                batch["target"]["intrinsics"],
+                batch["target"]["near"],
+                batch["target"]["far"],
+                (h, w),
+                depth_mode=self.train_cfg.depth_mode,
+            )
         target_gt = batch["target"]["image"]
 
         # Compute metrics.
@@ -151,6 +177,10 @@ class ModelWrapper(LightningModule):
             loss_str += f"{loss_fn.name}: {loss:.6} * {loss_fn.cfg.weight}; "
         total_loss /= total_weight
         self.log("loss/total", total_loss)
+        
+        self.log(f"scale_from_umeyama", gaussians.others.get("s", torch.tensor(-1.0)).mean())
+        self.log("depth_gt_mean", gaussians.others.get("depth_gt_mean", torch.tensor(-1.0)))
+        self.log("depth_pred_mean", gaussians.others.get("depth_pred_mean", torch.tensor(-1.0)))
 
         if (
             self.global_rank == 0
@@ -163,13 +193,17 @@ class ModelWrapper(LightningModule):
             print(
                 f"[{time.strftime('%Y-%m-%d %H:%M:%S')}]: "
                 f"train step {self.global_step}; "
-                f"scene = {[x[:20] for x in batch['scene']]}; "
+                f"time remaining(hours) = {((self.trainer.max_steps - self.global_step) * elapsed_seconds_per_step / 3600):.2f}; "
+                f"scale_from_umeyama = {gaussians.others.get('s', torch.tensor(-1.0)).mean():.6f}; "
+                f"depth_gt_mean = {gaussians.others.get('depth_gt_mean', torch.tensor(-1.0)):.6f}; "
+                f"depth_pred_mean = {gaussians.others.get('depth_pred_mean', torch.tensor(-1.0)):.6f}; "
+                f"scene = {[x for x in batch['scene']]}; "
                 f"context = {batch['context']['index'].tolist()}; "
+                f"target = {batch['target']['index'].tolist()}; "
                 # f"bound = {gaussians.others['bbox'].size.detach().cpu().numpy().mean()}; "
                 f"gaussians = {gaussians.opacities.shape[1]}; "
                 f"loss = [{loss_str}]; "
                 f"total loss = {total_loss:.6f}; "
-                f"time remaining(hours) = {((self.trainer.max_steps - self.global_step) * elapsed_seconds_per_step / 3600):.2f}"
             )
         self.log("info/near", batch["context"]["near"].detach().cpu().numpy().mean())
         self.log("info/far", batch["context"]["far"].detach().cpu().numpy().mean())
@@ -178,8 +212,38 @@ class ModelWrapper(LightningModule):
         # Tell the data loader processes about the current step.
         if self.step_tracker is not None:
             self.step_tracker.set_step(self.global_step)
+            
+        if total_loss.isnan().any():
+            print(f"NaN loss encountered at step {self.global_step}.")
+            print(
+                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}]: "
+                f"train step {self.global_step}; "
+                f"scene = {[x for x in batch['scene']]}; "
+                f"context = {batch['context']['index'].tolist()}; "
+                f"target = {batch['target']['index'].tolist()}; "
+                # f"bound = {gaussians.others['bbox'].size.detach().cpu().numpy().mean()}; "
+                f"gaussians = {gaussians.opacities.shape[1]}; "
+                f"loss = [{loss_str}]; "
+                f"total loss = {total_loss:.6f}; "
+            )
+            print("jumpping to next step, skipping this step.")
+            self.log("nan_events", 1, on_step=True)
+            return None
 
         return total_loss
+    
+    # def on_after_backward(self):
+    #     # 监控梯度统计信息
+    #     for name, param in self.named_parameters():
+    #         if param.grad is not None:
+    #             grad = param.grad
+    #             self.log(f"grad/{name}_mean", grad.mean())
+    #             self.log(f"grad/{name}_max", grad.max())
+    #             self.log(f"grad/{name}_min", grad.min())
+                
+    #             # 检测 NaN
+    #             if torch.isnan(grad).any():
+    #                 print(f"NaN gradients in {name}!")
 
     def test_step(self, batch, batch_idx):
         batch: BatchedExample = self.data_shim(batch)
@@ -204,7 +268,7 @@ class ModelWrapper(LightningModule):
                 batch["target"]["near"],
                 batch["target"]["far"],
                 (h, w),
-                depth_mode=None,
+                depth_mode="depth",
             )
             
         if self.test_cfg.use_network_gui:
@@ -250,7 +314,7 @@ class ModelWrapper(LightningModule):
                     with self.benchmarker.time("fine_tune"):
                         output_ft = self.decoder.forward(
                             fine_tune_gaussian_wrapper.get_gaussians(),
-                            batch["fine_tune"]["extrinsics"], # TODO: load fine tune images.
+                            batch["fine_tune"]["extrinsics"],
                             batch["fine_tune"]["intrinsics"],
                             batch["fine_tune"]["near"],
                             batch["fine_tune"]["far"],
@@ -259,7 +323,7 @@ class ModelWrapper(LightningModule):
                         )
                         # compute loss
                         Ll1 = l1_loss(output_ft.color, gt)
-                        l_ssim = 1 - ssim(output_ft.color.view(b*v_ft, c, h, w), gt.view(b*v_ft, c, h, w))
+                        l_ssim = 1 - ssim_fn(output_ft.color.view(b*v_ft, c, h, w), gt.view(b*v_ft, c, h, w))
                         proc.set_postfix({
                             'l1': Ll1.item(), 
                             'ssim': 1 - l_ssim.item()
@@ -285,7 +349,7 @@ class ModelWrapper(LightningModule):
                 batch["target"]["near"],
                 batch["target"]["far"],
                 (h, w),
-                depth_mode=None,
+                depth_mode="depth",
             ) # render target frames.
             pass # if self.test_cfg.fine_tune:
         
@@ -295,6 +359,8 @@ class ModelWrapper(LightningModule):
         path = self.test_cfg.output_path / name
         images_prob = output.color[0]
         images_prob_ft = output_ft.color[0] if self.test_cfg.fine_tune else images_prob
+        depth_prob = output.depth[0]
+        depth_prob_ft = output_ft.depth[0] if self.test_cfg.fine_tune else depth_prob
         rgb_gt = batch["target"]["image"][0]
 
         # Save images.
@@ -329,7 +395,28 @@ class ModelWrapper(LightningModule):
                 ).items():
                     self.logger.log_image(k, [prep_image(image)], step=self.global_step)
         
-        if False:
+        if True:
+            # Construct comparison image.
+            def depth_map(result):
+                result = result + 1e-6
+                result = result.log()
+                result = 1 - ((result - result.min()) / (result.max() - result.min()))
+                return apply_color_map_to_image(result, "turbo")
+            
+            comparison = hcat(
+                add_label(vcat(*batch["context"]["image"][0]), "Context"),
+                add_label(vcat(*rgb_gt), "Target (Ground Truth)"),
+                add_label(vcat(*torch.cat((images_prob, images_prob_ft))), "Target (w/o | w fine-tune)"),
+                add_label(vcat(*torch.cat((depth_map(depth_prob), depth_map(depth_prob_ft)))), "Target depth (w/o | w fine-tune)"),
+            )
+            self.logger.log_image(
+                f"comparison_{scene}",
+                [prep_image(add_border(comparison))],
+                step=self.global_step,
+                caption=batch["scene"],
+            )
+            
+        if True:
             # Render projections and construct projection image.
             projections = hcat(*render_projections(
                                     gaussians,
@@ -337,7 +424,7 @@ class ModelWrapper(LightningModule):
                                     extra_label="(Softmax)",
                                 )[0])
             self.logger.log_image(
-                "projection",
+                f"projection_{scene}",
                 [prep_image(add_border(projections))],
                 step=self.global_step,
             )
@@ -373,7 +460,10 @@ class ModelWrapper(LightningModule):
                     opacities=fine_tuned_gaussians.opacities[0],
                     path=path / scene / "fine_tuned_gaussians.ply",
                 )
-                
+        
+        del gaussians
+        if self.test_cfg.fine_tune:
+            del fine_tuned_gaussians
                     
         # compute scores
         if self.test_cfg.compute_scores:
@@ -407,11 +497,22 @@ class ModelWrapper(LightningModule):
             self.test_step_outputs[f"ssim_ft"].append(ssim_ft)
             self.test_step_outputs[f"lpips_ft"].append(lpips_ft)
             
+            # compute average score for all scenes
+            if self.eval_cnt > 0:
+                prod_coef = self.eval_cnt / (self.eval_cnt + 1)
+                self.average_score["psnr"] = (self.average_score["psnr"] * prod_coef) + (psnr / (self.eval_cnt + 1))
+                self.average_score["ssim"] = (self.average_score["ssim"] * prod_coef) + (ssim / (self.eval_cnt + 1))
+                self.average_score["lpips"] = (self.average_score["lpips"] * prod_coef) + (lpips / (self.eval_cnt + 1))
+            else:
+                self.average_score["psnr"] = psnr
+                self.average_score["ssim"] = ssim
+                self.average_score["lpips"] = lpips
+            
             print()
             print(f"Evaluate scene {batch['scene']}: ")
-            print(f"PSNR(origin/ft): {psnr}/{psnr_ft}")
-            print(f"SSIM(origin/ft): {ssim}/{ssim_ft}")
-            print(f"LPIPS(origin/ft): {lpips}/{lpips_ft}")
+            print(f"PSNR(origin/ft/avg): {psnr}/{psnr_ft}/{self.average_score['psnr']}")
+            print(f"SSIM(origin/ft/avg): {ssim}/{ssim_ft}/{self.average_score['ssim']}")
+            print(f"LPIPS(origin/ft/avg): {lpips}/{lpips_ft}/{self.average_score['lpips']}")
             print()
             
             # append scene results
@@ -440,6 +541,8 @@ class ModelWrapper(LightningModule):
             self.test_step_outputs["scene_result"][scene_name]["psnr_ft"].append(psnr_ft)
             self.test_step_outputs["scene_result"][scene_name]["ssim_ft"].append(ssim_ft)
             self.test_step_outputs["scene_result"][scene_name]["lpips_ft"].append(lpips_ft)
+            
+            self.eval_cnt += 1
             
 
     def on_test_end(self) -> None:
@@ -692,7 +795,8 @@ class ModelWrapper(LightningModule):
 
         # Color-map the result.
         def depth_map(result):
-            near = result[result >= 0][:16_000_000].quantile(0.01).log()
+            result = result + 1e-6
+            near = result[result > 0][:16_000_000].quantile(0.01).log()
             far = result.view(-1)[:16_000_000].quantile(0.99).log()
             result = result.log()
             result = 1 - (result - near) / (far - near)

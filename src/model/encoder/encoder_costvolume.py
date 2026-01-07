@@ -71,7 +71,7 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
         # multi-view Transformer backbone
         if cfg.use_epipolar_trans:
             self.epipolar_sampler = EpipolarSampler(
-                num_views=get_cfg().dataset.view_sampler.num_context_views,
+                num_views=get_cfg()[get_cfg().mode].num_context_views,
                 num_samples=32,
             )
             self.depth_encoding = nn.Sequential(
@@ -115,7 +115,7 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
             costvolume_unet_attn_res=tuple(cfg.costvolume_unet_attn_res),
             gaussian_raw_channels=cfg.num_surfaces * (self.gaussian_adapter.d_in + 2),
             gaussians_per_pixel=cfg.gaussians_per_pixel,
-            num_views=get_cfg().dataset.view_sampler.num_context_views,
+            num_views=get_cfg()[get_cfg().mode].num_context_views,
             depth_unet_feat_dim=cfg.depth_unet_feat_dim,
             depth_unet_attn_res=cfg.depth_unet_attn_res,
             depth_unet_channel_mult=cfg.depth_unet_channel_mult,

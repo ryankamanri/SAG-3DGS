@@ -63,6 +63,8 @@ def read_pfm(filename):
 @dataclass
 class DatasetRE10kCfg(DatasetCfgCommon):
     name: Literal["re10k", "acid", "dtu", "llff", "tandt", "ns", "scannet"]
+    weight: float
+    view_sampler: str
     roots: list[Path]
     baseline_epsilon: float
     max_fov: float
@@ -72,11 +74,13 @@ class DatasetRE10kCfg(DatasetCfgCommon):
     test_chunk_interval: int
     train_times_per_scene: int
     test_times_per_scene: int
+    depth_map_path: str
     skip_bad_shape: bool = True
     near: float = -1.0
     far: float = -1.0
     baseline_scale_bounds: bool = True
     shuffle_val: bool = True
+    offline: bool = True  # whether to use offline depth map, default is True, set to False for real-time prediction (VGGT) during training
 
 
 class DatasetRE10k(IterableDataset):
@@ -162,10 +166,14 @@ class DatasetRE10k(IterableDataset):
 
                 extrinsics, intrinsics, nears, fars = self.convert_poses(example["cameras"])
                 
-                if self.cfg.name == "re10k":
+                if self.cfg.name in ["re10k", "acid"]:
                     # we need to put extra near & far bounds for re10k
-                    nears = torch.ones_like(nears)
+                    # we use the near & far from here when training
+                    nears = torch.ones_like(nears) * 1.0
                     fars = torch.ones_like(fars) * 100.0
+                    # the image in our preprocessed dataset is rescale from 360 * 640 to 256 * (640*256/360) and crop to 256 * 256, but the corresponding camera intrinsics is not be adjusted.
+                    # so we manually adjust intrinsics here
+                    # intrinsics[..., 0, 0] *= 640 / 360  # fx
 
                 scene = f"{self.cfg.name}_{example['key']}_{(run_idx % times_per_scene):02d}"
 
@@ -182,7 +190,9 @@ class DatasetRE10k(IterableDataset):
                     # reverse the context
                     # context_indices = torch.flip(context_indices, dims=[0])
                     # print(context_indices)
-                except ValueError:
+                except Exception as e:
+                    # raise e
+                    # print(f"Failed to sample views for {scene} with run index {run_idx}. skip it.")
                     # Skip because the example doesn't have enough frames.
                     continue
 
@@ -205,16 +215,43 @@ class DatasetRE10k(IterableDataset):
                 ]) if fine_tune_indices != None else (None, None)
                 
                 # load depth from pfm file
-                if False: # self.cfg.name == "dtu":
-                    pfm_path = Path("C:/Users/97448/plus/repos/datasets/dtu/data/mvs_training/dtu/Depths_raw") / example['key'][:example['key'].index("_")]
+                if self.cfg.name == "dtu" and self.stage == "train":
+                    pfm_path = Path(self.cfg.depth_map_path) / example['key'][:example['key'].index("_")]
                     context_depth_maps = [read_pfm(str(pfm_path / f"depth_map_{(index // 7).item():04d}.pfm"))[0] for index in context_indices]
+                    context_depth_masks = [np.array(depth_map != 0., dtype=np.float32) for depth_map in context_depth_maps]
                     # downsample to 512 * 640
                     context_depth_maps = [cv2.resize(depth_map, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST) for depth_map in context_depth_maps]
                     context_depth_maps = [depth_map[44:556, 80:720] for depth_map in context_depth_maps]
                     context_depth_maps = torch.stack([torch.from_numpy(depth_map.copy()) for depth_map in context_depth_maps], dim=0)
-                    # donwscale to 1/ 200
+                    context_depth_masks = [cv2.resize(depth_mask, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST) for depth_mask in context_depth_masks]
+                    context_depth_masks = [depth_mask[44:556, 80:720] for depth_mask in context_depth_masks]
+                    context_depth_masks = torch.stack([torch.from_numpy(depth_mask.copy()) for depth_mask in context_depth_masks], dim=0)
+                    # downscale to 1 / 200
                     context_depth_maps = context_depth_maps / 200.0
+                    # resize & crop
+                    resize_crop = tf.Compose([
+                        tf.Resize(min(self.cfg.image_shape)), 
+                        tf.CenterCrop(tuple(self.cfg.image_shape))
+                    ])
+                    context_depth_maps = resize_crop(context_depth_maps)
+                    context_depth_masks = resize_crop(context_depth_masks)
                 
+                # load depth from VGGT prediction
+                offline_depth = self.cfg.offline
+                if self.cfg.name == "re10k" and self.stage == "train":
+                    if not offline_depth:
+                        context_depth_maps, context_depth_confs = torch.tensor(0.), torch.tensor(0.) # real time prediction, set `use_vggt = True` on 'src/model/encoder/mvsnet/cas_mvsnet_module.py'
+                    else:
+                        scene_depth_path = Path(self.cfg.depth_map_path) / self.stage / f"{example['key']}.pt"
+                        scene_depth_dict = torch.load(str(scene_depth_path), map_location="cpu") # load to cpu, NOT original device
+                        context_timestamps = [example["timestamps"][i.item()] for i in context_indices]
+                        context_depth_maps = torch.stack([scene_depth_dict[str(t.item())]["depth"] for t in context_timestamps]).float()
+                        context_depth_confs = torch.ones(context_images.shape[0], self.cfg.image_shape[0], self.cfg.image_shape[1]) # (V, H, W)
+                        # context_depth_confs = torch.stack([scene_depth_dict[t]["depth_conf"] for t in context_timestamps])
+                        nears[context_indices] = context_depth_maps.reshape(context_images.shape[0], self.cfg.image_shape[0] * self.cfg.image_shape[1]).min(dim=-1).values * 0.8 # (V)
+                        torch.clamp_(nears[context_indices], min=0.1) # avoid too small near values (0) may be devided by zero in later calculations
+                        fars[context_indices] = context_depth_maps.reshape(context_images.shape[0], self.cfg.image_shape[0] * self.cfg.image_shape[1]).max(dim=-1).values * 1.0 # (V)
+                    pass
 
                 # Skip the example if the images don't have the right shape.
                 context_image_invalid = context_images.shape[1:] != (3, 360, 640)
@@ -243,6 +280,7 @@ class DatasetRE10k(IterableDataset):
                     scale = 1
 
                 nf_scale = scale if self.cfg.baseline_scale_bounds else 1.0
+                v, _, _, _ = context_images.shape
                 example = {
                     "context": {
                         "extrinsics": extrinsics[context_indices],
@@ -251,6 +289,9 @@ class DatasetRE10k(IterableDataset):
                         "target_intrinsics": intrinsics[target_indices],
                         "image": context_images,
                         "alpha": context_alphas, 
+                        "depth": context_depth_maps if self.stage == "train" else torch.tensor(0.), 
+                        "depth_conf": context_depth_confs if self.cfg.name == "re10k" and self.stage == "train" else torch.tensor(0.), 
+                        "depth_mask": context_depth_masks if self.cfg.name == "dtu" and self.stage == "train" else torch.ones(v, self.cfg.image_shape[0], self.cfg.image_shape[1]), 
                         "near": nears[context_indices] / nf_scale,
                         "far": fars[context_indices] / nf_scale,
                         "index": context_indices,

@@ -1,9 +1,10 @@
 # @package _global_
 
 defaults:
-  - override /dataset: re10k
-  - override /model/encoder: cascade
-  - override /loss: [mse, lpips, depth, struct]
+  - override /dataset: [re10k]
+  - override /dataset/view_sampler: [bounded]
+  - override /model/encoder: incremental
+  - override /loss: [mse, lpips, depth]
 
 wandb:
   name: re10k
@@ -13,8 +14,12 @@ data_loader:
   train:
     batch_size: 1
 
+optimizer:
+  max_steps: 300_001
+
 trainer:
   max_steps: 300_001
+  val_check_interval: 300
 
 # ----- Additional params for default best model customization
 model:
@@ -28,16 +33,16 @@ model:
     depth_unet_attn_res: [16]
     depth_unet_channel_mult: [1,1,1,1,1]
 
-
 dataset: 
-  image_shape: [256, 256]
-  roots: [datasets/re10k]
-  near: 1.
-  far: 100.
-  baseline_scale_bounds: false
-  make_baseline_1: false
-  test_times_per_scene: 3
+  re10k:
+    roots: [datasets/re10k]
+    view_sampler: bounded
+    test_times_per_scene: 1
+  view_sampler:
+    evaluation:
+      index_path: assets/evaluation_index_re10k_insert1.json
 
 test:
   eval_time_skip_steps: 5
   compute_scores: true
+  num_context_views: 3

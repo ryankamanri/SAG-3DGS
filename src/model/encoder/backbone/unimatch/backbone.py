@@ -115,3 +115,57 @@ class CNNEncoder(nn.Module):
             out = [x]
 
         return out
+
+
+
+class UNetEncoder(nn.Module):
+    def __init__(self, 
+                 norm_layer=nn.InstanceNorm2d,
+                 num_output_scales=1,
+                 feature_dims=[32, 48, 64, 96],
+                 **kwargs,
+                 ):
+        super(UNetEncoder, self).__init__()
+        self.num_branch = num_output_scales
+
+        self.conv1 = nn.Conv2d(3, feature_dims[0], kernel_size=7, stride=1, padding=3, bias=False)  # 1
+        self.norm1 = norm_layer(feature_dims[0])
+        self.relu1 = nn.ReLU(inplace=True)
+
+        self.in_planes = feature_dims[0]
+        self.layer1 = self._make_layer(feature_dims[1], stride=2, norm_layer=norm_layer)  # 1/2
+        self.layer2 = self._make_layer(feature_dims[2], stride=2, norm_layer=norm_layer)  # 1/4
+        self.layer3 = self._make_layer(feature_dims[3], stride=2,
+                                       norm_layer=norm_layer,
+                                       )  # 1/4 or 1/8
+
+        # self.conv2 = nn.Conv2d(feature_dims[2], output_dim, 1, 1, 0)
+
+        if self.num_branch > 1:
+            strides = (1, 1, 1, 1) if num_output_scales == 4 else (1, 1, 1, 1)[:num_output_scales]
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm2d, nn.InstanceNorm2d, nn.GroupNorm)):
+                if m.weight is not None:
+                    nn.init.constant_(m.weight, 1)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+    def _make_layer(self, dim, stride=1, dilation=1, norm_layer=nn.InstanceNorm2d):
+        layer1 = ResidualBlock(self.in_planes, dim, norm_layer=norm_layer, stride=stride, dilation=dilation)
+        layer2 = ResidualBlock(dim, dim, norm_layer=norm_layer, stride=1, dilation=dilation)
+
+        layers = (layer1, layer2)
+
+        self.in_planes = dim
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        x0 = self.relu1(self.norm1(self.conv1(x)))  # 1/1
+        x1 = self.layer1(x0)  # 1/2
+        x2 = self.layer2(x1)  # 1/4
+        x3 = self.layer3(x2)  # 1/8
+
+        return [x0, x1, x2, x3][:self.num_branch]

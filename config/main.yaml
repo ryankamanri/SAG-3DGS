@@ -1,6 +1,7 @@
 defaults:
-  - dataset: re10k
-  - optional dataset/view_sampler_dataset_specific_config: ${dataset/view_sampler}_${dataset}
+  - dataset: [re10k]
+  - dataset/view_sampler: [all, arbitrary, bounded, evaluation, interval]
+  # - optional dataset/view_sampler_dataset_specific_config: ${dataset/view_sampler}_${dataset}
   - model/encoder: costvolume
   - model/decoder: splatting_cuda
   - model/mvsnet: mvsnet
@@ -15,10 +16,6 @@ wandb:
 
 mode: train
 
-dataset:
-  overfit_to_scene: null
-  train_times_per_scene: 4
-  test_times_per_scene: 4
 
 data_loader:
   # Avoid having to spin up new processes to print out visualizations.
@@ -40,6 +37,7 @@ data_loader:
 
 optimizer:
   lr: 2.e-4
+  max_steps: 300_001
   warm_up_steps: 2000
   cosine_lr: true
   delta_means_lr: 2.e-4
@@ -59,6 +57,8 @@ train:
   depth_mode: null
   extended_visualization: false
   print_log_every_n_steps: 10
+  num_context_views: 3
+  num_target_views: 1
 
 test:
   output_path: outputs/test
@@ -81,6 +81,8 @@ test:
   use_network_gui: false
   export_ply: false
   dataset_verify_path: overwrite_with_path_to_dataset
+  num_context_views: 3
+  num_target_views: 4
 
 seed: 111123
 

@@ -1,4 +1,4 @@
-name: costvolume
+name: incremental
 
 opacity_mapping:
   initial: 0.0
@@ -11,11 +11,15 @@ num_surfaces: 1
 gaussians_per_pixel: 1
 
 gaussian_adapter:
+  opacity_mapping:
+    initial: 0.0
+    final: 0.0
+    warm_up: 1
   gaussian_scale_min: 0.5
   gaussian_scale_max: 15.0
   sh_degree: 4
 
-d_feature: 128
+d_feature: 32
 
 visualizer:
   num_samples: 8
@@ -40,3 +44,17 @@ wo_cost_volume: false          # Table 3: w/o cost volume
 wo_backbone_cross_attn: false  # Table 3: w/o cross-view attention
 wo_cost_volume_refine: false   # Table 3: w/o U-Net
 use_epipolar_trans: false      # Table B: w/ Epipolar Transformer
+
+unet_output_scales: [4, 2, 1]
+cas_mvsnet_ckpt_path: pretrained/casmvsnet_smooth_000015.ckpt
+cas_mvsnet_use_backbone: true
+cas_mvsnet_load_to_backbone: false
+cas_mvsnet_ndepth: [128, 32, 16]
+cas_mvsnet_cr_base_channels: [32, 16, 8]
+cas_mvsnet_base_channel: 8
+cas_mvsnet_geo_max_dist: 0.01
+cas_mvsnet_geo_max_depth_diff: 0.01
+cas_mvsnet_use_out_features: true
+cas_mvsnet_in_channels: [32, 16, 8]
+
+voxel_size_list: [0.04, 0.02, 0.01]

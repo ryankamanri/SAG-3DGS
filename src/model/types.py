@@ -24,6 +24,43 @@ class EncoderOutput:
     harmonics: Float[Tensor, "batch gaussian 3 d_sh"]
     opacities: Float[Tensor, "batch gaussian"]
     others: dict[str, object] = field(default_factory=lambda: {})
+    
+    @staticmethod
+    def empty(dim=3, d_sh=1, device="cuda") -> "EncoderOutput":
+        """
+        Create an empty EncoderOutput with the specified dimensions.
+        """
+        return EncoderOutput(
+            means=torch.zeros(1, 0, dim, device=device), 
+            scales=torch.zeros(1, 0, dim, device=device), 
+            rotations=torch.zeros(1, 0, 4, device=device), 
+            harmonics=torch.zeros(1, 0, 3, d_sh, device=device), 
+            opacities=torch.zeros(1, 0, device=device)
+        )
+    # TODO: Replace all `append_gaussians`
+    def __iadd__(self, other: "EncoderOutput") -> "EncoderOutput":
+        """
+        In-place addition of another EncoderOutput.
+        """
+        self.means = torch.cat([self.means, other.means], dim=1)
+        self.scales = torch.cat([self.scales, other.scales], dim=1)
+        self.rotations = torch.cat([self.rotations, other.rotations], dim=1)
+        self.harmonics = torch.cat([self.harmonics, other.harmonics], dim=1)
+        self.opacities = torch.cat([self.opacities, other.opacities], dim=1)
+        return self
+    # TODO: Replace all `empty_encoder_output`
+    def __getitem__(self, item) -> "EncoderOutput":
+        """
+        Get a slice of the EncoderOutput.
+        """
+        return EncoderOutput(
+            means=self.means[:, item, ...], 
+            scales=self.scales[:, item, ...], 
+            rotations=self.rotations[:, item, ...], 
+            harmonics=self.harmonics[:, item, ...], 
+            opacities=self.opacities[:, item, ...],
+            others=self.others
+        )
 
 
 def empty_encoder_output(dim=3, d_sh=1, device="cuda") -> EncoderOutput:
@@ -112,7 +149,6 @@ def SH2RGB(sh):
     return sh * C0 + 0.5
     
 
-# TODO: change the activation equal to 3DGS
 scaling_activation = torch.exp
 scaling_deactivation = torch.log
 quaternion_activation = torch.nn.functional.normalize

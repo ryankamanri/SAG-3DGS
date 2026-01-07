@@ -13,6 +13,7 @@ from .view_sampler import ViewSampler
 @dataclass
 class ViewSamplerMVSNeRFCfg:
     name: Literal["mvsnerf"]
+    num_context_views: int # only for original mvsplat code
     num_target_views_train: int
     num_context_views_train: int
     num_target_views_test: int
@@ -147,7 +148,6 @@ class ViewSamplerMVSNeRF(ViewSampler[ViewSamplerMVSNeRFCfg]):
         if scene.startswith('tandt') or scene.startswith('ns') or scene.startswith('llff') or scene.startswith('scannet'):
             scene_name = scene[scene.index("_")+1:-3]
             return torch.tensor(self.test_pairs[f"{scene_name}_train"])
-        # TODO: add other datasets.
         
         
         

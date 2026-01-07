@@ -28,6 +28,15 @@ ViewSamplerCfg = (
     | ViewSamplerMVSNeRFCfg
 )
 
+VIEW_SAMPLER_CFGS: dict[str, ViewSamplerCfg] = {
+    "all": ViewSamplerAllCfg,
+    "arbitrary": ViewSamplerArbitraryCfg,
+    "bounded": ViewSamplerBoundedCfg,
+    "evaluation": ViewSamplerEvaluationCfg,
+    "interval": ViewSamplerIntervalCfg, 
+    "mvsnerf": ViewSamplerMVSNeRFCfg
+}
+
 
 def get_view_sampler(
     cfg: ViewSamplerCfg,

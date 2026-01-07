@@ -1,7 +1,11 @@
-name: interval
+interval:
+  name: interval
 
-num_target_views: 1
-num_context_views: 3
-
-# If you want to hard-code context views, do so here.
-context_views: null
+  num_target_views: 4
+  num_context_views: 3
+  step: 10 # DEPRECATED: use min_interval and max_interval instead
+  min_interval: 10
+  max_interval: 30
+  # If you want to hard-code context views, do so here.
+  context_views: null
+  target_views: null

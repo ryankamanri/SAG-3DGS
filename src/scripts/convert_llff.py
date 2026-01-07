@@ -121,6 +121,8 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
         c2w = torch.FloatTensor(c2ws[idx])
         w2c = torch.inverse(c2w)
         
+        w2c[:3, 3] /= 10 # scale the translation
+        
         w, h = Image.open(BytesIO(images[idx].numpy().tobytes())).size
         # normalized the intr
         fx = ixts[idx, 0, 0]
@@ -133,7 +135,7 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
         saved_fy = fy / h
         saved_cx = cx / w
         saved_cy = cy / h
-        camera = [saved_fx, saved_fy, saved_cx, saved_cy, bounds[:, 0].min(), bounds[:, 1].max()]
+        camera = [saved_fx, saved_fy, saved_cx, saved_cy, 1, 100]
 
         camera.extend(w2c[:3].flatten().tolist())
         cameras.append(np.array(camera))
