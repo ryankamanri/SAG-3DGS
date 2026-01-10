@@ -25,6 +25,7 @@ from .backbone import (
     BackboneMultiviewIncremental,
 )
 from .backbone.depth_fuse_net import DepthFuseNet
+# from .common.gaussian_adapter import GaussianAdapter, GaussianAdapterCfg, Gaussians
 from .common.gaussian_adapter_incremental import GaussianAdapter, GaussianAdapterCfg, Gaussians, get_default_gaussians
 from .encoder import Encoder
 from .costvolume.depth_predictor_multiview import DepthPredictorMultiView
@@ -292,7 +293,7 @@ class EncoderCostVolumeIncremental(Encoder[EncoderCostVolumeIncrementalCfg]):
                 )
                 # NOTE: when wo cross attn, we added ffns into self-attn, but they have no pretrained weight
                 # is_strict_loading = not cfg.wo_backbone_cross_attn
-                # self.backbone.load_state_dict(updated_state_dict, strict=is_strict_loading)
+                # self.backbone.load_state_dict(updated_state_dict, strict=False)
 
         # voxel_adapter
         self.voxel_attentions = nn.ModuleList([VoxelAttentionTaichi(in_channels=cfg.d_feature * 3, hidden_channels=cfg.d_feature * 3) for _ in range(len(cfg.unet_output_scales))])

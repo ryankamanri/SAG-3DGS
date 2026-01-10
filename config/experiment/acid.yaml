@@ -6,7 +6,7 @@ defaults:
   - override /loss: [mse, lpips, depth]
 
 wandb:
-  name: acid
+  name: acid/ours
   tags: [acid, 256x256]
 
 data_loader:

@@ -7,7 +7,7 @@ defaults:
   - override /loss: [mse, lpips, depth, struct, color]
 
 wandb:
-  name: tandt
+  name: tandt/ours
   tags: [tandt, 640x960]
 
 # data_loader:

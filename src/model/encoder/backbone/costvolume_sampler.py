@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from pytorch3d.ops import knn_points
 
 from ...encoder.mvsnet.cas_mvsnet_module import CasMVSNetModuleResult
 from ....misc.slice_iterator import SliceIterator

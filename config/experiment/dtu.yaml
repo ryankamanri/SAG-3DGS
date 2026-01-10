@@ -7,7 +7,7 @@ defaults:
   - override /loss: [mse, ssim, lpips, depth, struct, color]
 
 wandb:
-  name: dtu/views2
+  name: dtu/ours
   tags: [dtu, 512x640]
 
 data_loader:

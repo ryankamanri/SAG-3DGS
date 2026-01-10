@@ -52,6 +52,8 @@ class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
         if global_step > self.cfg.apply_before_step:
             return torch.tensor(0, dtype=torch.float32, device="cuda")
         
+        duration = global_step / batch["max_steps"]
+        
         depth_gt, depth_gt_mask = torch.tensor(batch["context"]["depth"]), torch.tensor(batch["context"]["depth_mask"])
         b, v, h, w = depth_gt.shape
         stages, scales = gaussians.others["stages"], gaussians.others["scales"]
@@ -83,7 +85,7 @@ class LossDepth(Loss[LossDepthCfg, LossDepthCfgWrapper]):
                     
                 near, far = nears[0, 0], fars[0, 0]
                 delta_d = torch.Tensor(1. / cur_depth_pred.clamp(min=1e-3) - 1. / cur_depth_gt.clamp(min=1e-3)).abs() / (1. / near - 1. / far) # (N)
-                loss += (delta_d * confidence.view(b, 1, 1)).mean() * self.stage_weights[idx+1]
+                loss += (delta_d * confidence.view(b, 1, 1)).mean() * self.stage_weights[idx+1] * (1 - duration) ** 2
                 
             view_idx += 1
         

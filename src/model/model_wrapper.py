@@ -137,6 +137,7 @@ class ModelWrapper(LightningModule):
                 return output
                 
             self.encoder.render_callback = render_callback
+            batch["max_steps"] = self.trainer.max_steps
 
         # Run the model.
         gaussians: EncoderOutput = self.encoder(
@@ -362,11 +363,21 @@ class ModelWrapper(LightningModule):
         depth_prob = output.depth[0]
         depth_prob_ft = output_ft.depth[0] if self.test_cfg.fine_tune else depth_prob
         rgb_gt = batch["target"]["image"][0]
+        
+        # Construct comparison image.
+        def depth_map(result):
+            result = result + 1e-6
+            result = result.log()
+            result = 1 - ((result - result.min()) / (result.max() - result.min()))
+            return apply_color_map_to_image(result, "turbo")
 
         # Save images.
         if self.test_cfg.save_image:
-            for index, color, color_ft, color_gt in zip(batch["target"]["index"][0], images_prob, images_prob_ft, rgb_gt):
+            for index, color in zip(batch["context"]["index"][0], batch["context"]["image"][0]):
+                save_image(color, path / scene / f"context/{index:0>6}.png")
+            for index, color, depth, color_ft, color_gt in zip(batch["target"]["index"][0], images_prob, depth_prob, images_prob_ft, rgb_gt):
                 save_image(color, path / scene / f"color/{index:0>6}.png")
+                save_image(depth_map(depth), path / scene / f"depth/{index:0>6}.png")
                 save_image(color_gt, path / scene / f"color/{index:0>6}_gt.png")
                 if self.test_cfg.fine_tune:
                     save_image(color_ft, path / scene / f"color/{index:0>6}_ft.png")
@@ -396,13 +407,6 @@ class ModelWrapper(LightningModule):
                     self.logger.log_image(k, [prep_image(image)], step=self.global_step)
         
         if True:
-            # Construct comparison image.
-            def depth_map(result):
-                result = result + 1e-6
-                result = result.log()
-                result = 1 - ((result - result.min()) / (result.max() - result.min()))
-                return apply_color_map_to_image(result, "turbo")
-            
             comparison = hcat(
                 add_label(vcat(*batch["context"]["image"][0]), "Context"),
                 add_label(vcat(*rgb_gt), "Target (Ground Truth)"),

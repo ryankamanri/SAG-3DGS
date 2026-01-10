@@ -7,7 +7,7 @@ defaults:
   - override /loss: [mse, lpips, depth, struct, color]
 
 wandb:
-  name: nerf_synthetic
+  name: ns/ours
   tags: [ns, 800x800]
 
 data_loader:

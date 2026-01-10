@@ -7,7 +7,7 @@ defaults:
   - override /loss: [mse, lpips, depth]
 
 wandb:
-  name: re10k
+  name: re10k/ours
   tags: [re10k, 256x256]
 
 data_loader:

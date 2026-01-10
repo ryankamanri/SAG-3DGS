@@ -42,6 +42,8 @@ def build_camera_info(id_list, root_dir):
         # Note: I think any rescaling operation of intrinsics here is useless because it will be normalized when training
         intrinsic[:2] *= 4
         intrinsic[:2] = intrinsic[:2] * downSample
+        intrinsic[0, 2] = 320.0
+        intrinsic[1, 2] = 256.0
         intrinsics[vid] = intrinsic
 
         extrinsic[:3, 3] *= scale_factor
@@ -66,7 +68,7 @@ def read_cam_file(filename):
     intrinsic = intrinsic.reshape((3, 3))
     # depth_min & depth_interval: line 11
     depth_min = float(lines[11].split()[0]) * scale_factor
-    depth_max = depth_min + float(lines[11].split()[1]) * 192 * scale_factor
+    depth_max = depth_min * 10
     near_far = [depth_min, depth_max]
     return intrinsic, extrinsic, near_far
 

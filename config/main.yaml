@@ -81,7 +81,7 @@ test:
   use_network_gui: false
   export_ply: false
   dataset_verify_path: overwrite_with_path_to_dataset
-  num_context_views: 3
+  num_context_views: 3 # for mvsplat original code
   num_target_views: 4
 
 seed: 111123

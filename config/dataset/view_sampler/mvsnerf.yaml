@@ -6,7 +6,7 @@ mvsnerf:
   num_target_views_test: 4
   num_context_views_test: 3
 
-  num_context_views: 3 # for mvsplat original code
+  num_context_views: 3 # DEPRECATED
 
   dtu_train_path: config/dataset/view_sampler/mvsnerf_stored/dtu_train_all.txt
   dtu_test_path: config/dataset/view_sampler/mvsnerf_stored/dtu_test_all.txt

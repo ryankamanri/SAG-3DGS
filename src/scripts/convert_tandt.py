@@ -84,7 +84,7 @@ def load_metadata(metadata_path: Path, images: dict[int, Tensor]) -> Metadata:
         proj_mat_filename = metadata_path / f'{idx:08d}_cam.txt'
         intrinsics, extrinsics, near_far = read_cam_file(proj_mat_filename)
         
-        extrinsics[:3, 3] *= 3  # scale the translation
+        extrinsics[:3, 3] *= 6  # scale the translation
         
         w, h = Image.open(BytesIO(images[idx].numpy().tobytes())).size
         focal = [intrinsics[0, 0], intrinsics[1, 1]]
