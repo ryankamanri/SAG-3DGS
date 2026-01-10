@@ -7,7 +7,6 @@ from .view_sampler_all import ViewSamplerAll, ViewSamplerAllCfg
 from .view_sampler_arbitrary import ViewSamplerArbitrary, ViewSamplerArbitraryCfg
 from .view_sampler_bounded import ViewSamplerBounded, ViewSamplerBoundedCfg
 from .view_sampler_evaluation import ViewSamplerEvaluation, ViewSamplerEvaluationCfg
-from .view_sampler_interval import ViewSamplerInterval, ViewSamplerIntervalCfg
 from .view_sampler_mvsnerf import ViewSamplerMVSNeRF, ViewSamplerMVSNeRFCfg
 
 VIEW_SAMPLERS: dict[str, ViewSampler[Any]] = {
@@ -15,7 +14,6 @@ VIEW_SAMPLERS: dict[str, ViewSampler[Any]] = {
     "arbitrary": ViewSamplerArbitrary,
     "bounded": ViewSamplerBounded,
     "evaluation": ViewSamplerEvaluation,
-    "interval": ViewSamplerInterval, 
     "mvsnerf": ViewSamplerMVSNeRF
 }
 
@@ -24,7 +22,6 @@ ViewSamplerCfg = (
     | ViewSamplerBoundedCfg
     | ViewSamplerEvaluationCfg
     | ViewSamplerAllCfg
-    | ViewSamplerIntervalCfg
     | ViewSamplerMVSNeRFCfg
 )
 
@@ -33,7 +30,6 @@ VIEW_SAMPLER_CFGS: dict[str, ViewSamplerCfg] = {
     "arbitrary": ViewSamplerArbitraryCfg,
     "bounded": ViewSamplerBoundedCfg,
     "evaluation": ViewSamplerEvaluationCfg,
-    "interval": ViewSamplerIntervalCfg, 
     "mvsnerf": ViewSamplerMVSNeRFCfg
 }
 

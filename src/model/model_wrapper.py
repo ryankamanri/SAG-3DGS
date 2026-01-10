@@ -43,7 +43,6 @@ from ..visualization import layout
 from ..visualization.validation_in_3d import render_cameras, render_projections
 from .decoder.decoder import Decoder, DecoderOutput, DepthRenderingMode
 from .encoder import Encoder
-from .encoder.encoder_cascade import EncoderCascade
 from .encoder.encoder_costvolume_incremental import EncoderCostVolumeIncremental
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
 from .types import EncoderOutput, TrainCfg, TestCfg, OptimizerCfg, FineTuneGaussianWrapper
@@ -121,8 +120,8 @@ class ModelWrapper(LightningModule):
         batch: BatchedExample = self.data_shim(batch)
         _, _, _, h, w = batch["target"]["image"].shape
         
-        # if use our CascadeEncoder, we need to set render_callback for spliting voxels. every step we need to update it because the variable in closure is different.
-        if type(self.encoder) in (EncoderCascade, EncoderCostVolumeIncremental):
+        # if use our Encoder, we need to set render_callback for spliting voxels. every step we need to update it because the variable in closure is different.
+        if type(self.encoder) in (EncoderCostVolumeIncremental, ):
             def render_callback(gaussians: EncoderOutput, scale: int) -> DecoderOutput:
                 prop = 1.0 / scale
                 output = self.decoder.forward(
@@ -144,7 +143,7 @@ class ModelWrapper(LightningModule):
             batch["context"], self.global_step, False, scene_names=batch["scene"]
         )
 
-        if type(self.encoder) in (EncoderCascade, EncoderCostVolumeIncremental):
+        if type(self.encoder) in (EncoderCostVolumeIncremental, ):
             output = gaussians.others["stage_renders"][gaussians.others["stages"][-1]]
         else:
             output = self.decoder.forward(

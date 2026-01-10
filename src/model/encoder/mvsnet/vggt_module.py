@@ -15,13 +15,13 @@ def visualize_cameras(t_pred_aligned, t_gt):
     ##################################
     labels = range(t_pred_aligned.shape[0])
     for l in labels:
-        # 在点的右上方添加序号（偏移量可调整）
+        # Add index numbers to the upper right of points (offset can be adjusted)
         ax.text(t_pred_aligned[l][0] + 0.01, t_pred_aligned[l][1] + 0.01, t_pred_aligned[l][2], str(l), 
                 fontsize=10, color='red', 
-                ha='left', va='bottom')  # 水平对齐：左，垂直对齐：底
+                ha='left', va='bottom')  # Horizontal alignment: left, vertical alignment: bottom
         ax.text(t_gt[l][0] + 0.01, t_gt[l][1] + 0.01, t_gt[l][2], str(l), 
                 fontsize=10, color='blue', 
-                ha='left', va='bottom')  # 水平对齐：左，垂直对齐：底
+                ha='left', va='bottom')  # Horizontal alignment: left, vertical alignment: bottom
     #####################################
     ax.legend()
     plt.show()
@@ -30,47 +30,47 @@ def visualize_cameras(t_pred_aligned, t_gt):
 
 def umeyama_alignment_with_scale_batch(t_pred, t_gt):
     """
-    带尺度的 Umeyama 算法（批量处理）
+    Umeyama algorithm with scale estimation (batch processing)
     Args:
-        t_pred: (B, N, 3) 预测的平移向量
-        t_gt:   (B, N, 3) 真实的平移向量
+        t_pred: (B, N, 3) Predicted translation vectors
+        t_gt:   (B, N, 3) Ground truth translation vectors
     Returns:
-        R:      (B, 3, 3) 旋转矩阵
-        t:      (B, 3)    平移向量
-        s:      (B,)      尺度因子
+        R:      (B, 3, 3) Rotation matrix
+        t:      (B, 3)    Translation vector
+        s:      (B,)      Scale factor
     """
     B, N, _ = t_pred.shape
     
-    # 计算质心
+    # Compute centroids
     mu_pred = torch.mean(t_pred, dim=1, keepdim=True)  # (B, 1, 3)
     mu_gt = torch.mean(t_gt, dim=1, keepdim=True)      # (B, 1, 3)
     
-    # 去中心化
+    # Center the data
     X = t_pred - mu_pred  # (B, N, 3)
     Y = t_gt - mu_gt     # (B, N, 3)
     
-    # 协方差矩阵 H = X^T @ Y
+    # Covariance matrix H = X^T @ Y
     H = torch.matmul(X.transpose(1, 2), Y)  # (B, 3, 3)
     
-    # SVD 分解
+    # SVD decomposition
     U, S, V = torch.linalg.svd(H)  # (B, 3, 3), (B, 3), (B, 3, 3)
     
-    # 计算旋转矩阵 R = V @ U^T，并校正行列式符号
+    # Compute rotation matrix R = V @ U^T, with determinant sign correction
     R = torch.matmul(V, U.transpose(1, 2))  # (B, 3, 3)
     # visualize_cameras((R @ X.transpose(1, 2)).transpose(1, 2).reshape(-1, 3).cpu(), Y.reshape(-1, 3).cpu())
     # def angle(vec1, vec2):
     #     return torch.arccos((vec1 * vec2).sum() / vec1.norm() / vec2.norm()) * 180 / (3.1415926)
     det = torch.det(R)                      # (B,)
     sign = torch.sign(det)
-    V_corrected = V * sign.view(-1, 1, 1)   # 校正符号
+    V_corrected = V * sign.view(-1, 1, 1)   # Correct sign
     R = torch.matmul(V_corrected, U.transpose(1, 2))
     
-    # 计算尺度因子 s = tr(Σ) / tr(X^T X)
-    sigma = S.sum(dim=1)  # tr(Σ) = sum(S的对角线)
+    # Compute scale factor s = tr(Σ) / tr(X^T X)
+    sigma = S.sum(dim=1)  # tr(Σ) = sum of diagonal elements of S
     X_var = torch.sum(X ** 2, dim=(1, 2))                 # tr(X^T X)
     s = sigma / X_var                                     # (B,)
     
-    # 计算平移向量 t = μ_gt - s * R @ μ_pred
+    # Compute translation vector t = μ_gt - s * R @ μ_pred
     mu_pred_squeezed = mu_pred.squeeze(1)  # (B, 3)
     R_mu_pred = torch.matmul(R, mu_pred_squeezed.unsqueeze(-1)).squeeze(-1)  # (B, 3)
     t = mu_gt.squeeze(1) - s.unsqueeze(-1) * R_mu_pred  # (B, 3)
@@ -79,31 +79,31 @@ def umeyama_alignment_with_scale_batch(t_pred, t_gt):
 
 def align_pred_to_gt_batch(T_pred, T_gt, depth_pred):
     """
-    批量对齐预测的外参和深度（带尺度估计）
+    Batch alignment of predicted extrinsics and depth (with scale estimation)
     Args:
-        T_pred:    (B, N, 4, 4) 预测的外参矩阵
-        T_gt:      (B, N, 4, 4)    真实的外参矩阵
-        depth_pred: (B, N, H, W) 预测的深度图
+        T_pred:    (B, N, 4, 4) Predicted extrinsic matrices
+        T_gt:      (B, N, 4, 4) Ground truth extrinsic matrices
+        depth_pred: (B, N, H, W) Predicted depth maps
     Returns:
-        T_aligned: (B, N, 4, 4) 对齐后的外参矩阵
-        depth_scaled: (B, N, H, W) 缩放后的深度图
+        T_aligned: (B, N, 4, 4) Aligned extrinsic matrices
+        depth_scaled: (B, N, H, W) Scaled depth maps
     """
     B, N, H, W = depth_pred.shape
     
     t_gt = T_gt[:, :, :3, 3]  # (B, N, 3)
     
-    # Step 1: 联合估计 R, t, s
+    # Step 1: Joint estimation of R, t, s
     R, t, s = umeyama_alignment_with_scale_batch(T_pred[:, :, :3, 3], t_gt)
     
-    # Step 2: 对齐外参
+    # Step 2: Align extrinsics
     R_pred = T_pred[:, :, :3, :3]  # (B, N, 3, 3)
     t_pred = T_pred[:, :, :3, 3]   # (B, N, 3)
     
-    # 应用旋转和缩放：R_aligned = R @ R_pred, t_aligned = s * (R @ t_pred) + t
+    # Apply rotation and scaling: R_aligned = R @ R_pred, t_aligned = s * (R @ t_pred) + t
     R_aligned = torch.matmul(R.unsqueeze(1), R_pred)  # (B, N, 3, 3)
     t_aligned = s.unsqueeze(-1).unsqueeze(1) * torch.matmul(R.unsqueeze(1), t_pred.unsqueeze(-1)).squeeze(-1) + t.unsqueeze(1)
     
-    # 构建对齐后的外参矩阵
+    # Construct aligned extrinsic matrices
     T_aligned = torch.eye(4, device=T_pred.device).unsqueeze(0).unsqueeze(0).repeat(B, N, 1, 1)
     T_aligned[:, :, :3, :3] = R_aligned
     T_aligned[:, :, :3, 3] = t_aligned

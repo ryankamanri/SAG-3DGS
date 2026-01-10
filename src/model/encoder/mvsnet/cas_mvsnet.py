@@ -15,10 +15,7 @@ class RunningMeanLayer(nn.Module):
         self.register_buffer('running_mean', torch.zeros(feat_shape))
     
     def forward(self, x, n_samples=1):
-        # 当前batch统计
         batch_mean = x.mean(dim=0)
-        
-        # 更新running stats
         with torch.no_grad():
             self.running_mean = (1 - self.momentum) * self.running_mean + \
                                 self.momentum * batch_mean

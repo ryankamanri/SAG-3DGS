@@ -1,21 +1,14 @@
 from typing import Optional
 
 from .encoder import Encoder
-from .encoder_epipolar import EncoderEpipolar, EncoderEpipolarCfg
-from .encoder_costvolume import EncoderCostVolume, EncoderCostVolumeCfg
 from .encoder_costvolume_incremental import EncoderCostVolumeIncremental, EncoderCostVolumeIncrementalCfg
-from .encoder_cascade import EncoderCascade, EncoderCascadeCfg
 from .visualization.encoder_visualizer import EncoderVisualizer
-from .visualization.encoder_visualizer_costvolume import EncoderVisualizerCostVolume
 
 ENCODERS = {
-    "epipolar": (EncoderEpipolar, None), 
-    "costvolume": (EncoderCostVolume, EncoderVisualizerCostVolume),
     "incremental": (EncoderCostVolumeIncremental, None), 
-    "cascade": (EncoderCascade, None)
 }
 
-EncoderCfg = EncoderCascadeCfg | EncoderCostVolumeCfg | EncoderCostVolumeIncrementalCfg | EncoderEpipolarCfg # Note that this cfg should be changed manually.
+EncoderCfg = EncoderCostVolumeIncrementalCfg # Note that this cfg should be changed manually.
 
 
 def get_encoder(cfg: EncoderCfg) -> tuple[Encoder, Optional[EncoderVisualizer]]:

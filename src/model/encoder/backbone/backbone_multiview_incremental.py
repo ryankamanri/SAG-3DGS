@@ -7,7 +7,6 @@ from .multiview_transformer import MultiViewFeatureTransformer
 from .unimatch.utils import split_feature, merge_splits
 from .unimatch.position import PositionEmbeddingSine
 
-from ..costvolume.conversions import depth_to_relative_disparity
 from ....geometry.epipolar_lines import get_depth
 
 
