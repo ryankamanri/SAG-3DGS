@@ -4,7 +4,7 @@ defaults:
   - override /dataset: [re10k, dtu]
   - override /dataset/view_sampler: [interval, mvsnerf]
   - override /model/encoder: cascade
-  - override /loss: [mse, ssim, lpips, depth, struct, color]
+  - override /loss: [mse, lpips, depth]
 
 wandb:
   name: re10k_dtu

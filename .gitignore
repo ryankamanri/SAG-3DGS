@@ -181,6 +181,4 @@ table.tex
 point_clouds*
 assets/*_3views.json
 
-submodules
-
 *.out

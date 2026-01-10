@@ -4,7 +4,7 @@ defaults:
   - override /dataset: [dtu]
   - override /dataset/view_sampler: [mvsnerf]
   - override /model/encoder: cascade
-  - override /loss: [mse, lpips, depth, struct, color]
+  - override /loss: [mse, lpips, depth]
 
 wandb:
   name: ns/ours

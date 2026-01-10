@@ -1,11 +1,10 @@
 defaults:
   - dataset: [re10k]
-  - dataset/view_sampler: [all, arbitrary, bounded, evaluation, interval]
-  # - optional dataset/view_sampler_dataset_specific_config: ${dataset/view_sampler}_${dataset}
+  - dataset/view_sampler: [all, arbitrary, bounded, evaluation]
   - model/encoder: costvolume
   - model/decoder: splatting_cuda
   - model/mvsnet: mvsnet
-  - loss: [mse, ssim, lpips, depth, struct, color]
+  - loss: [mse, lpips, depth]
 
 wandb:
   project: sag-3dgs
