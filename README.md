@@ -1,209 +1,119 @@
 <p align="center">
-  <h1 align="center">MVSplat: Efficient 3D Gaussian Splatting <br> from Sparse Multi-View Images</h1>
-  <p align="center">
-    <a href="https://donydchen.github.io/">Yuedong Chen</a>
-    &nbsp;·&nbsp;
-    <a href="https://haofeixu.github.io/">Haofei Xu</a>
-    &nbsp;·&nbsp;
-    <a href="https://chuanxiaz.com/">Chuanxia Zheng</a>
-    &nbsp;·&nbsp;
-    <a href="https://bohanzhuang.github.io/">Bohan Zhuang</a> <br>
-    <a href="https://people.inf.ethz.ch/marc.pollefeys/">Marc Pollefeys</a>
-    &nbsp;·&nbsp;
-    <a href="http://www.cvlibs.net/">Andreas Geiger</a>
-    &nbsp;·&nbsp;
-    <a href="https://personal.ntu.edu.sg/astjcham/">Tat-Jen Cham</a>
-    &nbsp;·&nbsp;
-    <a href="https://jianfei-cai.github.io/">Jianfei Cai</a>
-  </p>
-  <h3 align="center">ECCV 2024 Oral</h3>
-  <h3 align="center"><a href="https://arxiv.org/abs/2403.14627">Paper</a> | <a href="https://donydchen.github.io/mvsplat/">Project Page</a> | <a href="https://drive.google.com/drive/folders/14_E_5R6ojOWnLSrSVLVEMHnTiKsfddjU">Pretrained Models</a> </h3>
-<!--   <div align="center">
-    <a href="https://news.ycombinator.com/item?id=41222655">
-      <img
-        alt="Featured on Hacker News"
-        src="https://hackerbadge.vercel.app/api?id=41222655&type=dark"
-      />
-    </a>
-  </div> -->
-
-<ul>
-<li><b>21/10/24 Update:</b> Check out Haofei's <a href="https://github.com/cvg/depthsplat">DepthSplat</a> if you are interested in feed-forward 3DGS on more complex scenes (DL3DV-10K) and more input views (up to 12 views)!</li>
-</ul>
-<br>
+  <h1 align="center">DMVA-GS: Depth-guided Generalizable 3D Gaussian Splatting with Multi-scale Voxel Attention Fusion</h1>
 </p>
 
-https://github.com/donydchen/mvsplat/assets/5866866/c5dc5de1-819e-462f-85a2-815e239d8ff2
+## Abstract
+We propose DMVA-GS, a novel multi-scale 3D Gaussian Splatting (3DGS) feed-forward inference network that can accurately and efficiently reconstruct unseen scenes from sparse input views. Existing generalizable 3DGS methods typically rely on self-supervised multi-view stereo for depth estimation, and the number of Gaussians scaling linearly with the number of input views, which leads to performance deteriorates sharply as more views are provided when depth becomes unreliable. To address these limitations, we first introduce external depth supervision and a multi-scale architecture that improves robustness across diverse scene textures. Then, we incorporate geometric consistency constraints via reprojection to strengthen the geometric awareness of our network. In addition, we incorporate a voxelized representation and a novel voxel attention mechanism that aggregates Gaussians within each voxel, enabling strong control over Gaussian density and mitigating the over-growth problem. Experimental results on the RealEstate10K, ACID, DTU, Real Forward-Facing, NeRF Synthetic, and Tanks and Temples datasets demonstrate that DMVA-GS achieves state-of-the-art performance in cross-dataset generalization.
 
 ## Installation
 
-To get started, clone this project, create a conda virtual environment using Python 3.10+, and install the requirements:
+test on Ubuntu 22.04.5 LTS.
 
-```bash
-git clone https://github.com/donydchen/mvsplat.git
-cd mvsplat
-conda create -n mvsplat python=3.10
-conda activate mvsplat
-pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu118
-pip install -r requirements.txt
+make sure you installed cuda, conda and git:
+``` bash
+nvcc --version
+conda --version
+git --version
 ```
+
+then run:
+``` bash
+git clone https://github.com/ryankamanri/SAG-3DGS
+cd SAG-3DGS
+conda create -p env/dmva python=3.10
+conda activate env/dmva
+pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu118 # or cu121 if you have cuda 12.1, you must match your cuda version
+pip install -r requirements.txt
+git submodule update --init --recursive
+pip install ./submodules/diff-gaussian-rasterization-modified --no-build-isolation
+pip install ./submodules/vggt --no-build-isolation
+```
+
+and install pretrained [VGGT model](https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt) as `./pretrained/vggt/model.pt`, [our module](https://drive.google.com/file/d/10EiA6W_BUr1K47jG4Sh8DLd6ou-zUR8Z/view?usp=drive_link) as `./checkpoints/epoch_4-step_300000.ckpt`.
+
 
 ## Acquiring Datasets
 
-### RealEstate10K and ACID
+### Real Estate10K and ACID
 
-Our MVSplat uses the same training datasets as pixelSplat. Below we quote pixelSplat's [detailed instructions](https://github.com/dcharatan/pixelsplat?tab=readme-ov-file#acquiring-datasets) on getting datasets.
+Our DMVA-GS uses the same training datasets as [pixelSplat](https://github.com/dcharatan/pixelsplat) and [MVSplat](https://github.com/donydchen/mvsplat). You can follow their instructions.
 
 > pixelSplat was trained using versions of the RealEstate10k and ACID datasets that were split into ~100 MB chunks for use on server cluster file systems. Small subsets of the Real Estate 10k and ACID datasets in this format can be found [here](https://drive.google.com/drive/folders/1joiezNCyQK2BvWMnfwHJpm2V77c7iYGe?usp=sharing). To use them, simply unzip them into a newly created `datasets` folder in the project root directory.
 
-> If you would like to convert downloaded versions of the Real Estate 10k and ACID datasets to our format, you can use the [scripts here](https://github.com/dcharatan/real_estate_10k_tools). Reach out to us (pixelSplat) if you want the full versions of our processed datasets, which are about 500 GB and 160 GB for Real Estate 10k and ACID respectively.
+### DTU, Real Forward-facing, NeRF Synthetic and Tanks and Temples
 
-### DTU (For Testing Only)
+We provide the convert script in `src/scripts`, You could convert the origin dataset to pixelSplat's data chunks for its dataloader：
 
-* Download the preprocessed DTU data [dtu_training.rar](https://drive.google.com/file/d/1eDjh-_bxKKnEuz5h-HXS7EDJn59clx6V/view).
-* Convert DTU to chunks by running `python src/scripts/convert_dtu.py --input_dir PATH_TO_DTU --output_dir datasets/dtu`
-* [Optional] Generate the evaluation index by running `python src/scripts/generate_dtu_evaluation_index.py --n_contexts=N`, where N is the number of context views. (For N=2 and N=3, we have already provided our tested version under `/assets`.)
+```bash
+python src/scripts/convert_dtu.py --input_dir $DTU_PATH$ --output_dir datasets/dtu 
+python src/scripts/convert_llff.py --input_dir $REAL_FORWARD_FACING_PATH$ --output_dir datasets/llff
+python src/scripts/convert_nerf_synthetic.py --input_dir $NERF_SYNTHETIC_PATH$ --output_dir datasets/nerf_synthetic
+python src/scripts/convert_tandt.py --input_dir $TANKS_AND_TEMPLES_PATH$ --output_dir datasets/tandt
+```
+
 
 ## Running the Code
 
-### Evaluation
-
-To render novel views and compute evaluation metrics from a pretrained model,
-
-* get the [pretrained models](https://drive.google.com/drive/folders/14_E_5R6ojOWnLSrSVLVEMHnTiKsfddjU), and save them to `/checkpoints`
-
-* run the following:
-
 ```bash
-# re10k
+# train
+python -m src.main +experiment=re10k
+
+# test
+# RealEstate 10K
 python -m src.main +experiment=re10k \
-checkpointing.load=checkpoints/re10k.ckpt \
+checkpointing.load=checkpoints/epoch_4-step_300000.ckpt \
 mode=test \
 dataset/view_sampler=evaluation \
+dataset.re10k.view_sampler=evaluation \
 test.compute_scores=true
 
-# acid
+# ACID
 python -m src.main +experiment=acid \
-checkpointing.load=checkpoints/acid.ckpt \
+checkpointing.load=checkpoints/epoch_4-step_300000.ckpt \
 mode=test \
 dataset/view_sampler=evaluation \
-dataset.view_sampler.index_path=assets/evaluation_index_acid.json \
+dataset.re10k.view_sampler=evaluation \
 test.compute_scores=true
+
+# DTU 3-view
+nohup python -m src.main +experiment=dtu \
+model/encoder=incremental \
+checkpointing.load=checkpoints/epoch_4-step_300000.ckpt \
+test.num_context_views=3 \
+dataset.view_sampler.mvsnerf.num_context_views_test=3 \
+mode=test \
+wandb.name=dtu/3view \
+test.compute_scores=true \
+
+# Real Forward-facing 3-view
+nohup python -m src.main +experiment=llff \
+model/encoder=incremental \
+checkpointing.load=checkpoints/epoch_4-step_300000.ckpt \
+test.num_context_views=3 \
+dataset.view_sampler.mvsnerf.num_context_views_test=3 \
+mode=test \
+wandb.name=llff/3view \
+test.compute_scores=true \
+
+# NeRF Synthetic 3-view
+nohup python -m src.main +experiment=ns \
+model/encoder=incremental \
+checkpointing.load=checkpoints/epoch_4-step_300000.ckpt \
+test.num_context_views=3 \
+dataset.view_sampler.mvsnerf.num_context_views_test=3 \
+mode=test \
+wandb.name=ns/3view \
+test.compute_scores=true \
+
+# Tanks and Temples 3-view
+nohup python -m src.main +experiment=tandt \
+model/encoder=incremental \
+checkpointing.load=checkpoints/epoch_4-step_300000.ckpt \
+test.num_context_views=3 \
+dataset.view_sampler.mvsnerf.num_context_views_test=3 \
+mode=test \
+wandb.name=tandt/3view \
+test.compute_scores=true \
 ```
 
 * the rendered novel views will be stored under `outputs/test`
-
-To render videos from a pretrained model, run the following
-
-```bash
-# re10k
-python -m src.main +experiment=re10k \
-checkpointing.load=checkpoints/re10k.ckpt \
-mode=test \
-dataset/view_sampler=evaluation \
-dataset.view_sampler.index_path=assets/evaluation_index_re10k_video.json \
-test.save_video=true \
-test.save_image=false \
-test.compute_scores=false
-```
-
-### Training
-
-Run the following:
-
-```bash
-# download the backbone pretrained weight from unimatch and save to 'checkpoints/'
-wget 'https://s3.eu-central-1.amazonaws.com/avg-projects/unimatch/pretrained/gmdepth-scale1-resumeflowthings-scannet-5d9d7964.pth' -P checkpoints
-# train mvsplat
-python -m src.main +experiment=re10k data_loader.train.batch_size=14
-```
-
-Our models are trained with a single A100 (80GB) GPU. They can also be trained on multiple GPUs with smaller RAM by setting a smaller `data_loader.train.batch_size` per GPU.
-
-<details>
-  <summary><b>Training on multiple nodes (https://github.com/donydchen/mvsplat/issues/32)</b></summary>
-Since this project is built on top of pytorch_lightning, it can be trained on multiple nodes hosted on the SLURM cluster. For example, to train on 2 nodes (with 2 GPUs on each node), add the following lines to the SLURM job script
-
-```bash
-#SBATCH --nodes=2           # should match with trainer.num_nodes
-#SBATCH --gres=gpu:2        # gpu per node
-#SBATCH --ntasks-per-node=2
-
-# optional, for debugging
-export NCCL_DEBUG=INFO
-export HYDRA_FULL_ERROR=1
-# optional, set network interface, obtained from ifconfig
-export NCCL_SOCKET_IFNAME=[YOUR NETWORK INTERFACE]
-# optional, set IB GID index
-export NCCL_IB_GID_INDEX=3
-
-# run the command with 'srun'
-srun python -m src.main +experiment=re10k \
-data_loader.train.batch_size=4 \
-trainer.num_nodes=2
-```
-
-References:
-* [Pytorch Lightning: RUN ON AN ON-PREM CLUSTER (ADVANCED)](https://lightning.ai/docs/pytorch/stable/clouds/cluster_advanced.html)
-* [NCCL: How to set NCCL_SOCKET_IFNAME](https://github.com/NVIDIA/nccl/issues/286)
-* [NCCL: NCCL WARN NET/IB](https://github.com/NVIDIA/nccl/issues/426)
-
-</details>
-
-<details>
-  <summary><b>Fine-tune from the released weights (https://github.com/donydchen/mvsplat/issues/45)</b></summary>
-To fine-tune from the released weights <i>without</i> loading the optimizer states, run the following:
-
-```bash
-python -m src.main +experiment=re10k data_loader.train.batch_size=14 \
-checkpointing.load=checkpoints/re10k.ckpt \
-checkpointing.resume=false
-```
-
-</details>
-
-### Ablations
-
-We also provide a collection of our [ablation models](https://drive.google.com/drive/folders/14_E_5R6ojOWnLSrSVLVEMHnTiKsfddjU) (under folder 'ablations'). To evaluate them, *e.g.*, the 'base' model, run the following command
-
-```bash
-# Table 3: base
-python -m src.main +experiment=re10k \
-checkpointing.load=checkpoints/ablations/re10k_worefine.ckpt \
-mode=test \
-dataset/view_sampler=evaluation \
-test.compute_scores=true \
-wandb.name=abl/re10k_base \
-model.encoder.wo_depth_refine=true 
-```
-
-### Cross-Dataset Generalization
-
-We use the default model trained on RealEstate10K to conduct cross-dataset evaluations. To evaluate them, *e.g.*, on DTU, run the following command
-
-```bash
-# Table 2: RealEstate10K -> DTU
-python -m src.main +experiment=dtu \
-checkpointing.load=checkpoints/re10k.ckpt \
-mode=test \
-dataset/view_sampler=evaluation \
-dataset.view_sampler.index_path=assets/evaluation_index_dtu_nctx2.json \
-test.compute_scores=true
-```
-
-**More running commands can be found at [more_commands.sh](more_commands.sh).**
-
-## BibTeX
-
-```bibtex
-@article{chen2024mvsplat,
-    title   = {MVSplat: Efficient 3D Gaussian Splatting from Sparse Multi-View Images},
-    author  = {Chen, Yuedong and Xu, Haofei and Zheng, Chuanxia and Zhuang, Bohan and Pollefeys, Marc and Geiger, Andreas and Cham, Tat-Jen and Cai, Jianfei},
-    journal = {arXiv preprint arXiv:2403.14627},
-    year    = {2024},
-}
-```
-
-## Acknowledgements
-
-The project is largely based on [pixelSplat](https://github.com/dcharatan/pixelsplat) and has incorporated numerous code snippets from [UniMatch](https://github.com/autonomousvision/unimatch). Many thanks to these two projects for their excellent contributions!
